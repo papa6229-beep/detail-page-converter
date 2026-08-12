@@ -7,13 +7,14 @@
 from .background import Section, find_sections
 from .gaps import GapSplit, group_by_gaps, split_gaps
 from .geometry import Rect
-from .layout import CutConfig, Node, build_columns, gutter_extents, trim
+from .layout import CutConfig, Node, Scan, build_columns, gutter_extents, trim
 from .slicer import SliceResult, Unit, ink_coverage, slice_image
 
 __all__ = [
     "CutConfig",
     "GapSplit",
     "Node",
+    "Scan",
     "Rect",
     "Section",
     "SliceResult",

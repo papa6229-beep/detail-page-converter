@@ -16,7 +16,7 @@ import numpy as np
 from .background import DEFAULT_TOL, Section, bg_mask, find_sections
 from .gaps import GapSplit, group_by_gaps, split_gaps
 from .geometry import Rect, union_all
-from .layout import COL, ROW, CutConfig, Node, build_columns, line_flags, rule_gaps, rule_rows, trim
+from .layout import COL, ROW, CutConfig, Node, Scan, build_columns, line_flags, rule_gaps, rule_rows, trim
 
 
 @dataclass
@@ -163,13 +163,14 @@ def slice_image(
         # 반드시 **여백을 벗긴** 사각형에서 재야 한다. 테두리 바깥 흰 여백까지 넣고
         # 재면 표 가로선이 "흰색 + 주황 + 흰색"이 되어 단색으로 보이지 않고,
         # 괘선이 하나도 검출되지 않는다.
-        content = trim(arr, rect, sec.bg, cfg)
+        scan = Scan(arr, sec.bg, cfg)
+        content = trim(arr, rect, sec.bg, cfg, scan)
         if content is None:
             continue
-        rules = rule_rows(arr, content, sec.bg, cfg)
+        rules = rule_rows(arr, content, sec.bg, cfg, scan)
 
         # 2. 세로로 가른다 — 칸 단위로 내려간다
-        cells = build_columns(arr, rect, sec.bg, cfg)
+        cells = build_columns(arr, rect, sec.bg, cfg, scan=scan)
         for cell in cells:
             panels.extend(leaf.rect for leaf in cell.leaves())
             column_counts.append(cell.col_total)

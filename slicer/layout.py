@@ -89,18 +89,31 @@ class Node:
 
 
 def runs_of(mask) -> list[tuple[int, int]]:
-    """True 가 연속된 구간들을 [start, end] 로."""
-    out: list[tuple[int, int]] = []
-    start = None
-    for i, v in enumerate(mask):
-        if v and start is None:
-            start = i
-        elif not v and start is not None:
-            out.append((start, i - 1))
-            start = None
-    if start is not None:
-        out.append((start, len(mask) - 1))
-    return out
+    """True 가 연속된 구간들을 [start, end] 로.
+
+    파이썬 반복문으로 돌면 고랑 검출에서만 200만 번을 돈다. 경계는 차분의
+    부호가 바뀌는 자리이므로 numpy 로 한 번에 찾는다.
+    """
+    m = np.asarray(mask, dtype=bool)
+    if m.size == 0:
+        return []
+    d = np.diff(m.view(np.int8))
+    starts = np.flatnonzero(d == 1) + 1
+    ends = np.flatnonzero(d == -1)
+    if m[0]:
+        starts = np.concatenate(([0], starts))
+    if m[-1]:
+        ends = np.concatenate((ends, [m.size - 1]))
+    return list(zip(starts.tolist(), ends.tolist()))
+
+
+def _spread(lines: np.ndarray, ref: np.ndarray) -> np.ndarray:
+    """|lines - ref| 를 uint8 그대로 계산한다.
+
+    int16 으로 올려서 빼면 배열을 통째로 한 벌 더 만든다. 원본 크기에서
+    이 업캐스트 하나가 분할기 시간의 큰 몫을 차지했다.
+    """
+    return np.maximum(lines, ref) - np.minimum(lines, ref)
 
 
 def line_flags(sub: np.ndarray, bg, axis: int, cfg: CutConfig):
@@ -108,20 +121,73 @@ def line_flags(sub: np.ndarray, bg, axis: int, cfg: CutConfig):
 
     axis=ROW 면 줄은 가로줄(행), axis=COL 이면 세로줄(열)이다.
     """
-    lines = (sub if axis == ROW else sub.transpose(1, 0, 2)).astype(np.int16)  # (n, k, 3)
+    lines = sub if axis == ROW else sub.transpose(1, 0, 2)  # (n, k, 3) uint8
+    n, k, _ = lines.shape
     keep = 1.0 - cfg.outlier_frac
+    tol = cfg.tol
 
-    is_bg = bg_mask(lines, bg, cfg.tol).mean(axis=1) >= keep
+    # 줄 대부분은 콘텐츠라 배경도 괘선도 아니다. 그런 줄까지 전 픽셀을 훑는 것은
+    # 낭비이므로, 고르게 뽑은 표본으로 먼저 걸러내고 살아남은 줄만 제대로 센다.
+    # 표본 기준을 실제 기준(99%)보다 느슨한 90% 로 두어야 통과할 줄을 놓치지 않는다.
+    sidx = np.linspace(0, k - 1, min(k, 64)).astype(np.intp)
+    samp = lines[:, sidx]
 
-    med = np.median(lines, axis=1)  # 줄마다 대표색
-    same = (np.abs(lines - med[:, None, :]) <= cfg.tol).all(axis=-1)
-    uniform = (same.mean(axis=1) >= keep) & ~is_bg
+    def _confirm(cand: np.ndarray, ref) -> np.ndarray:
+        """표본을 통과한 줄만 전체 픽셀로 확인한다."""
+        out = np.zeros(n, dtype=bool)
+        idxs = np.flatnonzero(cand)
+        if idxs.size:
+            r = ref if ref.ndim == 1 else ref[idxs][:, None, :]
+            out[idxs] = (_spread(lines[idxs], r) <= tol).all(axis=2).mean(axis=1) >= keep
+        return out
 
-    rule = np.zeros(len(is_bg), dtype=bool)
+    bg_arr = np.asarray(bg, dtype=lines.dtype)
+    is_bg = _confirm((_spread(samp, bg_arr) <= tol).all(axis=2).mean(axis=1) >= 0.9, bg_arr)
+
+    # 줄의 대표색. 전체 중앙값(partition)은 O(k log k) 라 비싸고, 여기서 필요한 것은
+    # "이 줄이 단색인가"뿐이므로 표본의 중앙값으로 충분하다.
+    ref = np.median(samp, axis=1).astype(lines.dtype)  # (n, 3)
+    near = (_spread(samp, ref[:, None, :]) <= tol).all(axis=2).mean(axis=1) >= 0.9
+    uniform = _confirm(near & ~is_bg, ref) & ~is_bg
+
+    rule = np.zeros(n, dtype=bool)
     for s, e in runs_of(uniform):
         if e - s + 1 <= cfg.max_rule:  # 얇은 단색 = 괘선, 두꺼우면 콘텐츠
             rule[s : e + 1] = True
     return is_bg | rule, rule
+
+
+class Scan:
+    """한 번의 분할 동안 줄 판정 결과를 기억한다.
+
+    밴드를 자르고 여백을 벗기고 다시 자르는 과정에서 **같은 사각형을 같은 방향으로**
+    몇 번씩 다시 훑게 된다. 텐가 원본에서 462번 중 대부분이 그런 재계산이었다.
+    사각형과 방향만 같으면 답도 같으므로 그냥 기억해 두면 된다.
+    """
+
+    __slots__ = ("arr", "bg", "cfg", "_memo")
+
+    def __init__(self, arr: np.ndarray, bg, cfg: CutConfig):
+        self.arr = arr
+        self.bg = tuple(int(v) for v in bg)
+        self.cfg = cfg
+        self._memo: dict = {}
+
+    def axis_flags(self, rect: Rect, axis: int):
+        """축 하나만 필요할 때 다른 축까지 훑지 않는다."""
+        key = (rect.as_tuple(), axis)
+        hit = self._memo.get(key)
+        if hit is None:
+            hit = line_flags(rect.crop(self.arr), self.bg, axis, self.cfg)
+            self._memo[key] = hit
+        return hit
+
+    def flags(self, rect: Rect):
+        return self.axis_flags(rect, ROW), self.axis_flags(rect, COL)
+
+
+def _as_scan(scan, arr, bg, cfg) -> Scan:
+    return scan if scan is not None else Scan(arr, bg, cfg)
 
 
 def absorb_small(parts: list[tuple[int, int]], min_size: int) -> list[tuple[int, int]]:
@@ -150,28 +216,32 @@ def absorb_small(parts: list[tuple[int, int]], min_size: int) -> list[tuple[int,
     return [tuple(p) for p in out]
 
 
-def trim(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> Rect | None:
-    """사각형 가장자리의 배경·괘선을 벗긴다. 통째로 배경이면 None."""
-    changed = True
-    while changed:
-        changed = False
-        for axis in (ROW, COL):
-            sep, _ = line_flags(rect.crop(arr), bg, axis, cfg)
-            parts = runs_of(~sep)
-            if not parts:
-                return None
-            s, e = parts[0][0], parts[-1][1]
-            if s > 0 or e < rect.size_along(axis) - 1:
-                rect = rect.sub(axis, s, e)
-                changed = True
+def trim(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None) -> Rect | None:
+    """사각형 가장자리의 배경·괘선을 벗긴다. 통째로 배경이면 None.
+
+    두 축을 한 번에 재서 적용한다. 한 축씩 벗기고 다시 훑으면 줄어드는 사각형마다
+    전체를 다시 계산하게 되는데, 그게 분할기 시간의 3분의 2였다.
+    """
+    scan = _as_scan(scan, arr, bg, cfg)
+    for _ in range(4):  # 보통 한두 바퀴에 멈춘다
+        (row_sep, _r), (col_sep, _c) = scan.flags(rect)
+        rows, cols = runs_of(~row_sep), runs_of(~col_sep)
+        if not rows or not cols:
+            return None
+        y0, y1 = rows[0][0], rows[-1][1]
+        x0, x1 = cols[0][0], cols[-1][1]
+        nxt = Rect(rect.x0 + x0, rect.y0 + y0, rect.x0 + x1, rect.y0 + y1)
+        if nxt == rect:
+            break
+        rect = nxt
     return rect
 
 
 def split_axis(
-    arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, axis: int
+    arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, axis: int, scan: Scan | None = None
 ) -> tuple[list[Rect], list[int]]:
     """rect 를 axis 방향 구분자에서 자른다."""
-    sep, _ = line_flags(rect.crop(arr), bg, axis, cfg)
+    sep, _ = _as_scan(scan, arr, bg, cfg).axis_flags(rect, axis)
     parts = runs_of(~sep)
     if not parts:
         return [], []
@@ -182,7 +252,9 @@ def split_axis(
     return rects, gaps
 
 
-def gutter_extents(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> list[tuple[int, int]]:
+def gutter_extents(
+    arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None
+) -> list[tuple[int, int]]:
     """세로 여백(고랑)이 **세로로 어디까지 뻗는지** 관측한다.
 
     여기가 결함 2번의 급소다. 텐가의 열 구분선은 y=1323 부터 시작한다. 페이지 전체
@@ -193,7 +265,7 @@ def gutter_extents(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> list[tupl
     돌려주는 것은 열이 갈리는 y 구간들이다.
     """
     sub = rect.crop(arr)
-    _, row_rule = line_flags(sub, bg, ROW, cfg)
+    _, row_rule = _as_scan(scan, arr, bg, cfg).axis_flags(rect, ROW)
 
     # 고랑을 가로지르는 얇은 가로 괘선은 고랑을 끊지 않는다. 이걸 빼먹으면
     # 텐가의 고랑이 표 가로선마다 토막나 한 칸 높이(345px)로만 잡히고,
@@ -237,12 +309,14 @@ def gutter_extents(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> list[tupl
     return extents
 
 
-def bands_from_gutters(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> list[Rect]:
+def bands_from_gutters(
+    arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None
+) -> list[Rect]:
     """고랑의 세로 구간 경계에서 밴드를 나눈다.
 
     고랑이 없거나 사각형 전체를 덮으면 밴드는 하나다.
     """
-    extents = gutter_extents(arr, rect, bg, cfg)
+    extents = gutter_extents(arr, rect, bg, cfg, scan)
     if not extents:
         return [rect]
 
@@ -256,7 +330,7 @@ def bands_from_gutters(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> list[
     return bands or [rect]
 
 
-def rule_rows(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> np.ndarray:
+def rule_rows(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None) -> np.ndarray:
     """구간 **전체 폭**을 가로지르는 얇은 괘선의 행 마스크.
 
     DESIGN.md 3.1 은 라인 검출로 유닛을 판정하지 말라고 한다. 옳다 — 그리고
@@ -267,7 +341,7 @@ def rule_rows(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig) -> np.ndarray:
     가르는 얇은 선이 있는데, 그건 칸 경계가 아니라 그림의 일부다. 페이지를 가로지르는
     표 선만이 칸을 가른다. 칸 폭에서 재면 둘이 구별되지 않는다.
     """
-    _, rule = line_flags(rect.crop(arr), bg, ROW, cfg)
+    _, rule = _as_scan(scan, arr, bg, cfg).axis_flags(rect, ROW)
     return rule
 
 
@@ -291,25 +365,33 @@ def _has_columns(rect: Rect, cfg: CutConfig) -> bool:
     return rect.w <= cfg.max_line_aspect * rect.h
 
 
-def build_columns(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig | None = None, depth: int = 0) -> list[Node]:
+def build_columns(
+    arr: np.ndarray,
+    rect: Rect,
+    bg,
+    cfg: CutConfig | None = None,
+    depth: int = 0,
+    scan: Scan | None = None,
+) -> list[Node]:
     """구간 하나를 칸(column) 목록으로 환원한다.
 
     밴드 → 열 → 밴드. 열이 하나뿐인 밴드는 한 겹 더 들어가 본다
     (텐가 상단 광고컷의 3열 그리드가 그렇게 잡힌다).
     """
     cfg = cfg or CutConfig()
-    rect = trim(arr, rect, bg, cfg)
+    scan = _as_scan(scan, arr, bg, cfg)
+    rect = trim(arr, rect, bg, cfg, scan)
     if rect is None:
         return []
 
     out: list[Node] = []
-    for band in bands_from_gutters(arr, rect, bg, cfg):
-        band = trim(arr, band, bg, cfg)
+    for band in bands_from_gutters(arr, rect, bg, cfg, scan):
+        band = trim(arr, band, bg, cfg, scan)
         if band is None:
             continue
 
         if _has_columns(band, cfg):
-            cols, _ = split_axis(arr, band, bg, cfg, COL)
+            cols, _ = split_axis(arr, band, bg, cfg, COL, scan)
         else:
             cols = [band]
 
@@ -319,20 +401,20 @@ def build_columns(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig | None = None,
             # 다만 **정말 열이 나왔을 때만** 그 분해를 받아들인다. 그러지 않으면
             # 세로로 [이미지][캡션] 이 쌓인 1열 원본이 밴드마다 따로 놀아
             # 짝을 지을 기회 자체가 사라진다.
-            subs, _ = split_axis(arr, band, bg, cfg, ROW)
+            subs, _ = split_axis(arr, band, bg, cfg, ROW, scan)
             if len(subs) > 1:
-                deeper = [c for s in subs for c in build_columns(arr, s, bg, cfg, depth + 1)]
+                deeper = [c for s in subs for c in build_columns(arr, s, bg, cfg, depth + 1, scan)]
                 if any(c.col_total > 1 for c in deeper):
                     out.extend(deeper)
                     continue
 
         total = len(cols)
         for i, col in enumerate(cols):
-            col = trim(arr, col, bg, cfg)
+            col = trim(arr, col, bg, cfg, scan)
             if col is None:
                 continue
-            subs, _ = split_axis(arr, col, bg, cfg, ROW)
-            subs = [t for t in (trim(arr, s, bg, cfg) for s in subs) if t is not None]
+            subs, _ = split_axis(arr, col, bg, cfg, ROW, scan)
+            subs = [t for t in (trim(arr, s, bg, cfg, scan) for s in subs) if t is not None]
             if not subs:
                 subs = [col]
             out.append(

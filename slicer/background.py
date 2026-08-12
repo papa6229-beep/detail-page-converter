@@ -44,8 +44,13 @@ class Section:
 
 
 def bg_mask(sub: np.ndarray, bg, tol: int = DEFAULT_TOL) -> np.ndarray:
-    """sub 의 각 픽셀이 배경색 bg 와 같은지."""
-    diff = np.abs(sub.astype(np.int16) - np.asarray(bg, dtype=np.int16))
+    """sub 의 각 픽셀이 배경색 bg 와 같은지.
+
+    부호 없는 채로 계산한다. int16 으로 올려 빼면 원본 크기의 배열을 한 벌 더
+    만들게 되는데, 이 함수는 분할 한 번에 수백 번 불린다.
+    """
+    ref = np.asarray(bg, dtype=sub.dtype)
+    diff = np.maximum(sub, ref) - np.minimum(sub, ref)
     return (diff <= tol).all(axis=-1)
 
 
