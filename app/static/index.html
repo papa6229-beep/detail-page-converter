@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>상세페이지 변환기</title>
+<style>
+:root{
+  --ground:#FBF9F8;--panel:#FFFFFF;--ink:#16110F;--muted:#78706C;--rule:#E6E0DD;
+  --accent:#D0020F;--ok:#1B7F4B;--warn:#B4690E;--field:#FFFFFF;
+}
+@media (prefers-color-scheme:dark){:root{
+  --ground:#121010;--panel:#1B1817;--ink:#F2EDEB;--muted:#9C938F;--rule:#2E2A28;
+  --accent:#FF4757;--ok:#4ADE80;--warn:#FBBF24;--field:#141212;
+}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ground);color:var(--ink);
+  font-family:"Pretendard",-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",system-ui,sans-serif}
+h1,h2,h3,p{margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 24px 80px}
+.top{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:6px}
+.top h1{font-size:24px;font-weight:800;letter-spacing:-.03em}
+.top span{font-size:13px;color:var(--muted)}
+.label{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--muted)}
+.card{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:22px;margin-top:20px}
+.row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+input[type=text],input[type=url],textarea{
+  background:var(--field);color:var(--ink);border:1px solid var(--rule);border-radius:7px;
+  padding:9px 11px;font:inherit;font-size:14px;width:100%}
+textarea{resize:vertical;line-height:1.6}
+input:focus-visible,textarea:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{background:var(--ink);color:var(--ground);border:0;border-radius:7px;padding:10px 18px;
+  font:inherit;font-weight:700;font-size:14px;cursor:pointer}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--rule)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.grow{flex:1;min-width:260px}
+table{width:100%;border-collapse:collapse;font-size:13.5px}
+th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--rule)}
+th{font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:600}
+td.num{text-align:right;font-variant-numeric:tabular-nums}
+tr[data-ok="false"]{opacity:.6}
+.pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;
+  border:1px solid currentColor}
+.pill.ok{color:var(--ok)}.pill.no{color:var(--warn)}
+.units{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px;margin-top:18px}
+.unit{border:1px solid var(--rule);border-radius:9px;padding:14px;background:var(--panel)}
+.unit img.art{width:100%;border-radius:5px;background:#EFEBE9}
+.unit img.crop{width:100%;margin-top:10px;border:1px dashed var(--rule);border-radius:5px;background:#fff}
+.unit .n{font-size:11px;font-weight:700;color:var(--muted);letter-spacing:.1em}
+.unit textarea{margin-top:9px;min-height:74px}
+.unit input.tag{margin-top:7px}
+.msg{margin-top:14px;font-size:13.5px;line-height:1.7;color:var(--muted)}
+.msg.err{color:var(--accent)}
+.hide{display:none}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:720px){.split{grid-template-columns:1fr}}
+.foot{margin-top:26px;font-size:12.5px;color:var(--muted);line-height:1.8}
+code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padding:1px 5px;font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><h1>상세페이지 변환기</h1><span>바나나몰 → 새 디자인 800px</span></div>
+
+  <section class="card">
+    <p class="label">1 · 원본</p>
+    <div class="row" style="margin-top:12px">
+      <input type="file" id="xlsx" accept=".xlsx,.xlsm" class="grow">
+      <button id="btnXlsx">엑셀 읽기</button>
+    </div>
+    <p class="msg">엑셀이 아직 없으면 통이미지 URL 하나만으로도 시험할 수 있습니다.</p>
+    <div class="row" style="margin-top:10px">
+      <input type="url" id="url" class="grow" placeholder="https://cdn-banana.bizhost.kr/banana_img/product_image/man/2439903_detail_20180720.jpg">
+      <button class="ghost" id="btnUrl">URL로 변환</button>
+    </div>
+    <div id="sheetMsg" class="msg"></div>
+  </section>
+
+  <section class="card hide" id="listCard">
+    <p class="label">2 · 상품 고르기</p>
+    <div style="overflow-x:auto;margin-top:12px"><table id="tbl">
+      <thead><tr><th>상품번호</th><th>상품명</th><th class="num">이미지</th><th class="num">캡션</th>
+      <th class="num">옵션</th><th>어댑터</th><th>사전 게이트</th><th></th></tr></thead>
+      <tbody></tbody></table></div>
+  </section>
+
+  <section class="card hide" id="editCard">
+    <p class="label">3 · 텍스트</p>
+    <div id="editHead" class="msg"></div>
+    <div class="split" style="margin-top:12px">
+      <div><p class="label">상품명</p><input type="text" id="pname" style="margin-top:6px"></div>
+      <div><p class="label">브랜드 · 분류</p><input type="text" id="pbrand" style="margin-top:6px"></div>
+    </div>
+    <div style="margin-top:12px"><p class="label">리드 한 줄</p>
+      <input type="text" id="plead" style="margin-top:6px" placeholder="히어로 아래 들어갈 한 문장"></div>
+    <div class="row" style="margin-top:14px">
+      <button id="btnAuto" class="ghost">자동으로 채우기</button>
+      <button id="btnRender">변환하기</button>
+      <span id="autoMsg" class="msg" style="margin:0"></span>
+    </div>
+    <div class="units" id="units"></div>
+  </section>
+
+  <section class="card hide" id="outCard">
+    <p class="label">4 · 결과</p>
+    <div class="row" style="margin-top:12px">
+      <button id="btnOpen">미리보기 열기</button>
+      <button class="ghost" id="btnDl">HTML 내려받기</button>
+      <span id="outMsg" class="msg" style="margin:0"></span>
+    </div>
+  </section>
+
+  <p class="foot">캡션 칸 위의 점선 이미지는 <b>원본에서 잘라낸 그 자리</b>입니다. 보면서 문구를 고치세요.<br>
+  자동 채우기는 <code>ANTHROPIC_API_KEY</code> 가 설정돼 있을 때만 켜집니다.</p>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+let sheetKey = null, job = null;
+
+const post = async (url, body) => {
+  const r = await fetch(url, {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)});
+  if (!r.ok) throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);
+  return r.json();
+};
+
+$('#btnXlsx').onclick = async () => {
+  const f = $('#xlsx').files[0];
+  if (!f) { $('#sheetMsg').textContent = '엑셀 파일을 고르세요.'; return; }
+  $('#sheetMsg').className = 'msg'; $('#sheetMsg').textContent = '읽는 중…';
+  const fd = new FormData(); fd.append('file', f);
+  const r = await fetch('/api/excel', {method:'POST', body:fd});
+  const d = await r.json();
+  if (!r.ok) { $('#sheetMsg').className='msg err'; $('#sheetMsg').textContent = d.detail; return; }
+  sheetKey = d.sheet;
+  const miss = d.missing.length ? ` · 못 찾은 항목: ${d.missing.join(', ')}` : '';
+  $('#sheetMsg').textContent = `${d.rows.length}개 행, 헤더 ${d.headers.length}개${miss}`;
+  const tb = $('#tbl tbody'); tb.innerHTML = '';
+  d.rows.forEach(row => {
+    const tr = document.createElement('tr');
+    tr.dataset.ok = row.ok;
+    tr.innerHTML = `<td>${row.code}</td><td>${row.name}</td><td class="num">${row.images}</td>
+      <td class="num">${row.captions}</td><td class="num">${row.options}</td><td>${row.adapter}</td>
+      <td><span class="pill ${row.ok?'ok':'no'}">${row.ok?'통과':(row.reason||'보류')}</span></td>
+      <td><button class="ghost" data-i="${row.i}">변환</button></td>`;
+    tr.querySelector('button').onclick = () => runConvert({sheet:sheetKey, row:row.i});
+    tb.appendChild(tr);
+  });
+  $('#listCard').classList.remove('hide');
+};
+
+$('#btnUrl').onclick = () => {
+  const u = $('#url').value.trim();
+  if (!u) { $('#sheetMsg').className='msg err'; $('#sheetMsg').textContent='URL을 넣으세요.'; return; }
+  runConvert({url:u});
+};
+
+async function runConvert(req) {
+  $('#sheetMsg').className='msg'; $('#sheetMsg').textContent = '변환 중…';
+  let d;
+  try { d = await post('/api/convert', req); }
+  catch (e) { $('#sheetMsg').className='msg err'; $('#sheetMsg').textContent = e.message; return; }
+  job = d.job;
+  $('#sheetMsg').textContent = '';
+  const ink = d.ink == null ? '' : ` · 잉크 보존 ${(d.ink*100).toFixed(1)}%`;
+  const bad = d.ok ? '' : ` · 보류 사유: ${d.reason_text}`;
+  $('#editHead').textContent = `${d.adapter} · 유닛 ${d.units.length}개 · 광고컷 ${d.ad.length}개${ink}${bad}`;
+  $('#pname').value = d.meta.name || '';
+  $('#pbrand').value = d.meta.brand || d.meta.category || '';
+  const box = $('#units'); box.innerHTML = '';
+  d.units.forEach(u => {
+    const el = document.createElement('div');
+    el.className = 'unit';
+    el.innerHTML = `<p class="n">유닛 ${String(u.i+1).padStart(2,'0')} · ${u.w}×${u.h}</p>
+      <img class="art" src="/asset/${job}/${u.image}" alt="">
+      ${u.caption_crop ? `<img class="crop" src="/asset/${job}/${u.caption_crop}" alt="원본 캡션">` : ''}
+      <input class="tag" type="text" placeholder="옵션 태그 (없으면 비워두세요)" value="${u.option_tag||''}">
+      <textarea placeholder="캡션 문구">${u.caption||''}</textarea>`;
+    box.appendChild(el);
+  });
+  $('#editCard').classList.remove('hide');
+  $('#outCard').classList.add('hide');
+  $('#editCard').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+$('#btnAuto').onclick = async () => {
+  if (!job) return;
+  $('#autoMsg').className='msg'; $('#autoMsg').textContent = '읽는 중…';
+  try {
+    const d = await post('/api/autofill', {job});
+    const areas = [...document.querySelectorAll('#units textarea')];
+    (d.captions||[]).forEach((c,i) => { if (c && areas[i]) areas[i].value = c; });
+    $('#autoMsg').textContent = d.note || '채웠습니다. 확인하고 고치세요.';
+  } catch (e) { $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message; }
+};
+
+$('#btnRender').onclick = async () => {
+  if (!job) return;
+  const captions = [...document.querySelectorAll('#units textarea')].map(t => t.value);
+  const tags = [...document.querySelectorAll('#units input.tag')].map(t => t.value.trim());
+  $('#outMsg').className='msg'; $('#outMsg').textContent = '';
+  try {
+    const d = await post('/api/render', {job, captions, tags,
+      name:$('#pname').value, brand:$('#pbrand').value, lead:$('#plead').value});
+    $('#outCard').classList.remove('hide');
+    $('#outMsg').textContent = `${(d.bytes/1024).toFixed(0)} KB`;
+    $('#btnOpen').onclick = () => window.open(d.url, '_blank');
+    $('#btnDl').onclick = () => window.open('/download/' + job, '_blank');
+    $('#outCard').scrollIntoView({behavior:'smooth'});
+  } catch (e) { $('#outCard').classList.remove('hide'); $('#outMsg').className='msg err'; $('#outMsg').textContent = e.message; }
+};
+
+fetch('/api/autofill/available').then(r=>r.json()).then(d=>{
+  if (!d.available) { $('#btnAuto').disabled = true; $('#btnAuto').title = 'ANTHROPIC_API_KEY 가 없습니다'; }
+});
+</script>
+</body>
+</html>
