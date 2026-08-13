@@ -114,11 +114,22 @@ def test_무엇의_치수인지_적혀_있어야_스펙이다():
     spec = Product(units=[Unit(caption="각부 치수 (무게 : 372g) 전장 146mm 최대폭 73mm")])
     assert render.guess_specs(spec) == [("무게", "372", "g"), ("길이", "146", "mm"), ("폭", "73", "mm")]
 
-    # 그램은 사람 몸을 재는 단위가 아니다. 이름표가 없어도 제품 무게다
-    bare = Product(units=[Unit(caption="200g대 초반의 묵직한 볼륨감을 지녔습니다.")])
-    assert render.guess_specs(bare) == [("무게", "200", "g")]
     # 몸무게는 kg 로 적힌다 — 그건 안 받는다
     assert render.guess_specs(Product(units=[Unit(caption="체중 45kg 신장 158cm")])) == []
+
+
+def test_문장에_적힌_어림수는_스펙이_아니다():
+    """`200g대 초반의 볼륨` 에서 200 을 캐 **무게 200g** 을 실었다.
+
+    같은 옵션의 사진에는 `240g` 이라고 찍혀 있었다. 근사도 아니고 틀린 값이다.
+    잰 값은 그림에 들어가고, 문장은 느낌을 적는 자리다.
+    """
+    말 = Product(units=[Unit(caption="200g대 초반의 묵직한 볼륨감을 지녔습니다.")])
+    assert render.guess_specs(말) == [], "문장에서 수치를 캤다"
+    assert render.guess_specs(Product(units=[Unit(caption="무게 40g대의 가벼움")])) == []
+    assert render.guess_specs(Product(units=[Unit(caption="길이 10cm 쯤 됩니다")])) == []
+    # 이름표가 붙고 어림말이 없으면 그건 잰 값이다
+    assert render.guess_specs(Product(units=[Unit(caption="무게 372g")])) == [("무게", "372", "g")]
 
 
 def test_옵션이_있으면_치수를_싣지_않는다():
@@ -133,9 +144,9 @@ def test_옵션이_있으면_치수를_싣지_않는다():
     p = Product(units=units)
     assert render.guess_specs(p) == [("옵션", "3", "종")], "옵션 수를 유닛 수로 셌다"
 
-    # 옵션이 없으면 지금까지대로 캡션에서 캔다
-    단품 = Product(units=[Unit(caption="200g대 초반의 볼륨.")])
-    assert render.guess_specs(단품) == [("무게", "200", "g")]
+    # 옵션이 없으면 지금까지대로 캡션에 적힌 스펙을 캔다
+    단품 = Product(units=[Unit(caption="전장 146mm 의 본체입니다.")])
+    assert render.guess_specs(단품) == [("길이", "146", "mm")]
 
 
 def test_손으로_적은_요약은_이름표가_없어도_받는다():
