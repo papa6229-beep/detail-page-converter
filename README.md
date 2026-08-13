@@ -68,12 +68,33 @@ brew install python
 
 ### 코드 받기 (처음 한 번만)
 
-1. https://github.com/papa6229-beep/detail-page-converter 접속
-2. 브랜치를 `claude/splitter-defect-fix-sc24x0` 로 바꿉니다
-3. 초록색 `Code` 버튼 → `Download ZIP`
-4. 받은 zip 을 **압축 풀기**. 바탕화면 같은 찾기 쉬운 곳이면 됩니다
+**git 으로 받으세요. zip 을 받으면 고칠 때마다 다시 받아야 합니다.**
+
+1. https://git-scm.com/download/win 에서 Git 설치 (설치 화면은 전부 `다음`)
+2. 새 폴더를 만들고, 그 안에서 **오른쪽 클릭 → `터미널에서 열기`** (또는 `Git Bash Here`)
+3. 아래를 붙여넣고 엔터
+
+```
+git clone https://github.com/papa6229-beep/detail-page-converter.git
+```
+
+처음 한 번만 GitHub 로그인 창이 뜹니다. 그다음부터는 안 물어봅니다.
 
 > 경로에 한글이나 띄어쓰기가 있어도 괜찮습니다.
+
+### 갱신 — 할 일이 없습니다
+
+**`실행.bat` 을 켤 때마다 알아서 최신이 됩니다.** 뭐가 새로 왔는지 화면에 찍힙니다.
+
+```
+  새로 받은 내용:
+    8d6d2eb 캡션을 안 채우면 그림까지 사라지던 것을 고친다
+```
+
+켜지 않고 갱신만 하려면 `업데이트.bat` 을 누르세요.
+자동 갱신이 싫으면 `CONVERTER_NO_UPDATE=1` 을 주면 됩니다.
+
+폴더 안 파일을 직접 고치셨다면 갱신을 건너뜁니다. 고친 것이 날아가지 않게 하려는 겁니다.
 
 ### 실행
 
