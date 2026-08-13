@@ -100,6 +100,21 @@ def test_스펙은_캡션에_적힌_숫자만_쓴다():
     assert render.guess_specs(Product(units=[Unit(caption="숫자 없는 캡션")])) == []
 
 
+def test_무엇의_치수인지_적혀_있어야_스펙이다():
+    """단위만 보고 숫자를 끌어오면 거짓말을 싣는다.
+
+    `가슴이 79cm의 G컵` 의 79을 제품 크기로 실어 **크기 79cm** 가 나왔다.
+    79cm 짜리 오나홀은 없다. 못 싣는 것이 틀리게 싣는 것보다 낫다.
+    """
+    body = Product(units=[Unit(caption="작고 마른 체형인데 가슴이 79cm의 G컵인 갭 모에")])
+    assert render.guess_specs(body) == [], "몸매 치수를 제품 크기로 실었다"
+    assert render.guess_specs(Product(units=[Unit(caption="나이 24살 신장 158cm")])) == []
+
+    # 이름도 우리가 붙이지 않고 원본이 쓴 말에서 가져온다
+    spec = Product(units=[Unit(caption="각부 치수 (무게 : 372g) 전장 146mm 최대폭 73mm")])
+    assert render.guess_specs(spec) == [("무게", "372", "g"), ("길이", "146", "mm"), ("폭", "73", "mm")]
+
+
 def test_리드는_히어로와_본문에_두_번_실리지_않는다():
     head, rest = render.split_lead("첫 문장이다. 나머지 문장이다.")
     assert head == "첫 문장이다." and rest == "나머지 문장이다."

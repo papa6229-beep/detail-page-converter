@@ -519,20 +519,45 @@ def render(product, assets: Path, title: str | None = None) -> str:
     return "\n".join(x for x in parts if x)
 
 
+#: 수치 앞에 붙어 있어야 하는 말 → 스펙 이름. 원본이 **무엇의 치수인지 말해 준 것**만 싣는다.
+SPEC_WORDS = {
+    "무게": "무게", "중량": "무게",
+    "전장": "길이", "전체길이": "길이", "길이": "길이", "높이": "높이",
+    "최대폭": "폭", "폭": "폭", "너비": "폭",
+    "지름": "지름", "직경": "지름", "두께": "두께",
+    "크기": "크기", "사이즈": "크기", "용량": "용량",
+}
+#: 숫자와 그 말 사이에 끼어도 되는 글자 수. `무게는 약 40 g` 정도가 들어간다.
+SPEC_GAP = 8
+SPEC_RE = re.compile(
+    r"(" + "|".join(sorted(SPEC_WORDS, key=len, reverse=True)) + r")"
+    r"[^.。]{0," + str(SPEC_GAP) + r"}?(\d+(?:\.\d+)?)\s*(mm|cm|m|kg|g|ml|l)(?![A-Za-z])"
+)
+
+
 def guess_specs(product) -> list[tuple[str, str, str]]:
     """캡션에 적힌 수치를 스펙으로 끌어올린다 (6.1 ②).
 
     원본에 없던 구조를 추가하는 것이 가장 강한 차별화인데, 없는 값을 지어내면 안 된다.
     그래서 **캡션에 실제로 적힌 숫자만** 쓴다.
+
+    숫자만 보면 안 된다. 단위만 보고 `cm` 를 크기로 삼았더니, 미우라 사쿠라 페이지에서
+    `가슴이 79cm의 G컵` 의 79을 끌어와 **제품 크기가 79cm** 라고 실었다. 79cm 짜리
+    오나홀은 없다. 지어낸 것보다 나쁠 것도 없는 거짓말이다.
+
+    그래서 **원본이 무엇의 치수인지 말해 준 것만** 싣는다. 이름도 우리가 붙이지 않고
+    원본이 쓴 말에서 가져온다 — `전장 146mm` 는 길이고, `가슴이 79cm` 는 우리 쪽
+    어휘에 없으니 스펙이 아니다. 못 싣는 것이 틀리게 싣는 것보다 낫다.
     """
     text = " ".join(u.caption for u in product.units)
     out: list[tuple[str, str, str]] = []
-    # `\b` 를 쓰면 안 된다 — 한글도 단어 문자라 "40 g이라" 에서 경계가 성립하지 않는다.
-    for pat, key, unit in ((r"약?\s*(\d+(?:\.\d+)?)\s*g(?![A-Za-z])", "무게", "g"),
-                           (r"약?\s*(\d+(?:\.\d+)?)\s*cm(?![A-Za-z])", "크기", "cm")):
-        m = re.search(pat, text)
-        if m:
-            out.append((key, m.group(1), unit))
+    seen: set[str] = set()
+    for word, value, unit in SPEC_RE.findall(text):
+        key = SPEC_WORDS[word]
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((key, value, unit))
     if product.option_units:
         out.append(("종류", str(len(product.option_units)), "종"))
     elif product.meta.options:
