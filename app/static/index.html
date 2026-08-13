@@ -197,13 +197,15 @@ $('#btnAuto').onclick = async () => {
 $('#btnRender').onclick = async () => {
   if (!job) return;
   const captions = [...document.querySelectorAll('#units textarea')].map(t => t.value);
+  const empty = captions.filter(c => !c.trim()).length;
   const tags = [...document.querySelectorAll('#units input.tag')].map(t => t.value.trim());
   $('#outMsg').className='msg'; $('#outMsg').textContent = '';
   try {
     const d = await post('/api/render', {job, captions, tags,
       name:$('#pname').value, brand:$('#pbrand').value, lead:$('#plead').value});
     $('#outCard').classList.remove('hide');
-    $('#outMsg').textContent = `${(d.bytes/1024).toFixed(0)} KB`;
+    $('#outMsg').textContent = `${(d.bytes/1024).toFixed(0)} KB`
+      + (empty ? ` · 캡션 ${empty}칸이 비어 있어 그림만 들어갔습니다. 채우면 특징·옵션 섹션이 생깁니다.` : '');
     $('#btnOpen').onclick = () => window.open(d.url, '_blank');
     $('#btnDl').onclick = () => window.open('/download/' + job, '_blank');
     $('#outCard').scrollIntoView({behavior:'smooth'});

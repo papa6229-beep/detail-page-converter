@@ -79,6 +79,15 @@ class Product:
     def feature_units(self) -> list[Unit]:
         return [u for u in self.units if u.has_caption and not u.option_tag]
 
+    @property
+    def body_units(self) -> list[Unit]:
+        """옵션 카드로 안 가는 유닛 전부. 캡션이 없어도 버리지 않는다.
+
+        3.1 — 캡션 없는 이미지는 풀블리드로 크게. 없는 것은 유닛이 아니라 캡션이다.
+        빠뜨리면 사람이 캡션을 안 채웠을 때 그림까지 조용히 사라진다. 실제로 그랬다.
+        """
+        return [u for u in self.units if not u.option_tag]
+
 
 def split_tag(caption: str) -> tuple[str, str]:
     """`[웨이비 2] 상하좌우로…` → ("웨이비 2", "상하좌우로…")

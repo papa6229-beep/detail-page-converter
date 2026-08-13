@@ -115,6 +115,20 @@ def test_없는_섹션은_그리지_않는다(tmp_path: Path):
     assert "class=\"feature" in html
 
 
+def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path):
+    """사람이 캡션 칸을 비워둔 채 변환해도 유닛 12장이 다 나와야 한다.
+
+    캡션 있는 유닛만 그리게 해놨더니 12장이 조용히 사라졌다. 실제로 겪었다.
+    3.1 — 캡션 없는 이미지는 버리는 것이 아니라 풀블리드로 크게 놓는다.
+    """
+    for i in range(12):
+        (tmp_path / f"u{i}.jpg").write_bytes(_tiny_jpeg())
+    (tmp_path / "ad.jpg").write_bytes(_tiny_jpeg())
+    p = Product(units=[Unit(image=f"u{i}.jpg") for i in range(12)], ad=["ad.jpg"])
+    html = render.render(p, tmp_path, title="캡션 없음")
+    assert html.count("<img ") == 13, "캡션이 없다고 그림을 버렸다"
+
+
 def _tiny_jpeg() -> bytes:
     import io
 

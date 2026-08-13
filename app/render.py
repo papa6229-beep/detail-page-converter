@@ -103,6 +103,7 @@ p{margin:0}
 .showcase__shot{margin:24px 0 0;background:var(--plate)}
 .features{padding:56px 40px 72px}
 .features__title{margin:14px 0 36px;font-size:30px;font-weight:800;letter-spacing:-.03em}
+.feature__solo{margin:0 0 24px;background:var(--plate)}
 .feature{display:grid;grid-template-columns:348px 1fr;gap:32px;align-items:center;
  padding:30px 0;border-top:1px solid var(--rule)}
 .feature--flip{grid-template-columns:1fr 348px}
@@ -158,7 +159,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
     m = product.meta
     ad = [assets / a for a in product.ad if (assets / a).exists()]
     options = product.option_units
-    features = product.feature_units
+    body = product.body_units
 
     name = title or m.name or "상세페이지"
     sub = m.brand or m.category
@@ -213,24 +214,32 @@ def render(product, assets: Path, title: str | None = None) -> str:
         parts.append("</section>")
 
     # ⑥ 디테일 — 좌우 교차 (6.2 셋째 레버)
-    rest = features
-    if rest:
+    if body:
         parts.append('<section class="features">')
-        parts.append('<p class="label">Features</p>')
-        parts.append('<h2 class="features__title">특징</h2>')
-        for n, u in enumerate(rest):
+        if any(u.has_caption for u in body):
+            parts.append('<p class="label">Features</p>')
+            parts.append('<h2 class="features__title">특징</h2>')
+        for n, u in enumerate(body):
+            if not u.has_caption:
+                # 캡션이 없으면 그림만 크게. 버리지 않는다.
+                parts.append(
+                    f'<figure class="feature__solo">'
+                    f'<img src="{data_uri(assets / u.image)}" alt="{esc(name)}" loading="lazy">'
+                    f"</figure>"
+                )
+                continue
             flip = " feature--flip" if n % 2 else ""
             # 6.2 다섯째 레버 — 첫 문장을 소제목으로. 단, 문장이 하나뿐이면
             # 승격해 봐야 본문이 사라지고 긴 제목만 남는다. 그때는 그냥 본문으로 둔다.
-            head, body = (u.head, u.body) if (u.head and u.body) else ("", u.caption.strip())
+            head, text = (u.head, u.body) if (u.head and u.body) else ("", u.caption.strip())
             parts.append(f'<article class="feature{flip}">')
             parts.append(f'<figure class="feature__fig"><img src="{data_uri(assets / u.image)}" alt="{esc(head or u.caption[:40])}" loading="lazy"></figure>')
             parts.append('<div class="feature__text">')
             if head:
                 parts.append(f'<h3 class="feature__head">{esc(head)}</h3>')
-            if body:
+            if text:
                 cls = "feature__body" if head else "feature__body feature__body--solo"
-                parts.append(f'<p class="{cls}">{esc(body)}</p>')
+                parts.append(f'<p class="{cls}">{esc(text)}</p>')
             parts.append("</div></article>")
         parts.append("</section>")
 
