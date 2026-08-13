@@ -30,6 +30,10 @@ def esc(s) -> str:
     return html.escape(str(s or ""), quote=True)
 
 
+#: 숫자와 단위 사이의 공백 — 줄이 갈리면 안 되는 자리다.
+NUM_UNIT_RE = re.compile(r"(\d)\s+(mm|cm|kg|g|ml|종|개|가지|타입)(?![A-Za-z가-힣])")
+
+
 def _plain(text: str) -> str:
     """alt 속성에는 별표를 남기지 않는다."""
     return re.sub(r"\*\*(.+?)\*\*", r"\1", str(text or ""))
@@ -46,6 +50,8 @@ def emphasize(text: str) -> str:
     """
     out = esc(text)
     out = re.sub(r"\*\*(.+?)\*\*", r'<b class="em">\1</b>', out)
+    # `약 40 g` 이 `약 40` / `g` 로 갈리면 수치가 두 줄에 나뉜다. 숫자와 단위는 붙인다.
+    out = NUM_UNIT_RE.sub("\\1\u00a0\\2", out)
     return out.replace("\n", "<br>")
 
 
@@ -154,6 +160,12 @@ body{margin:0;background:var(--ground);color:var(--ink);
  "Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
  -webkit-font-smoothing:antialiased;
  word-break:keep-all;overflow-wrap:break-word}
+/* 줄맞춤은 브라우저가 한다. 모델에게 시킬 일이 아니다 — 모델은 최종 폭도 글꼴도
+   모른다. 우리가 할 일은 **의미 단위가 쪼개지지 않게 막는 것**뿐이다.
+     keep-all   어절 안에서 안 끊는다 (한글 기본값은 아무 데서나 끊는다)
+     balance    제목은 줄 길이를 고르게 — 두 줄이 5:1 로 갈리는 것을 막는다
+     pretty     본문은 마지막 줄에 한 어절만 남기지 않는다 */
+p,li,figcaption{text-wrap:pretty}
 img{display:block;width:100%;height:auto}
 p{margin:0}
 .page{width:800px;max-width:100%;margin:0 auto}
