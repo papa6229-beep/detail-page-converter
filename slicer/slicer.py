@@ -59,16 +59,16 @@ def _bands(node: Node) -> tuple[list[Rect], list[int]]:
 
 
 def _split_at_rules(bands: list[Rect], gaps: list[int], hard: list[bool]):
-    """괘선이 낀 간격에서 밴드 목록을 끊어 (밴드들, 간격들) 묶음으로 내놓는다."""
-    cur_b, cur_g = [bands[0]], []
+    """괘선이 낀 간격에서 밴드를 끊어 (밴드들, 간격들, 앞이_괘선인가) 로 내놓는다."""
+    cur_b, cur_g, started = [bands[0]], [], False
     for band, gap, is_rule in zip(bands[1:], gaps, hard):
         if is_rule:
-            yield cur_b, cur_g
-            cur_b, cur_g = [band], []
+            yield cur_b, cur_g, started
+            cur_b, cur_g, started = [band], [], True
         else:
             cur_b.append(band)
             cur_g.append(gap)
-    yield cur_b, cur_g
+    yield cur_b, cur_g, started
 
 
 def image_floor(bands: list[Rect]) -> int:
@@ -81,27 +81,35 @@ def image_floor(bands: list[Rect]) -> int:
     return gs.threshold if gs.separated else 0
 
 
-def _merge_imageless(groups: list[list[Rect]], floor: int) -> list[list[Rect]]:
+def _merge_imageless(groups: list[list[Rect]], floor: int, crossed: list[bool] | None = None) -> list[list[Rect]]:
     """이미지가 없는 묶음은 유닛이 아니다. 이웃에 되돌린다.
 
     불변식 ⑤(캡션 수 ≤ 이미지 수)를 묶는 단계에서 바로 지키는 것이다.
-    텐가 오른쪽 4번째 칸은 사진이 위에서 끝나 이미지↔캡션 간격이 31px 로 벌어지는데,
-    간격만 보면 캡션 두 줄이 제 이미지에서 떨어져 나가 홀로 유닛이 된다.
-    "이미지가 없는 유닛은 없다"는 것만 알면 저절로 제자리로 돌아간다.
+
+    **경계란 유닛과 유닛을 가르는 것이다.** 한쪽에 이미지가 없으면 그건 경계가 아니다.
+    이 한 문장이 표 선과 액자를 갈라 준다 — 표 선은 이미지 있는 칸 둘 사이에 있고,
+    액자 아랫변은 이미지와 그 캡션 사이에 끼어 있다. 선을 보고 판정하지 않아도 된다.
+
+    crossed[i] 는 groups[i-1] 과 groups[i] 사이가 괘선이었는지다. 되돌릴 곳을 고를 때
+    **괘선을 넘지 않는 쪽을 먼저** 본다. 그래야 텐가 4번째 칸(유닛 안 간격 31px 이
+    칸 사이 간격 24px 보다 넓다)에서 캡션이 옆 칸으로 넘어가지 않는다.
     """
+    crossed = list(crossed) if crossed is not None else [False] * (len(groups) - 1)
     while len(groups) > 1:
         for i, g in enumerate(groups):
             if any(r.h > floor for r in g):
                 continue
-            if i == 0:
-                j = 1
-            elif i == len(groups) - 1:
-                j = i - 1
-            else:
-                prev_gap = g[0].y0 - groups[i - 1][-1].y1
-                next_gap = groups[i + 1][0].y0 - g[-1].y1
-                j = i - 1 if prev_gap <= next_gap else i + 1
+            options = []
+            if i > 0:
+                options.append((crossed[i - 1], g[0].y0 - groups[i - 1][-1].y1, i - 1))
+            if i + 1 < len(groups):
+                options.append((crossed[i], groups[i + 1][0].y0 - g[-1].y1, i + 1))
+            if not options:
+                break
+            options.sort()  # 괘선을 안 넘는 쪽 먼저, 그다음 가까운 쪽
+            j = options[0][2]
             groups[j] = sorted(groups[j] + g, key=lambda r: (r.y0, r.x0))
+            crossed.pop(i - 1 if j == i - 1 else i)
             groups.pop(i)
             break
         else:
@@ -185,26 +193,34 @@ def slice_image(
                 for a, b in zip(bands, bands[1:]):
                     gaps.append(b.y0 - a.y1 - 1)
 
-            # 표 선이 낀 자리는 칸 경계다. 그 안에서만 간격 이중구조를 본다.
+            # 표 선이 낀 자리에서 먼저 끊고, 그 안에서 간격 이중구조를 본다.
+            # 다만 괘선을 **최종 경계로 확정하지는 않는다** — 액자 아랫변처럼
+            # 이미지와 그 캡션 사이에 낀 선도 있기 때문이다. 마지막에 한 번 더 본다.
             floor = image_floor(bands)
-            for cell_bands, cell_gaps in _split_at_rules(
+            groups: list[list[Rect]] = []
+            crossed: list[bool] = []
+            for cell_bands, cell_gaps, at_rule in _split_at_rules(
                 bands, gaps, rule_gaps(rules, content.y0, bands)
             ):
-                groups, gs = group_by_gaps(cell_bands, cell_gaps, min_ratio=min_gap_ratio)
+                subs, gs = group_by_gaps(cell_bands, cell_gaps, min_ratio=min_gap_ratio)
                 gap_stats.append(gs)
+                for j, sub in enumerate(subs):
+                    if groups:
+                        crossed.append(at_rule if j == 0 else False)
+                    groups.append(sub)
 
-                for group in _merge_imageless(groups, floor):
-                    image, captions = _classify(group)
-                    units.append(
-                        Unit(
-                            rect=union_all(group),
-                            parts=list(group),
-                            image=image,
-                            captions=captions,
-                            section=si,
-                            column=cell.col_index,
-                        )
+            for group in _merge_imageless(groups, floor, crossed):
+                image, captions = _classify(group)
+                units.append(
+                    Unit(
+                        rect=union_all(group),
+                        parts=list(group),
+                        image=image,
+                        captions=captions,
+                        section=si,
+                        column=cell.col_index,
                     )
+                )
 
     return SliceResult(
         sections=sections,
