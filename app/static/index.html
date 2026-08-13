@@ -217,10 +217,7 @@ async function autofill() {
     (d.captions||[]).forEach((c,i) => { if (c && areas[i]) { areas[i].value = c; n++; } });
     // 되돌린 칸 수는 감추지 않는다. 그 숫자가 프롬프트의 성적표다.
     const kept = d.kept ? ` 그중 ${d.kept}칸은 원본에서 벗어나 원본을 그대로 뒀습니다.` : '';
-    // 그림에서 읽은 치수. 사람이 안 고치면 그대로 실린다 — 그래서 보이는 자리에 넣는다.
-    let spec = '';
-    if (d.spec && !$('#pspec').value.trim()) { $('#pspec').value = d.spec; spec = ` 사진에서 치수 「${d.spec}」 를 읽었습니다.`; }
-    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다.${kept}${spec} 원본과 대조해 보시고 고치세요. **별표** 는 강조 표시입니다.`;
+    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다.${kept} 원본과 대조해 보시고 고치세요. **별표** 는 강조 표시입니다.`;
   } catch (e) {
     $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message;
   } finally {

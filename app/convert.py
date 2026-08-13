@@ -343,33 +343,3 @@ def convert_url(url: str, workdir: Path, cache: Path, meta: Meta | None = None) 
     product.units, product.ad, ink, gaps = from_whole_image(url, im, out)
     apply_tags(product.units, product.meta.options)
     return Work(product=product, verdict=gate.post_check(product, ink, gaps), ink_coverage=ink)
-
-
-#: 붙임장 한 칸의 변 길이. 320 이면 500px 원본의 큼직한 빨간 치수 글씨가 살아남는다.
-SHEET_CELL = 320
-SHEET_COLS = 3
-SHEET_MAX = 12
-
-
-def contact_sheet(paths: list[Path], cell: int = SHEET_CELL, cols: int = SHEET_COLS) -> bytes:
-    """상품 사진들을 한 장에 모아 붙인다.
-
-    치수가 그림 픽셀로만 있는 원본이 흔하다. 그걸 읽으려면 사진을 모델에 보내야 하는데,
-    여섯 장을 따로 보내면 여섯 장 값을 문다. **한 장으로 붙이면 넓이만큼만** 문다 —
-    320px 칸으로 줄이니 여섯 장이 두 장 값도 안 된다. 올려보내는 덩어리도 하나다.
-
-    번호는 굳이 안 적는다. 어느 칸에서 읽었는지는 우리가 쓸 데가 없다.
-    """
-    paths = paths[:SHEET_MAX]
-    rows = (len(paths) + cols - 1) // cols
-    sheet = Image.new("RGB", (cols * cell, max(rows, 1) * cell), "white")
-    for i, p in enumerate(paths):
-        with Image.open(p) as im:
-            im = im.convert("RGB")
-            im.thumbnail((cell, cell), Image.LANCZOS)
-            x = (i % cols) * cell + (cell - im.width) // 2
-            y = (i // cols) * cell + (cell - im.height) // 2
-            sheet.paste(im, (x, y))
-    buf = io.BytesIO()
-    sheet.save(buf, "JPEG", quality=80)
-    return buf.getvalue()

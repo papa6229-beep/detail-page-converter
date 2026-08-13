@@ -1,10 +1,9 @@
 """변환기 앱 — 엑셀 파싱 · 본문 세정 · 렌더."""
 
-import io
 from pathlib import Path
 
 from app import excel, gate, render, source
-from app.product import Meta, Product, Unit, apply_tags, split_tag
+from app.product import Product, Unit, apply_tags, split_tag
 
 
 def _xlsx(rows, headers) -> bytes:
@@ -129,35 +128,6 @@ def test_손으로_적은_요약은_이름표가_없어도_받는다():
     assert render.parse_specs("") == []
     assert render.parse_specs("상세페이지 참조") == []  # 숫자가 없으면 스펙 칸이 아니다
     assert len(render.parse_specs("1g·2g·3g·4g·5g")) == 4  # 다섯 칸은 한 줄에 안 들어간다
-
-
-def test_사진_여섯_장을_한_장에_붙여_보낸다(tmp_path: Path):
-    """따로 보내면 여섯 장 값을 문다. 붙이면 넓이만큼만 문다."""
-    from PIL import Image
-
-    from app.convert import contact_sheet
-
-    paths = []
-    for i in range(7):
-        p = tmp_path / f"{i}.png"
-        Image.new("RGB", (500, 500), (200, 180, 170)).save(p)
-        paths.append(p)
-    data = contact_sheet(paths)
-    with Image.open(io.BytesIO(data)) as im:
-        assert im.size == (960, 960)  # 3열 × 3행, 칸 320
-    assert len(data) < 120_000  # 원본 일곱 장보다 작아야 보내는 뜻이 있다
-
-
-def test_치수가_이미_글자로_있으면_사진을_올리지_않는다():
-    """옵션 개수는 치수가 아니다. 그것만 있다고 붙임장을 건너뛰면 안 된다."""
-    from app.server import _has_measure
-
-    말한다 = Product(units=[Unit(caption="전장 146mm 의 본체입니다.")])
-    assert _has_measure(말한다)
-
-    개수뿐 = Product(meta=Meta(options=["A", "B"]), units=[Unit(caption="부드럽습니다.")])
-    assert render.guess_specs(개수뿐)  # 종류 2종은 잡히지만
-    assert not _has_measure(개수뿐)  # 치수는 아니다
 
 
 def test_리드는_히어로와_본문에_두_번_실리지_않는다():
