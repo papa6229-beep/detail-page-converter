@@ -121,6 +121,15 @@ def test_무엇의_치수인지_적혀_있어야_스펙이다():
     assert render.guess_specs(Product(units=[Unit(caption="체중 45kg 신장 158cm")])) == []
 
 
+def test_손으로_적은_요약은_이름표가_없어도_받는다():
+    """치수가 그림 픽셀로만 있는 원본이 흔하다. 사람은 그 화면을 이미 보고 있다."""
+    assert render.parse_specs("233g · 12.5cm") == [("무게", "233", "g"), ("길이", "12.5", "cm")]
+    assert render.parse_specs("무게 233g, 전장 12.5cm") == [("무게", "233", "g"), ("전장", "12.5", "cm")]
+    assert render.parse_specs("") == []
+    assert render.parse_specs("상세페이지 참조") == []  # 숫자가 없으면 스펙 칸이 아니다
+    assert len(render.parse_specs("1g·2g·3g·4g·5g")) == 4  # 다섯 칸은 한 줄에 안 들어간다
+
+
 def test_리드는_히어로와_본문에_두_번_실리지_않는다():
     head, rest = render.split_lead("첫 문장이다. 나머지 문장이다.")
     assert head == "첫 문장이다." and rest == "나머지 문장이다."

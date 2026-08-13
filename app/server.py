@@ -148,6 +148,8 @@ class RenderReq(BaseModel):
     name: str | None = None
     brand: str | None = None
     lead: str | None = None
+    #: 손으로 적은 요약. 비워 두면 캡션에서 찾은 것만 쓴다.
+    specs: str | None = None
 
 
 @app.post("/api/render")
@@ -169,7 +171,9 @@ def api_render(req: RenderReq):
         p.meta.brand = req.brand
     if req.lead is not None:
         p.lead = req.lead
-    p.meta.specs = render.guess_specs(p)
+    # 사람이 적었으면 그것이 맞다. 그림 속 치수는 우리가 못 읽는다.
+    typed = render.parse_specs(req.specs or "")
+    p.meta.specs = typed or render.guess_specs(p)
 
     html = render.render(p, job.dir)
     (job.dir / "detail.html").write_text(html, encoding="utf-8")

@@ -347,8 +347,9 @@ def _squeeze(name: str, blocks):
 def _spec_row(specs) -> str:
     if not specs:
         return ""
+    # 이름표가 없어도 칸은 그린다. 이름 없는 칸만 빼면 값의 높이가 어긋난다.
     cells = "".join(
-        f'<div class="spec"><p class="spec__k">{esc(k)}</p>'
+        f'<div class="spec"><p class="spec__k">{esc(k) or "&nbsp;"}</p>'
         f'<p class="spec__v">{esc(v)}<span class="spec__u">{esc(u)}</span></p></div>'
         for k, v, u in specs
     )
@@ -552,6 +553,39 @@ SPEC_RE = re.compile(
 #: 적힌다. 그래서 그램은 이름표 없이 나와도 제품 무게다 — `200g대 초반의 묵직한
 #: 볼륨감` 이 그렇다. 길이 단위는 반대로 몸 치수일 수 있으므로 이름표를 요구한다.
 BARE_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*g(?![A-Za-z])")
+
+
+#: 사람이 손으로 적어 넣은 요약. `233g · 12.5cm` · `무게 233g, 전장 12.5cm` 둘 다 받는다.
+TYPED_SPLIT = re.compile(r"\s*[·,/|]\s*|\s{2,}")
+TYPED_ITEM = re.compile(
+    r"^(?:([^\d]{1,10}?)[\s:=]*)?"           # 이름표 — 없어도 된다
+    r"(\d+(?:\.\d+)?(?:\s*[~-]\s*\d+(?:\.\d+)?)?)"  # 값 (12.5, 12~13)
+    r"\s*([A-Za-z]{1,3}|[가-힣]{1,2})?$"       # 단위
+)
+#: 이름표를 안 적었을 때만 단위에서 가져온다. 사람이 직접 적은 값이므로
+#: 틀린 이름이 붙어도 그 자리에서 보고 고칠 수 있다. OCR 로 몰래 붙이는 것과 다르다.
+UNIT_NAME = {"g": "무게", "kg": "무게", "mm": "길이", "cm": "길이", "m": "길이",
+             "ml": "용량", "l": "용량", "개": "수량", "종": "종류"}
+
+
+def parse_specs(text: str) -> list[tuple[str, str, str]]:
+    """사람이 적어 넣은 요약 정보를 스펙 칸으로 나눈다.
+
+    치수가 그림 속 픽셀로만 있는 원본이 흔하다 (미우라의 `233g` `12.5cm`).
+    그림을 모델에게 읽히면 상품마다 사진 여섯 장을 더 올려야 하고, 무엇보다
+    **무엇의 치수인지는 원본도 안 적어 놨으므로** 이름표는 여전히 우리가 지어내야 한다.
+    사람은 그 화면을 이미 보고 있다. 여덟 글자 치는 편이 빠르고 정확하다.
+    """
+    out: list[tuple[str, str, str]] = []
+    for chunk in TYPED_SPLIT.split(text or ""):
+        m = TYPED_ITEM.match(chunk.strip())
+        if not m:
+            continue
+        name, value, unit = (m.group(1) or "").strip(), m.group(2), (m.group(3) or "")
+        out.append((name or UNIT_NAME.get(unit.lower(), ""), value.replace(" ", ""), unit))
+        if len(out) == 4:  # 다섯 칸부터는 한 줄에 안 들어간다
+            break
+    return out
 
 
 def guess_specs(product) -> list[tuple[str, str, str]]:

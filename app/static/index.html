@@ -97,8 +97,12 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       <div><p class="label">상품명</p><input type="text" id="pname" style="margin-top:6px"></div>
       <div><p class="label">브랜드 · 분류</p><input type="text" id="pbrand" style="margin-top:6px"></div>
     </div>
-    <div style="margin-top:12px"><p class="label">리드 한 줄</p>
-      <input type="text" id="plead" style="margin-top:6px" placeholder="히어로 아래 들어갈 한 문장"></div>
+    <div class="split" style="margin-top:12px">
+      <div><p class="label">리드 한 줄</p>
+        <input type="text" id="plead" style="margin-top:6px" placeholder="히어로 아래 들어갈 한 문장"></div>
+      <div><p class="label">요약 정보 (스펙)</p>
+        <input type="text" id="pspec" style="margin-top:6px" placeholder="예: 233g · 12.5cm — 비워두면 문구에서 찾은 것만"></div>
+    </div>
     <div class="row" style="margin-top:14px">
       <button id="btnAuto" class="ghost">자동으로 채우기</button>
       <button id="btnRender">변환하기</button>
@@ -231,7 +235,8 @@ $('#btnRender').onclick = async () => {
   $('#outMsg').className='msg'; $('#outMsg').textContent = '';
   try {
     const d = await post('/api/render', {job, captions, tags,
-      name:$('#pname').value, brand:$('#pbrand').value, lead:$('#plead').value});
+      name:$('#pname').value, brand:$('#pbrand').value, lead:$('#plead').value,
+      specs:$('#pspec').value});
     $('#outCard').classList.remove('hide');
     $('#outMsg').textContent = `${(d.bytes/1024).toFixed(0)} KB`
       + (empty ? ` · 캡션 ${empty}칸이 비어 있어 그림만 들어갔습니다. 채우면 특징·옵션 섹션이 생깁니다.` : '');
