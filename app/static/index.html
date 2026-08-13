@@ -211,7 +211,9 @@ async function autofill() {
     const areas = [...document.querySelectorAll('#units textarea')];
     let n = 0;
     (d.captions||[]).forEach((c,i) => { if (c && areas[i]) { areas[i].value = c; n++; } });
-    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다. 원본과 대조해 보시고 고치세요. **별표** 는 강조 표시입니다.`;
+    // 되돌린 칸 수는 감추지 않는다. 그 숫자가 프롬프트의 성적표다.
+    const kept = d.kept ? ` 그중 ${d.kept}칸은 원본에서 벗어나 원본을 그대로 뒀습니다.` : '';
+    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다.${kept} 원본과 대조해 보시고 고치세요. **별표** 는 강조 표시입니다.`;
   } catch (e) {
     $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message;
   } finally {
