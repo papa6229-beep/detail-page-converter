@@ -239,6 +239,15 @@ def _parse_captions(text: str) -> list[str] | None:
             if isinstance(value, list):
                 return [str(v) for v in value]
 
+    # 물건 모양 `{"captions": [...]}` 으로 와도 받는다.
+    for attempt in (text[text.find("{") : text.rfind("}") + 1],):
+        try:
+            value = json.loads(attempt)
+        except Exception:
+            break
+        if isinstance(value, dict) and isinstance(value.get("captions"), list):
+            return [str(v) for v in value["captions"]]
+
     # 배열이 아니면 "1. 캡션" 같은 줄 목록이라도 건진다.
     lines = [
         _re.sub(r"^\s*(?:#?\d+[.)]|[-*])\s*", "", ln).strip().strip('"')
@@ -247,6 +256,18 @@ def _parse_captions(text: str) -> list[str] | None:
     ]
     lines = [ln for ln in lines if len(ln) > 4]
     return lines or None
+
+
+_SPEC_FIELD = re.compile(r'"spec"\s*:\s*"([^"]*)"')
+
+
+def _parse_spec(text: str) -> str:
+    """답에서 `spec` 한 칸만 꺼낸다. 캡션 해석과 엮지 않는다.
+
+    스펙은 있으면 좋고 없어도 그만인 값이다. 이것 때문에 캡션 전체가 날아가면 안 된다.
+    """
+    m = _SPEC_FIELD.search(text or "")
+    return m.group(1).strip() if m else ""
 
 
 #: 고쳐 쓰는 일이 아니라 교정하는 일이다.
@@ -271,8 +292,20 @@ PROMPT = """쇼핑몰 상세페이지의 상품 설명이다. #번호 순서대�
    조사는 감싸는 말 **밖에** 둔다 — `**돌기도**` 가 아니라 `**포르치오 돌기**도`
 5. `[웨이비 2]` 같은 대괄호 말머리는 위치와 표기를 그대로 남긴다
 
-JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라.
-예: ["양방향으로 당기면 **쭈욱 늘어났다가** 다시 제자리로 돌아옵니다.", "..."]"""
+JSON 하나만 출력하라. 설명도 코드펜스도 붙이지 마라.
+{"captions": ["양방향으로 당기면 **쭈욱 늘어났다가** 다시 제자리로 돌아옵니다.", "..."]}"""
+
+#: 치수가 그림 픽셀로만 있는 원본이 흔하다. 캡션 글자에서 아무것도 못 찾았을 때만 묻는다.
+SPEC_ASK = """
+마지막 그림은 이 상품의 사진들을 한 장에 모아 붙인 것이다. #번호와는 무관하다.
+거기에 **상품의 치수가 숫자로 찍혀 있으면** `spec` 에 옮겨 적어라.
+
+- 사람의 신체 치수(스리사이즈·B/W/H·컵·신장·체중)는 상품 치수가 아니다. 무시하라
+- 무엇의 치수인지 그림에 함께 적혀 있으면 그 말도 쓴다 — `전장 12.5cm`
+- 안 적혀 있으면 숫자와 단위만 쓴다 — `12.5cm`
+- 여럿이면 ` · ` 로 잇는다. 찍힌 것이 없으면 빈 문자열로 둬라. 지어내지 마라
+
+{"captions": [...], "spec": "233g · 12.5cm"}"""
 
 
 def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000) -> dict:
@@ -345,6 +378,20 @@ def guard(original: str, got: str) -> str:
     return got
 
 
+#: 치수 단위. `종` 개수 같은 것은 치수가 아니다.
+MEASURES = {"mm", "cm", "m", "kg", "g", "ml", "l"}
+
+
+def _has_measure(product) -> bool:
+    return any(u in MEASURES for _, _, u in render.guess_specs(product))
+
+
+def _spec_sheet(job: Job) -> bytes:
+    paths = [job.dir / u.image for u in job.work.product.units if u.image]
+    paths = [p for p in paths if p.exists()]
+    return convert.contact_sheet(paths) if paths else b""
+
+
 class AutofillReq(BaseModel):
     job: str
     #: 화면에서 넣은 키. 없으면 환경변수를 본다.
@@ -382,8 +429,16 @@ def api_autofill(req: AutofillReq):
     if not idx:
         return {"captions": [], "note": "다듬을 문구가 없습니다."}
 
+    # 캡션 글자에 치수가 이미 적혀 있으면 사진을 올려보낼 이유가 없다.
+    # 없을 때만 붙임장 한 장을 얹는다 — 대개 그림 픽셀에만 남아 있는 경우다.
+    sheet = _spec_sheet(job) if not _has_measure(job.work.product) else b""
+    if sheet:
+        parts[0] = ("text", PROMPT + SPEC_ASK)
+        parts.append(("image", base64.b64encode(sheet).decode()))
+
     n_img = sum(1 for kind, _ in parts if kind == "image")
-    print(f"[autofill] {llm.label(key)} · {len(idx)}칸 고치는 중 (그림에서 읽을 것 {n_img}칸)…")
+    print(f"[autofill] {llm.label(key)} · {len(idx)}칸 고치는 중"
+          f" (그림에서 읽을 것 {n_img}칸{' · 치수 붙임장 포함' if sheet else ''})…")
     out = _ask(key, parts)
 
     text, stop = llm.extract(key, out)
@@ -403,9 +458,13 @@ def api_autofill(req: AutofillReq):
         if original and safe == original and _bare(safe) != _bare(str(value)):
             kept += 1
         captions[slot] = safe
+    # 읽어 온 치수도 화면 칸에 그대로 띄운다. 사람이 보고 고칠 수 있어야
+    # 자동으로 읽는 것이 위험하지 않다. 파싱을 통과한 것만 돌려준다.
+    spec = " · ".join(f"{k} {v}{u}".strip() for k, v, u in render.parse_specs(_parse_spec(text))) if sheet else ""
+
     # 0 도 찍는다. 아무 줄도 안 뜨는 것과 "0칸 되돌림" 은 보는 사람에게 다른 말이다.
-    print(f"[autofill] 끝 · 원본에서 벗어나 되돌린 칸 {kept}개")
-    return {"captions": captions, "kept": kept}
+    print(f"[autofill] 끝 · 원본에서 벗어나 되돌린 칸 {kept}개" + (f" · 치수 {spec}" if spec else ""))
+    return {"captions": captions, "kept": kept, "spec": spec}
 
 
 @app.post("/api/reset")
