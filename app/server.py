@@ -379,7 +379,7 @@ def api_autofill(req: AutofillReq):
         return {"captions": [], "note": "다듬을 문구가 없습니다."}
 
     n_img = sum(1 for kind, _ in parts if kind == "image")
-    print(f"[autofill] {llm.label(key)} · {len(idx)}칸 다듬는 중 (그림에서 읽을 것 {n_img}칸)…")
+    print(f"[autofill] {llm.label(key)} · {len(idx)}칸 고치는 중 (그림에서 읽을 것 {n_img}칸)…")
     out = _ask(key, parts)
 
     text, stop = llm.extract(key, out)
@@ -399,8 +399,8 @@ def api_autofill(req: AutofillReq):
         if original and safe == original and _bare(safe) != _bare(str(value)):
             kept += 1
         captions[slot] = safe
-    if kept:
-        print(f"[autofill] {kept}칸은 원본에서 벗어나 원본을 그대로 씁니다.")
+    # 0 도 찍는다. 아무 줄도 안 뜨는 것과 "0칸 되돌림" 은 보는 사람에게 다른 말이다.
+    print(f"[autofill] 끝 · 원본에서 벗어나 되돌린 칸 {kept}개")
     return {"captions": captions, "kept": kept}
 
 
