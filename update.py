@@ -96,10 +96,16 @@ def pull(quiet: bool = False) -> bool:
 
     result = _git("pull", "--ff-only")
     if result.returncode != 0:
-        if not quiet:
-            print("  갱신하지 못했습니다:")
-            print("  " + (result.stderr or result.stdout).strip()[:400])
-        return False
+        # 원격 쪽 역사가 다시 쓰였을 때(force push) 는 이어붙이기가 안 된다.
+        # 이 폴더는 코드를 받아 쓰기만 하고 고친 것이 없으므로(위에서 확인함)
+        # 원격 상태로 맞추면 그만이다.
+        _git("fetch", "--all", "--prune")
+        upstream = _git("rev-parse", "--abbrev-ref", "@{u}").stdout.strip()
+        if not upstream or _git("reset", "--hard", upstream).returncode != 0:
+            if not quiet:
+                print("  갱신하지 못했습니다:")
+                print("  " + (result.stderr or result.stdout).strip()[:400])
+            return False
 
     after = _git("rev-parse", "HEAD").stdout.strip()
     if before == after:
