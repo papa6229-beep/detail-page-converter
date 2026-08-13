@@ -9,8 +9,10 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
+import re
 import shutil
 import uuid
 from dataclasses import asdict, dataclass
@@ -243,22 +245,25 @@ def _parse_captions(text: str) -> list[str] | None:
     return lines or None
 
 
-#: 그림 글자를 읽고, 원본과 같은 문장이 되지 않게 다듬는다.
+#: 고쳐 쓰는 일이 아니라 교정하는 일이다.
 #:
-#: 원본 문구를 토씨 하나 안 틀리고 옮기면 새 쇼핑몰이 원본과 같은 글을 싣게 된다.
-#: 그렇다고 없는 사실을 지어내면 안 된다. 그래서 **뜻과 분량은 그대로 두고
-#: 표현만** 바꾸게 한다.
+#: 원본 문구는 글 잘 쓰는 사람이 쓴 것이 아니지만, 그렇다고 우리가 더 잘 쓰라는
+#: 주문을 받은 것도 아니다. 더 좋게 들리게 손대는 순간 없던 말이 섞이고
+#: (`묵직한`) 수치가 흔들린다. 그래서 **틀린 것만** 고치게 한다. 고칠 것이
+#: 없으면 원본이 그대로 나오는 것이 정답이다.
 PROMPT = """쇼핑몰 상세페이지의 상품 설명이다. #번호 순서대로 주어진다.
 그림으로 온 것은 그 안에 적힌 한국어를 읽고, 글자로 온 것은 그대로 받는다.
 
-각 항목을 이렇게 다듬어라.
+**고쳐 쓰는 일이 아니라 교정하는 일이다.** 원본을 그대로 두는 것이 기본이고,
+아래 다섯 가지만 손댄다.
 
-1. 뜻과 정보는 **하나도 바꾸지 마라.** 없는 사실을 보태지 마라. 수치는 그대로 둔다
-2. 문장 표현만 자연스럽게 손본다. 원본과 토씨까지 같지는 않게 하되,
-   길이는 원본과 비슷하게 유지한다. 요약하거나 늘리지 마라
-3. 원본의 오타와 띄어쓰기는 바로잡는다
+1. 오타·맞춤법·띄어쓰기를 바로잡는다
+2. 어색하게 끊긴 문장을 맺어 준다 (예: "…부드러운 질벽" → "…부드러운 질벽입니다")
+3. 원본에 없는 말은 한 단어도 보태지 마라. 더 좋게 들리게 바꾸지 마라.
+   요약하지도 늘리지도 마라. 수치와 단위는 한 글자도 건드리지 마라.
+   고칠 것이 없으면 **원본을 그대로** 돌려줘라
 4. 그 항목에서 가장 중요한 말 **한 군데**를 `**이렇게**` 별표 두 개로 감싸라.
-   두 군데를 넘기지 마라. 감쌀 만한 것이 없으면 감싸지 않아도 된다
+   감싸는 말은 원본에 있는 그대로여야 한다. 마땅한 말이 없으면 감싸지 않는다
 5. `[웨이비 2]` 같은 대괄호 말머리는 위치와 표기를 그대로 남긴다
 
 JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라.
@@ -291,6 +296,48 @@ def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000) -> dict
         except Exception as e:
             raise HTTPException(502, f"{llm.label(key)} API 에 닿지 못했습니다: {e}") from e
     raise HTTPException(502, "API 호출에 실패했습니다.")
+
+
+#: 원본과 이만큼도 안 닮았으면 교정이 아니라 창작이다.
+SIMILAR_FLOOR = 0.70
+
+_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+_MARK_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+_SPACE_RE = re.compile(r"\s+")
+
+
+def _bare(s: str) -> str:
+    """견주기 위한 모양. 별표와 공백은 뜻이 아니다."""
+    return _SPACE_RE.sub("", s.replace("**", ""))
+
+
+def guard(original: str, got: str) -> str:
+    """모델이 돌려준 문구를 원본에 비추어 받는다.
+
+    교정만 시켰어도 모델은 이따금 말을 보탠다. 보탠 것을 화면에서 잡아내려면
+    사람이 여섯 칸을 다 읽어야 하는데, 그럴 거면 자동으로 채울 이유가 없다.
+    그래서 **받은 뒤에 잰다.** 수치가 달라졌거나 원본에서 너무 멀어졌으면
+    원본을 그대로 쓴다. 이러면 자동 채우기가 원본보다 나빠지는 일은 없다.
+
+    그림에서 읽어 온 칸은 견줄 원본이 우리에게 없다. 그 읽은 값이 곧 원본이다.
+    """
+    got = (got or "").strip()
+    if not got:
+        return original
+    if got.count("**") % 2:  # 짝 안 맞는 별표는 화면에 그대로 샌다
+        got = got.replace("**", "")
+    original = (original or "").strip()
+    if not original:
+        return got
+
+    flat, plain = _bare(original), _bare(got)
+    if sorted(_NUM_RE.findall(plain)) != sorted(_NUM_RE.findall(flat)):
+        return original
+    if difflib.SequenceMatcher(None, flat, plain).ratio() < SIMILAR_FLOOR:
+        return original
+    if any(_bare(m) not in flat for m in _MARK_RE.findall(got)):
+        got = _MARK_RE.sub(r"\1", got)  # 지어낸 말을 강조했다 — 강조만 걷는다
+    return got
 
 
 class AutofillReq(BaseModel):
@@ -342,10 +389,18 @@ def api_autofill(req: AutofillReq):
         hint = " (길이 제한에 걸려 잘렸습니다)" if llm.truncated(key, stop) else ""
         raise HTTPException(502, f"읽은 내용을 해석하지 못했습니다{hint}. 받은 값: {text[:160]!r}")
 
-    captions = [""] * len(job.work.product.units)
+    units = job.work.product.units
+    captions = [""] * len(units)
+    kept = 0
     for slot, value in zip(idx, got):
-        captions[slot] = str(value)
-    return {"captions": captions}
+        original = units[slot].caption.strip()
+        safe = guard(original, str(value))
+        if original and safe == original and _bare(safe) != _bare(str(value)):
+            kept += 1
+        captions[slot] = safe
+    if kept:
+        print(f"[autofill] {kept}칸은 원본에서 벗어나 원본을 그대로 씁니다.")
+    return {"captions": captions, "kept": kept}
 
 
 @app.post("/api/reset")
