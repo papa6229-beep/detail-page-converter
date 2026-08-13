@@ -85,10 +85,12 @@ def pull(quiet: bool = False) -> bool:
             explain_no_git()
         return False
 
-    if _git("status", "--porcelain").stdout.strip():
-        if not quiet:
-            print("  이 폴더에 직접 고친 내용이 있어 갱신을 건너뜁니다.")
-            print("  고친 것을 두고 싶으면 새 폴더에 다시 clone 하세요.")
+    # 추적 중인 파일만 본다. 실행하면서 생기는 .venv · work 같은 폴더까지 세면
+    # 첫 실행 이후로 영영 "고친 것이 있다"가 되어 갱신이 멈춘다. 실제로 그랬다.
+    if _git("status", "--porcelain", "--untracked-files=no").stdout.strip():
+        # quiet 여부와 무관하게 이유는 말한다. 조용히 건너뛰면 원인을 못 찾는다.
+        print("  이 폴더의 코드를 직접 고치셨네요. 덮어쓰지 않으려고 갱신을 건너뜁니다.")
+        print("  고친 것을 되돌리고 최신으로 받으려면:  git checkout . 후 다시 실행")
         return False
 
     before = _git("rev-parse", "HEAD").stdout.strip()
