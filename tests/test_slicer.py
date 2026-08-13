@@ -74,6 +74,55 @@ def test_한_열짜리_원본은_그대로_풀린다():
     assert all(u.has_caption for u in result.units)
 
 
+def test_저자가_그은_가로선에서_유닛이_갈린다():
+    """트리니티 — 간격만으로는 안 갈리는 원본.
+
+    그림→문구 간격이 문구→다음 그림 간격보다 넓은 줄이 하나만 섞여도 간격의
+    이중구조가 무너진다. 실제 원본에서 사진 다섯 장과 그 문구가 유닛 하나로 뭉쳤다.
+    가르는 것은 저자가 그은 선이다.
+    """
+    from .fixtures import ruled_column
+
+    result = slice_image(ruled_column(rows=4))
+    ruled = [u for u in result.units if u.rect.y0 >= 460]  # 맨 위 통짜 이미지는 뺀다
+    assert len(ruled) == 4, [u.rect for u in result.units]
+    assert all(u.has_caption for u in ruled)
+    assert all(len(u.parts) == 2 for u in ruled), "그림과 문구가 한 덩어리로 뭉쳤다"
+
+
+def test_구획선은_본문_단_폭에만_그어져도_보인다():
+    """페이지 전체 폭을 요구하면 트리니티의 선을 하나도 못 본다."""
+    from .fixtures import ruled_column
+
+    img = ruled_column(rows=3)
+    assert img.shape[1] == 650  # 선은 x 60..560 에만 있다
+    assert len([u for u in slice_image(img).units if u.rect.y0 >= 460]) == 3
+
+
+def test_사진의_아랫변은_구획선이_아니다():
+    """구획선은 여백 **속에** 놓인다. 한쪽만 보면 사진 아랫변도 통과한다.
+
+    실제로 텐가 왼쪽 칸의 콜라주가 그 한 줄 때문에 위아래로 쪼개졌다.
+    """
+    from .fixtures import collage_unit
+
+    result = slice_image(collage_unit())
+    assert len(result.units) == 1, [u.rect for u in result.units]
+    assert result.units[0].has_caption
+
+
+def test_그림_안쪽의_균일한_줄은_구분선이_아니다():
+    """살색 사진 안에서 우연히 균일한 2px 세로줄이 잡혀 폭 52px 조각이 떨어져 나갔다.
+
+    저자가 그은 선이라면 옆에 여백이 있다. 그림 속의 줄은 콘텐츠에 딱 붙어 있다.
+    """
+    from .fixtures import ruled_column
+
+    plain = slice_image(ruled_column(rows=3))
+    lined = slice_image(ruled_column(rows=3, gutter=300))
+    assert [u.rect.as_tuple() for u in lined.units] == [u.rect.as_tuple() for u in plain.units]
+
+
 def test_RGB가_아니면_거부한다():
     import numpy as np
 

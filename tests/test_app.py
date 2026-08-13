@@ -129,6 +129,48 @@ def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path
     assert html.count("<img ") == 13, "캡션이 없다고 그림을 버렸다"
 
 
+def test_캡션이_없다고_유닛을_버리지_않는다(tmp_path: Path):
+    """캡션 붙은 유닛만 내보냈더니 트리니티에서 큰 그림들이 통째로 사라졌다.
+
+    3.1 — 없는 것은 유닛이 아니라 캡션이다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    img = np.full((1200, 560, 3), 255, np.uint8)
+    img[40:240, 30:530] = 150            # 광고컷
+    img[300:500, 30:530] = 150           # 그림 + 캡션
+    img[520:530, 30:400] = 110
+    img[600:800, 30:530] = 150           # 캡션 없는 그림
+    img[900:1100, 30:530] = 150          # 캡션 없는 그림
+    units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
+    assert len(units) == 3, f"캡션 없는 그림이 사라졌다: {len(units)}개"
+    assert sum(1 for u in units if u.caption_crop) == 1
+    assert ad, "광고 구간이 사라졌다"
+
+
+def test_그림_옆_글줄은_캡션이고_딱_붙은_글자는_그림이다(tmp_path: Path):
+    """캡션이 그림 오른쪽에 놓이는 원본이 있다(트리니티 중간).
+
+    멀찍이 떨어진 글줄은 캡션으로 떼어내고, 치수 표시처럼 딱 붙은 글자는
+    그림의 일부로 남긴다. 거리는 그 조각의 키로 잰다 — px 를 못박지 않는다.
+    """
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    from .fixtures import photo_with_side_text
+
+    units, _ad, _ink, _gaps = from_whole_image("x", Image.fromarray(photo_with_side_text()), tmp_path)
+    photo = units[-1]
+    assert photo.caption_crop, "옆에 놓인 글줄을 캡션으로 못 봤다"
+    # 사진은 x 150..360, 딱 붙은 치수 글자는 x 120..145, 캡션은 x 450..610
+    assert photo.width >= 360 - 120 + 1, f"딱 붙은 글자가 떨어져 나갔다: 폭 {photo.width}"
+    assert photo.width < 610 - 120, f"캡션까지 그림에 붙어 왔다: 폭 {photo.width}"
+
+
 def test_상품명은_특징_한글명_외국어명_세_줄로_갈린다():
     """원본 상품명은 상세페이지용이 아니라 물류용이다.
 

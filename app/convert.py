@@ -23,7 +23,8 @@ import numpy as np
 from PIL import Image
 
 from slicer import slice_image
-from slicer.geometry import Rect
+from slicer.gaps import split_gaps
+from slicer.geometry import Rect, union_all
 from slicer.layout import ROW, CutConfig, Scan, runs_of, trim
 
 from . import gate, source
@@ -110,6 +111,13 @@ def _ad_blocks(arr: np.ndarray, im: Image.Image, y_end: int, bg, cfg, out: Path)
     return names
 
 
+def _distance(a: Rect, b: Rect) -> int:
+    """두 사각형 사이의 거리. 겹치면 0."""
+    dx = max(a.x0 - b.x1, b.x0 - a.x1, 0)
+    dy = max(a.y0 - b.y1, b.y0 - a.y1, 0)
+    return dx + dy
+
+
 def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], list[str], float, list]:
     """통이미지형 — 분할기로 유닛 배열을 얻는다."""
     arr = np.asarray(im.convert("RGB"))
@@ -159,17 +167,56 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     first = with_cap[0][0].rect.y0 if with_cap else arr.shape[0]
     ad = _ad_blocks(arr, im, first, bg, cfg, out)
 
-    units: list[Unit] = []
-    for i, (u, parts, caps) in enumerate(with_cap):
-        art_y1 = parts[-1].y1
+    # 광고 구간 아래는 **캡션이 있든 없든 전부 유닛이다.**
+    # 예전에는 캡션이 붙은 것만 내보냈다. 텐가는 열두 개가 모두 캡션을 가져서
+    # 티가 안 났지만, 트리니티에서는 1777px 짜리 사진을 비롯해 큰 그림들이
+    # 통째로 사라졌다. 없는 것은 유닛이 아니라 캡션이다 (3.1).
+    main = [t for t in prepared if t[0].rect.y0 >= first]
+    if not main:
+        return [], ad, result.ink_coverage, result.gap_stats
 
-        art = im.crop((u.rect.x0, u.rect.y0, u.rect.x1 + 1, art_y1 + 1))
+    # 페이지 안에서 '그림'이라 부를 크기. 정하는 것이 아니라 세는 것이다 —
+    # 높이 분포가 두 무리로 갈리면 그 사이가 경계고, 안 갈리면 전부 그림이다.
+    scale = split_gaps([t[0].rect.h for t in main])
+    floor = scale.threshold if scale.separated else 0
+    solid = [t for t in main if t[0].rect.h > floor]
+    scraps = [t for t in main if t[0].rect.h <= floor]
+    if not solid:
+        solid, scraps = main, []
+
+    #: 유닛마다 {빨아들일 사각형들, 캡션이 될 사각형들}
+    absorbed: dict[int, list[Rect]] = {i: [] for i in range(len(solid))}
+    extra_caps: dict[int, list[Rect]] = {i: [] for i in range(len(solid))}
+    # 유닛의 '그림'은 가장 넓은 조각이다. 붙일 곳을 고를 때는 유닛 사각형이 아니라
+    # 이 그림과 **같은 줄에 놓였는지**로 본다. 사각형으로 보면 위 구간의 라벨 줄까지
+    # 끌어와 그림 폭이 두 배가 된다 — 텐가 첫 유닛이 그렇게 망가졌다.
+    arts = [max(p, key=lambda r: r.area) for _u, p, _c in solid]
+    for su, _p, _c in scraps:
+        beside = [k for k, a in enumerate(arts) if su.rect.y0 <= a.y1 and a.y0 <= su.rect.y1]
+        if not beside:
+            continue  # 어느 그림과도 줄이 겹치지 않으면 붙일 곳이 없다
+        j = min(beside, key=lambda k: _distance(arts[k], su.rect))
+        art = arts[j]
+        # 그림 옆에 **멀찍이** 떨어져 있으면 그건 캡션이다(트리니티 중간의
+        # `"모에 구멍 트리니티" 정면 사진`). 딱 붙어 있으면 그림의 일부다
+        # (치수선의 `72mm` 처럼). 거리는 그 조각의 키로 잰다 — px 를 못박지 않는다.
+        gap = max(art.x0 - su.rect.x1, su.rect.x0 - art.x1, 0)
+        (extra_caps if gap > su.rect.h else absorbed)[j].append(su.rect)
+
+    units: list[Unit] = []
+    for i, (u, parts, caps) in enumerate(solid):
+        art_box = union_all([Rect(u.rect.x0, u.rect.y0, u.rect.x1, parts[-1].y1)] + absorbed[i])
+        art = im.crop((art_box.x0, art_box.y0, art_box.x1 + 1, art_box.y1 + 1))
         name = _save(art, out, f"unit_{i:02d}.jpg")
 
         crop_name = ""
-        if caps:
-            top, bot = caps[0].y0, caps[-1].y1
-            strip = im.crop((u.rect.x0, top, u.rect.x1 + 1, bot + 1))
+        cap_boxes = list(caps) + extra_caps[i]
+        if cap_boxes:
+            box = union_all(cap_boxes)
+            # 캡션이 유닛 폭 안에 있으면 폭을 그대로 살린다 — 글줄 앞뒤 여백이
+            # 있어야 사람도 모델도 읽기 좋다.
+            x0, x1 = (u.rect.x0, u.rect.x1) if box.x0 >= u.rect.x0 and box.x1 <= u.rect.x1 else (box.x0, box.x1)
+            strip = im.crop((x0, box.y0, x1 + 1, box.y1 + 1))
             strip = strip.resize((strip.width * 3, strip.height * 3), Image.LANCZOS)
             crop_name = f"cap_{i:02d}.png"
             strip.save(out / crop_name)
