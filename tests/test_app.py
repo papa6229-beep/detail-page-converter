@@ -352,6 +352,59 @@ def test_사진_없는_옵션도_개수에_넣는다(tmp_path: Path):
     assert html.count('<article class="variant variant--bare">') == 7
 
 
+def test_키_앞자리로_어디_것인지_가린다():
+    """사람에게 고르게 하지 않는다. 고르게 하면 키와 회사가 어긋난다."""
+    from app import llm
+
+    assert llm.provider_of("sk-ant-api03-xxxx") == llm.ANTHROPIC
+    assert llm.provider_of("sk-proj-xxxx") == llm.OPENAI
+    assert llm.provider_of("sk-xxxx") == llm.OPENAI
+    assert llm.label("sk-ant-x") == "Anthropic" and llm.label("sk-x") == "OpenAI"
+
+
+def test_회사마다_보내는_모양이_다르다():
+    """다른 곳은 넷뿐이다 — 주소 · 인증 헤더 · 그림 싣는 모양 · 답 꺼내는 자리."""
+    import json
+
+    from app import llm
+
+    parts = [("text", "#1"), ("image", "QUJD")]
+
+    url, headers, body = llm.build("sk-ant-key", parts)
+    sent = json.loads(body)
+    assert url.endswith("/v1/messages") and headers["x-api-key"] == "sk-ant-key"
+    assert "anthropic-version" in headers
+    img = sent["messages"][0]["content"][1]
+    assert img["type"] == "image" and img["source"]["data"] == "QUJD"
+    assert sent["max_tokens"] == 8000
+
+    url, headers, body = llm.build("sk-key", parts)
+    sent = json.loads(body)
+    assert url.endswith("/v1/chat/completions")
+    assert headers["authorization"] == "Bearer sk-key"
+    img = sent["messages"][0]["content"][1]
+    assert img["type"] == "image_url"
+    assert img["image_url"]["url"] == "data:image/png;base64,QUJD"
+    # 길이 상한은 이름이 바뀌었다. 거부당하면 옛 이름으로 다시 보낸다
+    assert sent["max_completion_tokens"] == 8000
+    assert json.loads(llm.build("sk-key", parts, legacy_cap=True)[2])["max_tokens"] == 8000
+
+
+def test_회사마다_답_꺼내는_자리가_다르다():
+    from app import llm
+
+    a = {"content": [{"type": "text", "text": '["가", "나"]'}], "stop_reason": "max_tokens"}
+    assert llm.extract("sk-ant-x", a) == ('["가", "나"]', "max_tokens")
+    assert llm.truncated("sk-ant-x", "max_tokens")
+
+    o = {"choices": [{"message": {"content": '["가", "나"]'}, "finish_reason": "length"}]}
+    assert llm.extract("sk-x", o) == ('["가", "나"]', "length")
+    assert llm.truncated("sk-x", "length")
+    # 조각으로 쪼개 오는 경우도 받아낸다
+    o2 = {"choices": [{"message": {"content": [{"type": "text", "text": "가"}, {"text": "나"}]}}]}
+    assert llm.extract("sk-x", o2)[0] == "가나"
+
+
 def test_모델_응답을_여러_모양으로_받아낸다():
     """JSON 배열 하나만 달라고 해도 앞뒤에 말이 붙거나 코드펜스가 씌워져 온다.
 

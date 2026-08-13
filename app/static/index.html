@@ -74,11 +74,11 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       <button class="ghost" id="btnUrl">URL로 변환</button>
     </div>
     <div class="row" style="margin-top:14px">
-      <input type="password" id="apikey" class="grow" placeholder="Anthropic API 키 (sk-ant-…) — 그림에 박힌 글자를 자동으로 읽습니다">
+      <input type="password" id="apikey" class="grow" placeholder="API 키 — Anthropic(sk-ant-…) 또는 OpenAI(sk-…). 그림에 박힌 글자를 자동으로 읽습니다">
       <button class="ghost" id="btnKey">저장</button>
     </div>
     <p class="msg" id="keyMsg">키를 넣으면 <b>변환할 때 캡션이 저절로 채워집니다.</b>
-      이 브라우저에만 저장되고 서버에 남지 않습니다.</p>
+      어디 키인지는 앞자리를 보고 알아서 가립니다. 이 브라우저에만 저장되고 서버에 남지 않습니다.</p>
     <div id="sheetMsg" class="msg"></div>
   </section>
 
@@ -136,7 +136,8 @@ $('#apikey').value = localStorage.getItem(KEY_STORE) || '';
 $('#btnKey').onclick = () => {
   const v = $('#apikey').value.trim();
   if (v) localStorage.setItem(KEY_STORE, v); else localStorage.removeItem(KEY_STORE);
-  $('#keyMsg').textContent = v ? '저장했습니다. 이제 변환하면 캡션이 저절로 채워집니다.' : '지웠습니다.';
+  const who = v.startsWith('sk-ant-') ? 'Anthropic' : 'OpenAI';
+  $('#keyMsg').textContent = v ? who + ' 키로 저장했습니다. 이제 변환하면 캡션이 저절로 채워집니다.' : '지웠습니다.';
 };
 
 $('#btnXlsx').onclick = async () => {
@@ -239,7 +240,7 @@ $('#btnRender').onclick = async () => {
 };
 
 fetch('/api/autofill/available').then(r=>r.json()).then(d=>{
-  if (d.available) $('#keyMsg').textContent = '서버에 키가 설정돼 있습니다. 변환하면 캡션이 저절로 채워집니다.';
+  if (d.available) $('#keyMsg').textContent = '서버에 ' + (d.provider || '') + ' 키가 설정돼 있습니다. 변환하면 캡션이 저절로 채워집니다.';
 });
 </script>
 </body>

@@ -4,7 +4,7 @@
 
 엑셀을 올리거나, 통이미지 URL 하나만 넣어도 돌아간다.
 캡션은 잘라낸 원본 조각을 옆에 띄워 놓고 사람이 입력한다.
-`ANTHROPIC_API_KEY` 가 있으면 그 칸을 자동으로 채운다.
+`ANTHROPIC_API_KEY` 나 `OPENAI_API_KEY` 가 있으면 그 칸을 자동으로 채운다.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import convert, excel, render
+from . import convert, excel, llm, render
 from .product import Meta, apply_tags
 
 ROOT = Path(__file__).resolve().parent
@@ -203,7 +203,8 @@ def asset(jid: str, name: str):
 
 @app.get("/api/autofill/available")
 def autofill_available():
-    return {"available": bool(os.environ.get("ANTHROPIC_API_KEY"))}
+    key = llm.key_from_env()
+    return {"available": bool(key), "provider": llm.label(key) if key else ""}
 
 
 def _parse_captions(text: str) -> list[str] | None:
@@ -264,6 +265,34 @@ JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라.
 예: ["양방향으로 당기면 **쭈욱 늘어났다가** 다시 제자리로 돌아옵니다.", "..."]"""
 
 
+def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000) -> dict:
+    """모델에 한 번 물어본다. 회사 차이는 llm 이 다 흡수한다.
+
+    길이 상한의 이름만 예외다. OpenAI 쪽에서 `max_completion_tokens` 로 바뀌었는데
+    옛 모델은 그 이름을 모르고 새 모델은 옛 이름을 거부한다. 어느 모델을 쓰실지
+    모르니 거부당하면 다른 이름으로 한 번 더 보낸다.
+    """
+    import urllib.error
+    import urllib.request
+
+    for legacy in (False, True):
+        url, headers, body = llm.build(key, parts, max_tokens, legacy_cap=legacy)
+        try:
+            with urllib.request.urlopen(
+                urllib.request.Request(url, data=body, headers=headers), timeout=180
+            ) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:400]
+            retry = not legacy and llm.provider_of(key) == llm.OPENAI and "max_completion_tokens" in detail
+            if retry:
+                continue
+            raise HTTPException(502, f"{llm.label(key)} API 호출 실패 ({e.code}): {detail}") from e
+        except Exception as e:
+            raise HTTPException(502, f"{llm.label(key)} API 에 닿지 못했습니다: {e}") from e
+    raise HTTPException(502, "API 호출에 실패했습니다.")
+
+
 class AutofillReq(BaseModel):
     job: str
     #: 화면에서 넣은 키. 없으면 환경변수를 본다.
@@ -276,7 +305,7 @@ def api_autofill(req: AutofillReq):
 
     호출을 유닛마다 쪼개지 않는다. 한 상품에 한 번이면 5~10초 예산에 들어간다.
     """
-    key = (req.key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
+    key = (req.key or "").strip() or llm.key_from_env()
     if not key:
         raise HTTPException(400, "API 키가 없습니다. 화면 위쪽 키 칸에 넣으세요.")
     job = JOBS.get(req.job)
@@ -284,10 +313,8 @@ def api_autofill(req: AutofillReq):
         raise HTTPException(404, "그 작업을 찾을 수 없다")
 
     import base64
-    import urllib.error
-    import urllib.request
 
-    content: list[dict] = [{"type": "text", "text": PROMPT}]
+    parts: list[tuple[str, str]] = [("text", PROMPT)]
     idx = []
     for i, u in enumerate(job.work.product.units):
         crop = job.dir / u.caption_crop if u.caption_crop else None
@@ -295,47 +322,24 @@ def api_autofill(req: AutofillReq):
         if not has_crop and not u.caption.strip():
             continue
         idx.append(i)
-        content.append({"type": "text", "text": f"#{len(idx)}"})
+        parts.append(("text", f"#{len(idx)}"))
         if has_crop:
-            content.append({
-                "type": "image",
-                "source": {"type": "base64", "media_type": "image/png",
-                           "data": base64.b64encode(crop.read_bytes()).decode()},
-            })
+            parts.append(("image", base64.b64encode(crop.read_bytes()).decode()))
         else:
-            content.append({"type": "text", "text": u.caption.strip()})
+            parts.append(("text", u.caption.strip()))
     if not idx:
         return {"captions": [], "note": "다듬을 문구가 없습니다."}
 
-    body = json.dumps({
-        "model": os.environ.get("CONVERTER_MODEL", "claude-sonnet-5"),
-        # 한국어는 토큰을 많이 먹는다. 넉넉히 주지 않으면 배열이 중간에 잘리고,
-        # 잘린 배열은 파싱에 실패해 "읽지 못했습니다"로만 보인다.
-        "max_tokens": 8000,
-        "messages": [{"role": "user", "content": content}],
-    }).encode()
-    n_img = sum(1 for c in content if c["type"] == "image")
-    print(f"[autofill] {len(idx)}칸 다듬는 중 (그림에서 읽을 것 {n_img}칸)…")
-    r = urllib.request.Request(
-        "https://api.anthropic.com/v1/messages", data=body,
-        headers={"content-type": "application/json", "x-api-key": key,
-                 "anthropic-version": "2023-06-01"})
-    try:
-        with urllib.request.urlopen(r, timeout=180) as resp:
-            out = json.loads(resp.read())
-    except urllib.error.HTTPError as e:
-        detail = e.read().decode("utf-8", "replace")[:400]
-        raise HTTPException(502, f"API 호출 실패 ({e.code}): {detail}") from e
-    except Exception as e:
-        raise HTTPException(502, f"API 에 닿지 못했습니다: {e}") from e
+    n_img = sum(1 for kind, _ in parts if kind == "image")
+    print(f"[autofill] {llm.label(key)} · {len(idx)}칸 다듬는 중 (그림에서 읽을 것 {n_img}칸)…")
+    out = _ask(key, parts)
 
-    text = "".join(b.get("text", "") for b in out.get("content", []) if b.get("type") == "text").strip()
+    text, stop = llm.extract(key, out)
     got = _parse_captions(text)
     if got is None:
         # 무엇이 왔는지 보여준다. 감추면 고칠 수가 없다.
         print("[autofill] 해석 실패. 받은 값:", repr(text[:600]))
-        stop = out.get("stop_reason")
-        hint = " (길이 제한에 걸려 잘렸습니다)" if stop == "max_tokens" else ""
+        hint = " (길이 제한에 걸려 잘렸습니다)" if llm.truncated(key, stop) else ""
         raise HTTPException(502, f"읽은 내용을 해석하지 못했습니다{hint}. 받은 값: {text[:160]!r}")
 
     captions = [""] * len(job.work.product.units)
