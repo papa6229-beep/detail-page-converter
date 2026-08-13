@@ -144,6 +144,50 @@ def test_모델_응답을_여러_모양으로_받아낸다():
     assert parse("   ") is None
 
 
+def test_첫_이미지_위의_타이핑_구간을_뽑는다():
+    """거의 모든 원본이 이미지 앞에 상품명·한마디·설명을 타이핑해 뒀다.
+
+    90% 공통이면 변형이 아니라 구조다. 어댑터가 아니라 파서가 잡아야 한다.
+    """
+    html = """
+    <p>[일본 직수입] 텐가 에그 2018 실키2</p>
+    <p><span style="background-color:yellow">닭이 먼저? 계란이 먼저?</span></p>
+    <p>부드럽고 쫄깃한 소재에 휩싸이는 감촉이 주축이 됩니다.</p>
+    <p>특가 / 이벤트 상품 등의 경우 사은품이 제공되지 않습니다.</p>
+    <div><img src="/banana_img/product_image/man/a.jpg"></div>
+    """
+    body = source.parse(html)
+    texts = [b.text for b in body.lead_blocks]
+    assert texts[0].startswith("[일본 직수입]")
+    assert [b.strong for b in body.lead_blocks] == [False, True, False]
+    # 쇼핑몰 안내문은 상품 설명이 아니다
+    assert not any("사은품" in t for t in texts)
+
+
+def test_첫_이미지가_본문_전체를_캡션으로_삼키지_않는다():
+    """예전엔 '첫 이미지가 아닐 때'만 걸러서, 첫 이미지가 리드 전체를 먹었다."""
+    html = """
+    <p>맨 위에 타이핑된 긴 설명 문장입니다.</p>
+    <div><img src="/banana_img/product_image/man/a.jpg"></div>
+    <ul><li><img src="/files/goodsm/1/b.jpg"><span>이건 캡션</span></li></ul>
+    """
+    body = source.parse(html)
+    assert body.pieces[0].caption == ""
+    assert body.pieces[1].caption == "이건 캡션"
+
+
+def test_강조_표시는_HTML로_바뀌고_나머지는_이스케이프된다():
+    assert render.emphasize("무게 **40g** 입니다") == '무게 <b class="em">40g</b> 입니다'
+    assert "&lt;script&gt;" in render.emphasize("<script>")
+
+
+def test_푸터에는_상품마다_달라지는_말을_두지_않는다():
+    """텐가 전용 문구를 넣어 뒀다가 1000개에 붙으면 전부 거짓이 된다."""
+    joined = " ".join(h + p for h, p in render.FOOTER)
+    for word in ("절취선", "필름", "에그", "뚜껑"):
+        assert word not in joined, f"푸터에 상품 전용 표현이 남아 있다: {word}"
+
+
 def _tiny_jpeg() -> bytes:
     import io
 

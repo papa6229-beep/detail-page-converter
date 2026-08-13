@@ -242,6 +242,28 @@ def _parse_captions(text: str) -> list[str] | None:
     return lines or None
 
 
+#: 그림 글자를 읽고, 원본과 같은 문장이 되지 않게 다듬는다.
+#:
+#: 원본 문구를 토씨 하나 안 틀리고 옮기면 새 쇼핑몰이 원본과 같은 글을 싣게 된다.
+#: 그렇다고 없는 사실을 지어내면 안 된다. 그래서 **뜻과 분량은 그대로 두고
+#: 표현만** 바꾸게 한다.
+PROMPT = """쇼핑몰 상세페이지의 상품 설명이다. #번호 순서대로 주어진다.
+그림으로 온 것은 그 안에 적힌 한국어를 읽고, 글자로 온 것은 그대로 받는다.
+
+각 항목을 이렇게 다듬어라.
+
+1. 뜻과 정보는 **하나도 바꾸지 마라.** 없는 사실을 보태지 마라. 수치는 그대로 둔다
+2. 문장 표현만 자연스럽게 손본다. 원본과 토씨까지 같지는 않게 하되,
+   길이는 원본과 비슷하게 유지한다. 요약하거나 늘리지 마라
+3. 원본의 오타와 띄어쓰기는 바로잡는다
+4. 그 항목에서 가장 중요한 말 **한 군데**를 `**이렇게**` 별표 두 개로 감싸라.
+   두 군데를 넘기지 마라. 감쌀 만한 것이 없으면 감싸지 않아도 된다
+5. `[웨이비 2]` 같은 대괄호 말머리는 위치와 표기를 그대로 남긴다
+
+JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라.
+예: ["양방향으로 당기면 **쭈욱 늘어났다가** 다시 제자리로 돌아옵니다.", "..."]"""
+
+
 class AutofillReq(BaseModel):
     job: str
     #: 화면에서 넣은 키. 없으면 환경변수를 본다.
@@ -265,30 +287,25 @@ def api_autofill(req: AutofillReq):
     import urllib.error
     import urllib.request
 
-    content: list[dict] = [{
-        "type": "text",
-        "text": (
-            "쇼핑몰 상세페이지 이미지에서 잘라낸 캡션 줄들이다. 순서대로 번호가 붙어 있다.\n"
-            "각 이미지에 적힌 한국어를 그대로 읽되, 명백한 오타와 띄어쓰기만 바로잡아라.\n"
-            "내용을 새로 지어내지 마라. 없는 사실을 추가하지 마라.\n"
-            "`[웨이비 2]` 같은 대괄호 말머리가 있으면 그대로 남겨라.\n"
-            'JSON 배열 하나만 출력하라. 예: ["첫 캡션", "둘째 캡션"]'
-        ),
-    }]
+    content: list[dict] = [{"type": "text", "text": PROMPT}]
     idx = []
     for i, u in enumerate(job.work.product.units):
         crop = job.dir / u.caption_crop if u.caption_crop else None
-        if not crop or not crop.exists():
+        has_crop = bool(crop and crop.exists())
+        if not has_crop and not u.caption.strip():
             continue
         idx.append(i)
         content.append({"type": "text", "text": f"#{len(idx)}"})
-        content.append({
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png",
-                       "data": base64.b64encode(crop.read_bytes()).decode()},
-        })
+        if has_crop:
+            content.append({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png",
+                           "data": base64.b64encode(crop.read_bytes()).decode()},
+            })
+        else:
+            content.append({"type": "text", "text": u.caption.strip()})
     if not idx:
-        return {"captions": [], "note": "읽을 그림 글자가 없습니다 (조각형 원본은 이미 텍스트가 들어 있습니다)."}
+        return {"captions": [], "note": "다듬을 문구가 없습니다."}
 
     body = json.dumps({
         "model": os.environ.get("CONVERTER_MODEL", "claude-sonnet-5"),
@@ -297,7 +314,8 @@ def api_autofill(req: AutofillReq):
         "max_tokens": 8000,
         "messages": [{"role": "user", "content": content}],
     }).encode()
-    print(f"[autofill] 그림 글자 {len(idx)}칸을 읽는 중…")
+    n_img = sum(1 for c in content if c["type"] == "image")
+    print(f"[autofill] {len(idx)}칸 다듬는 중 (그림에서 읽을 것 {n_img}칸)…")
     r = urllib.request.Request(
         "https://api.anthropic.com/v1/messages", data=body,
         headers={"content-type": "application/json", "x-api-key": key,

@@ -203,14 +203,14 @@ async function runConvert(req) {
 }
 
 async function autofill() {
-  $('#autoMsg').className='msg'; $('#autoMsg').textContent = '그림에서 글자를 읽는 중…';
+  $('#autoMsg').className='msg'; $('#autoMsg').textContent = '문구를 읽고 다듬는 중…';
   $('#btnAuto').disabled = true;
   try {
     const d = await post('/api/autofill', {job, key: apiKey()});
     const areas = [...document.querySelectorAll('#units textarea')];
     let n = 0;
     (d.captions||[]).forEach((c,i) => { if (c && areas[i]) { areas[i].value = c; n++; } });
-    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다. 보시고 고치세요.`;
+    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다. 원본과 대조해 보시고 고치세요. **별표** 는 강조 표시입니다.`;
   } catch (e) {
     $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message;
   } finally {

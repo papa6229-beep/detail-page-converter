@@ -59,9 +59,19 @@ class Meta:
 
 
 @dataclass
+class Lead:
+    """본문 맨 위에 직접 타이핑돼 있던 한 줄."""
+
+    text: str
+    strong: bool = False
+
+
+@dataclass
 class Product:
     meta: Meta = field(default_factory=Meta)
     lead: str = ""
+    #: 첫 이미지 위의 타이핑 구간. 거의 모든 원본에 있다.
+    intro: list[Lead] = field(default_factory=list)
     units: list[Unit] = field(default_factory=list)
     #: 상단 광고 구간 — 캡션 없는 통짜 이미지들 (3.1)
     ad: list[str] = field(default_factory=list)

@@ -30,6 +30,21 @@ def esc(s) -> str:
     return html.escape(str(s or ""), quote=True)
 
 
+def _plain(text: str) -> str:
+    """alt 속성에는 별표를 남기지 않는다."""
+    return re.sub(r"\*\*(.+?)\*\*", r"\1", str(text or ""))
+
+
+def emphasize(text: str) -> str:
+    """`**여기**` 로 표시된 곳을 강조로 바꾼다.
+
+    원본의 노란 형광펜을 그대로 옮기지 않는다. 그건 원본 쇼핑몰의 디자인이고,
+    우리는 같은 자리를 우리 색으로 다시 칠한다.
+    """
+    out = esc(text)
+    return re.sub(r"\*\*(.+?)\*\*", r'<b class="em">\1</b>', out)
+
+
 def data_uri(path: Path) -> str:
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
@@ -58,21 +73,24 @@ def chip_color(path: Path, fallback: str) -> str:
 
 CSS = """
 :root{--ground:#FFFFFF;--ink:#16110F;--muted:#78706C;--rule:#E8E2DF;--accent:#D0020F;
- --plate:#F4F0EE;--band:#0C0A09;--band-ink:#F3EFED;--band-muted:#9A918D}
+ --plate:#F4F0EE;--plate-soft:#FBF9F8;--band:#0C0A09;--band-ink:#F3EFED;--band-muted:#9A918D}
 @media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
  --ground:#121010;--ink:#F2EDEB;--muted:#9C938F;--rule:#2E2A28;--accent:#FF4757;
- --plate:#EFEBE9;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}}
+ --plate:#EFEBE9;--plate-soft:#171414;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}}
 :root[data-theme="dark"]{--ground:#121010;--ink:#F2EDEB;--muted:#9C938F;--rule:#2E2A28;
- --accent:#FF4757;--plate:#EFEBE9;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}
+ --accent:#FF4757;--plate:#EFEBE9;--plate-soft:#171414;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}
 *{box-sizing:border-box}
 body{margin:0;background:var(--ground);color:var(--ink);
  font-family:"Pretendard","Pretendard Variable",-apple-system,BlinkMacSystemFont,
  "Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
- -webkit-font-smoothing:antialiased}
+ -webkit-font-smoothing:antialiased;
+ word-break:keep-all;overflow-wrap:break-word}
 img{display:block;width:100%;height:auto}
 p{margin:0}
 .page{width:800px;max-width:100%;margin:0 auto}
-.label{font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);margin:0}
+.label{font-size:13px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
+.em{color:var(--accent);font-weight:800}
+.band .em{color:#FF6B76}
 .hero{padding:72px 40px 32px;border-bottom:1px solid var(--rule)}
 .hero__brand{color:var(--accent)}
 .hero__title{margin:18px 0 0;font-size:48px;line-height:1.04;font-weight:800;letter-spacing:-.035em;text-wrap:balance}
@@ -80,17 +98,20 @@ p{margin:0}
 .hero__lead{margin-top:20px;max-width:34em;font-size:16px;line-height:1.8;color:var(--muted)}
 .hero__shot{margin:36px 0 0;background:var(--plate)}
 .specs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-bottom:1px solid var(--rule)}
-.spec{padding:22px 0 24px 20px;border-left:1px solid var(--rule)}
+.spec{padding:28px 0 30px 24px;border-left:1px solid var(--rule)}
 .spec:first-child{border-left:0;padding-left:40px}
-.spec__k{font-size:10px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--muted)}
-.spec__v{margin-top:8px;font-size:24px;font-weight:800;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-.spec__u{font-size:13px;font-weight:600;color:var(--muted);margin-left:3px}
-.lead{padding:56px 40px 60px}
+.spec__k{font-size:13px;font-weight:700;letter-spacing:.1em;color:var(--muted)}
+.spec__v{margin-top:10px;font-size:38px;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
+.spec__u{font-size:16px;font-weight:700;color:var(--muted);margin-left:4px}
+.intro{padding:52px 40px 8px}
+.intro__tag{margin-top:6px;font-size:31px;line-height:1.35;font-weight:800;letter-spacing:-.03em;text-wrap:balance}
+.intro__p{margin-top:16px;font-size:17px;line-height:1.9;color:var(--muted);max-width:38em}
+.lead{padding:44px 40px 56px}
 .lead__text{font-size:20px;line-height:1.78;font-weight:500;max-width:31em;text-wrap:pretty}
 .band{background:var(--band);color:var(--band-ink);padding:64px 40px 68px}
 .band .label{color:var(--band-muted)}
-.band__title{margin:14px 0 0;font-size:32px;font-weight:800;letter-spacing:-.03em}
-.band__note{margin-top:10px;font-size:14px;line-height:1.7;color:var(--band-muted);max-width:36em}
+.band__title{margin:16px 0 0;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
+.band__note{margin-top:14px;font-size:16px;line-height:1.7;color:var(--band-muted);max-width:36em}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:36px 22px;margin-top:44px}
 .grid--wide{grid-template-columns:repeat(2,1fr)}
 .variant__fig{margin:0;background:#000}
@@ -98,38 +119,45 @@ p{margin:0}
  display:flex;align-items:center;gap:8px}
 .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
-.variant__body{margin-top:11px;font-size:13px;line-height:1.72;color:var(--band-muted)}
+.variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
 .showcase{padding:60px 40px 0}
 .showcase__shot{margin:24px 0 0;background:var(--plate)}
 .features{padding:56px 40px 72px}
-.features__title{margin:14px 0 36px;font-size:30px;font-weight:800;letter-spacing:-.03em}
+.features__title{margin:16px 0 40px;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
 .feature__solo{margin:0 0 24px;background:var(--plate)}
-.feature{display:grid;grid-template-columns:348px 1fr;gap:32px;align-items:center;
- padding:30px 0;border-top:1px solid var(--rule)}
-.feature--flip{grid-template-columns:1fr 348px}
+.feature{display:grid;grid-template-columns:320px 1fr;gap:36px;align-items:center;
+ padding:34px 0;border-top:1px solid var(--rule)}
+.feature--flip{grid-template-columns:1fr 320px}
 .feature--flip .feature__fig{order:2}
 .feature__fig{margin:0;background:var(--plate)}
-.feature__head{margin:0;font-size:21px;line-height:1.35;font-weight:800;letter-spacing:-.02em;text-wrap:balance}
-.feature__body{margin-top:12px;font-size:15px;line-height:1.85;color:var(--muted)}
+.feature__head{margin:0;font-size:22px;line-height:1.35;font-weight:800;letter-spacing:-.02em;text-wrap:balance}
+.feature__body{margin-top:14px;font-size:16px;line-height:1.85;color:var(--muted)}
 .feature__body--solo{margin-top:0;font-size:17px;color:var(--ink);font-weight:500}
-.foot{border-top:1px solid var(--rule);padding:40px}
-.foot__row{display:grid;grid-template-columns:repeat(3,1fr);gap:26px;margin-top:20px}
-.foot__h{font-size:13px;font-weight:800}
-.foot__p{margin-top:7px;font-size:12.5px;line-height:1.75;color:var(--muted)}
+.foot{border-top:1px solid var(--rule);padding:56px 40px 64px;background:var(--plate-soft)}
+.foot__row{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin-top:28px}
+.foot__h{font-size:16px;font-weight:800;letter-spacing:-.01em}
+.foot__p{margin-top:10px;font-size:14px;line-height:1.8;color:var(--muted)}
 @media (max-width:800px){
  .page{width:100%}
  .hero{padding:52px 22px 26px}.hero__title{font-size:34px}
  .spec,.spec:first-child{padding-left:22px}
- .lead,.band,.showcase,.features,.foot{padding-inline:22px}
+ .intro,.lead,.band,.showcase,.features,.foot{padding-inline:22px}
+ .intro__tag{font-size:23px}
+ .band__title,.features__title,.compare__title{font-size:31px}
+ .spec__v{font-size:30px}
  .grid,.grid--wide{grid-template-columns:repeat(2,1fr)}
  .feature,.feature--flip{grid-template-columns:1fr;gap:18px}
  .feature--flip .feature__fig{order:0}
  .foot__row{grid-template-columns:1fr}}
 """
 
+#: 공통 푸터 (6.1 ⑦). **상품마다 달라지는 말을 여기 두면 안 된다.**
+#: 처음엔 "겉면 절취선을 따라 필름을 제거한 뒤"라고 적어 뒀는데, 그건 텐가에만
+#: 맞는 말이라 다른 1000개에 붙으면 전부 거짓이 된다. 어느 상품에나 참인 말만 둔다.
+#: 쇼핑몰 정책이 정해지면 이 표를 그 문구로 갈아끼우면 된다.
 FOOTER = [
-    ("사용 전", "겉면 절취선을 따라 필름을 제거한 뒤 뚜껑을 열어 사용하세요."),
     ("보관", "직사광선과 고온다습한 곳을 피해 서늘한 곳에 보관하세요."),
+    ("위생", "개봉 후에는 위생상 교환·반품이 어렵습니다. 받으신 즉시 상태를 확인해 주세요."),
     ("주의", "성인용 제품입니다. 손상되거나 변형된 제품은 사용하지 마세요."),
 ]
 
@@ -141,6 +169,18 @@ def split_lead(lead: str) -> tuple[str, str]:
         return "", ""
     m = re.search(r"^(.{6,90}?[.。])\s+(.+)$", text, re.S)
     return (m.group(1).strip(), m.group(2).strip()) if m else (text, "")
+
+
+def _squeeze(name: str, blocks):
+    """제목과 같은 줄은 뺀다. 같은 말을 두 번 싣지 않는다."""
+    key = re.sub(r"[\s\[\]()]", "", (name or "")).lower()
+    out = []
+    for b in blocks:
+        text = re.sub(r"[\s\[\]()]", "", b.text).lower()
+        if key and (text == key or (len(text) >= 4 and text in key) or (len(key) >= 4 and key in text)):
+            continue
+        out.append(b)
+    return out
 
 
 def _spec_row(specs) -> str:
@@ -176,17 +216,33 @@ def render(product, assets: Path, title: str | None = None) -> str:
     parts.append("</h1>")
     hero_lead, rest_lead = split_lead(product.lead)
     if hero_lead:
-        parts.append(f'<p class="hero__lead">{esc(hero_lead)}</p>')
+        parts.append(f'<p class="hero__lead">{emphasize(hero_lead)}</p>')
     if ad:
         parts.append(f'<figure class="hero__shot"><img src="{data_uri(ad[0])}" alt="{esc(name)}"></figure>')
     parts.append("</header>")
+
+    # ①-b 인트로 — 원본 맨 위에 직접 타이핑돼 있던 구간 (거의 모든 원본에 있다)
+    intro = [b for b in getattr(product, "intro", []) if b.text.strip()]
+    # 상품명 줄은 이미 제목으로 썼다. 두 번 싣지 않는다.
+    squeezed = _squeeze(name, intro)
+    if squeezed:
+        # 크게 세울 줄은 **하나만** 고른다. 원본에서 강조돼 있던 짧은 줄이 그것이다.
+        # 둘 이상을 크게 세우면 큰 덩어리가 되어 오히려 안 읽힌다.
+        tag = next((b for b in squeezed if b.strong and len(b.text) <= 70), None)
+        if tag is None and squeezed and len(squeezed[0].text) <= 70:
+            tag = squeezed[0]
+        parts.append('<section class="intro">')
+        for blk in squeezed:
+            cls = "intro__tag" if blk is tag else "intro__p"
+            parts.append(f'<p class="{cls}">{emphasize(blk.text)}</p>')
+        parts.append("</section>")
 
     # ② 스펙 요약
     parts.append(_spec_row(m.specs))
 
     # ③ 리드 문단 — 히어로가 첫 문장을 가져갔으므로 그 나머지만. 같은 글을 두 번 싣지 않는다.
     if rest_lead:
-        parts.append(f'<section class="lead"><p class="lead__text">{esc(rest_lead)}</p></section>')
+        parts.append(f'<section class="lead"><p class="lead__text">{emphasize(rest_lead)}</p></section>')
 
     # ④ 옵션 가이드
     if options:
@@ -200,17 +256,17 @@ def render(product, assets: Path, title: str | None = None) -> str:
             src = assets / u.image
             chip = chip_color(src, FALLBACK_CHIPS[i % len(FALLBACK_CHIPS)])
             parts.append('<article class="variant">')
-            parts.append(f'<figure class="variant__fig"><img src="{data_uri(src)}" alt="{esc(u.option_tag)}" loading="lazy"></figure>')
+            parts.append(f'<figure class="variant__fig"><img src="{data_uri(src)}" alt="{esc(u.option_tag)}"></figure>')
             parts.append(f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>{esc(u.option_tag)}</p>')
             if u.caption:
-                parts.append(f'<p class="variant__body">{esc(u.caption)}</p>')
+                parts.append(f'<p class="variant__body">{emphasize(u.caption)}</p>')
             parts.append("</article>")
         parts.append("</div></section>")
 
     # ⑤ 남은 광고컷
     for i, a in enumerate(ad[1:]):
         parts.append('<section class="showcase">')
-        parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}" loading="lazy"></figure>')
+        parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}"></figure>')
         parts.append("</section>")
 
     # ⑥ 디테일 — 좌우 교차 (6.2 셋째 레버)
@@ -224,7 +280,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
                 # 캡션이 없으면 그림만 크게. 버리지 않는다.
                 parts.append(
                     f'<figure class="feature__solo">'
-                    f'<img src="{data_uri(assets / u.image)}" alt="{esc(name)}" loading="lazy">'
+                    f'<img src="{data_uri(assets / u.image)}" alt="{esc(name)}">'
                     f"</figure>"
                 )
                 continue
@@ -233,13 +289,13 @@ def render(product, assets: Path, title: str | None = None) -> str:
             # 승격해 봐야 본문이 사라지고 긴 제목만 남는다. 그때는 그냥 본문으로 둔다.
             head, text = (u.head, u.body) if (u.head and u.body) else ("", u.caption.strip())
             parts.append(f'<article class="feature{flip}">')
-            parts.append(f'<figure class="feature__fig"><img src="{data_uri(assets / u.image)}" alt="{esc(head or u.caption[:40])}" loading="lazy"></figure>')
+            parts.append(f'<figure class="feature__fig"><img src="{data_uri(assets / u.image)}" alt="{esc(_plain(head or u.caption[:40]))}"></figure>')
             parts.append('<div class="feature__text">')
             if head:
-                parts.append(f'<h3 class="feature__head">{esc(head)}</h3>')
+                parts.append(f'<h3 class="feature__head">{emphasize(head)}</h3>')
             if text:
                 cls = "feature__body" if head else "feature__body feature__body--solo"
-                parts.append(f'<p class="{cls}">{esc(text)}</p>')
+                parts.append(f'<p class="{cls}">{emphasize(text)}</p>')
             parts.append("</div></article>")
         parts.append("</section>")
 

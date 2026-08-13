@@ -27,7 +27,7 @@ from slicer.geometry import Rect
 from slicer.layout import ROW, CutConfig, Scan, runs_of, trim
 
 from . import gate, source
-from .product import Meta, Product, Unit, apply_tags
+from .product import Lead, Meta, Product, Unit, apply_tags
 
 UA = "Mozilla/5.0 (compatible; detail-page-converter/1.0)"
 
@@ -197,6 +197,7 @@ def convert(row, workdir: Path, cache: Path) -> Work:
             price=row.price, options=opts,
         ),
         lead=body.lead,
+        intro=[Lead(text=b.text, strong=b.strong) for b in body.lead_blocks],
     )
     if not verdict.ok and gate.NO_BODY_IMAGE in verdict.reasons:
         return Work(product=product, verdict=verdict)
