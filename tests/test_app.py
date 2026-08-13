@@ -129,6 +129,79 @@ def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path
     assert html.count("<img ") == 13, "캡션이 없다고 그림을 버렸다"
 
 
+def _product_with_options(n_options: int, per_option, tmp_path: Path) -> Product:
+    """옵션 n개, 옵션마다 사진 per_option(i)장짜리 상품을 만든다."""
+    from app.product import Meta
+
+    names = [f"옵션{i:02d}" for i in range(n_options)]
+    units = []
+    for i, tag in enumerate(names):
+        for j in range(per_option(i)):
+            fn = f"o{i:02d}_{j:02d}.jpg"
+            (tmp_path / fn).write_bytes(_tiny_jpeg())
+            units.append(Unit(image=fn, caption=f"[{tag}] 설명 {j}."))
+    apply_tags(units, names)
+    return Product(meta=Meta(name="시험", options=names), units=units)
+
+
+def test_옵션은_몇_개든_사진이_몇_장이든_묶인다(tmp_path: Path):
+    """옵션 개수와 옵션당 사진 수는 상품마다 다르다. 세는 것이지 판정이 아니다.
+
+    0개·1개·10개 옵션에, 옵션당 0·1·10·20·30장을 섞어 넣는다. 어느 조합이든
+    묶임의 개수가 옵션의 개수와 같아야 하고, 사진은 한 장도 새거나 겹치지 않아야 한다.
+    """
+    cases = [
+        (0, lambda i: 1),                       # 옵션 없음
+        (1, lambda i: 1),                       # 옵션 하나 · 사진 하나
+        (6, lambda i: 1),                       # 텐가꼴
+        (3, lambda i: 6),                       # 닛포리꼴
+        (10, lambda i: 30),                     # 많이
+        (10, lambda i: [0, 1, 10, 20, 30][i % 5]),  # 제각각 (사진 0장 섞임)
+    ]
+    for n, per in cases:
+        p = _product_with_options(n, per, tmp_path)
+        expect = [f"옵션{i:02d}" for i in range(n) if per(i)]
+        got = [t for t, _ in p.option_groups]
+        assert got == expect, f"{n}개/{per(0)}장: 묶임이 {got}"
+        for tag, us in p.option_groups:
+            assert len(us) == per(int(tag[-2:])), f"{tag} 의 사진 수가 {len(us)}"
+        # 사진 0장인 옵션은 사라지지 않고 고아 옵션으로 남는다
+        assert p.orphan_options == [f"옵션{i:02d}" for i in range(n) if not per(i)]
+        # 태그 붙은 유닛은 본문으로 새지 않는다
+        assert p.body_units == []
+        assert sum(len(us) for _t, us in p.option_groups) == len(p.units)
+
+
+def test_옵션_사진이_많아도_카드는_옵션_수만큼만(tmp_path: Path):
+    """옵션 3개에 사진이 18장이면 카드는 18칸이 아니라 3칸이어야 한다.
+
+    사진 수만큼 카드를 찍으면 같은 옵션이 여섯 번씩 늘어서서 가이드 구실을 못 한다.
+    """
+    p = _product_with_options(3, lambda i: 6, tmp_path)
+    html = render.render(p, tmp_path)
+    assert html.count('<article class="variant') == 3, "카드가 옵션 수와 다르다"
+    assert "사진 6장" in html
+    # 카드에 못 실은 나머지 사진은 옵션별 상세 구간에 전부 나온다
+    assert html.count('class="optset__item"') == 18, "사진이 새어 나갔다"
+
+
+def test_옵션마다_사진이_한_장이면_상세_구간을_만들지_않는다(tmp_path: Path):
+    """텐가꼴 — 카드 한 판이면 충분한데 같은 그림을 아래에 또 깔면 중복이다."""
+    p = _product_with_options(6, lambda i: 1, tmp_path)
+    html = render.render(p, tmp_path)
+    assert html.count('<article class="variant') == 6
+    assert '<div class="optset">' not in html
+
+
+def test_사진_없는_옵션도_개수에_넣는다(tmp_path: Path):
+    """엑셀이 옵션 10개라 했으면 10가지다. 설명 이미지 유무로 옵션이 사라지면 거짓말이 된다."""
+    p = _product_with_options(10, lambda i: 1 if i < 3 else 0, tmp_path)
+    html = render.render(p, tmp_path)
+    assert "10가지 종류" in html
+    assert html.count('<article class="variant') == 10
+    assert html.count('<article class="variant variant--bare">') == 7
+
+
 def test_모델_응답을_여러_모양으로_받아낸다():
     """JSON 배열 하나만 달라고 해도 앞뒤에 말이 붙거나 코드펜스가 씌워져 온다.
 

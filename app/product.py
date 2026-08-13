@@ -92,6 +92,30 @@ class Product:
         return [u for u in self.units if u.has_caption and not u.option_tag]
 
     @property
+    def option_groups(self) -> list[tuple[str, list[Unit]]]:
+        """옵션 이름 → 그 옵션에 딸린 유닛들. 문서에 나온 순서대로.
+
+        옵션 하나에 유닛이 몇 개든 상관없다. 텐가는 옵션마다 1장, 닛포리는
+        배우 한 명당 6장이다. 세는 것이지 판정하는 것이 아니므로 같은 코드로 된다.
+        """
+        order: list[str] = []
+        bucket: dict[str, list[Unit]] = {}
+        for u in self.units:
+            if not u.option_tag:
+                continue
+            if u.option_tag not in bucket:
+                order.append(u.option_tag)
+                bucket[u.option_tag] = []
+            bucket[u.option_tag].append(u)
+        return [(tag, bucket[tag]) for tag in order]
+
+    @property
+    def orphan_options(self) -> list[str]:
+        """엑셀에는 있는데 딸린 이미지가 하나도 없는 옵션."""
+        have = {t for t, _ in self.option_groups}
+        return [o for o in self.meta.options if o not in have]
+
+    @property
     def body_units(self) -> list[Unit]:
         """옵션 카드로 안 가는 유닛 전부. 캡션이 없어도 버리지 않는다.
 

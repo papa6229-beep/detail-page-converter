@@ -120,6 +120,19 @@ p{margin:0}
 .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
 .variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
+.variant__count{margin-top:10px;font-size:13px;font-weight:700;color:var(--band-muted)}
+.variant--bare{display:flex;align-items:center;min-height:74px;padding:18px 18px;
+ border:1px solid color-mix(in srgb,var(--band-ink) 22%,transparent);border-radius:2px}
+.variant--bare .variant__name{margin-top:0}
+.optset{padding:8px 0 40px;border-top:1px solid var(--rule)}
+.optset:first-of-type{border-top:0}
+.optset__name{margin:24px 0 20px;font-size:26px;font-weight:800;letter-spacing:-.02em;
+ display:flex;align-items:baseline;gap:12px}
+.optset__name span{font-size:13px;font-weight:700;color:var(--muted);letter-spacing:0}
+.optset__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:24px 20px}
+.optset__item{margin:0}
+.optset__item img{background:var(--plate);border-radius:2px}
+.optset__item figcaption{margin-top:10px;font-size:13.5px;line-height:1.7;color:var(--muted)}
 .showcase{padding:60px 40px 0}
 .showcase__shot{margin:24px 0 0;background:var(--plate)}
 .features{padding:56px 40px 72px}
@@ -198,7 +211,14 @@ def render(product, assets: Path, title: str | None = None) -> str:
     """정규형 Product 를 800px 상세페이지 HTML 로."""
     m = product.meta
     ad = [assets / a for a in product.ad if (assets / a).exists()]
-    options = product.option_units
+    # 옵션은 **세는 것**이다. 사진이 몇 장 딸렸는지로 옵션의 존재가 갈리지 않는다.
+    #  · 사진 0장  → 이름만 있는 칩 카드 (엑셀에는 있는데 설명 이미지가 없는 옵션)
+    #  · 사진 1장  → 카드 한 판으로 끝 (텐가)
+    #  · 사진 N장  → 카드는 한눈에 보는 용도, 자세한 건 옵션별 구간으로 (닛포리)
+    # 어느 쪽도 상품마다 손볼 일이 없다. 개수만 보고 갈린다.
+    groups = product.option_groups
+    cards = groups + [(tag, []) for tag in product.orphan_options]
+    detailed = any(len(us) > 1 for _t, us in groups)
     body = product.body_units
 
     name = title or m.name or "상세페이지"
@@ -245,21 +265,25 @@ def render(product, assets: Path, title: str | None = None) -> str:
         parts.append(f'<section class="lead"><p class="lead__text">{emphasize(rest_lead)}</p></section>')
 
     # ④ 옵션 가이드
-    if options:
-        wide = "" if len(options) >= 5 else " grid--wide"
+    if cards:
+        wide = "" if len(cards) >= 5 else " grid--wide"
         parts.append('<section class="band">')
-        parts.append(f'<p class="label">{len(options)} Options</p>')
-        parts.append(f'<h2 class="band__title">{len(options)}가지 종류</h2>')
-        parts.append('<p class="band__note">겉모습은 같지만 안쪽이 다릅니다. 종류에 따라 감각이 갈립니다.</p>')
+        parts.append(f'<p class="label">{len(cards)} Options</p>')
+        parts.append(f'<h2 class="band__title">{len(cards)}가지 종류</h2>')
+        parts.append('<p class="band__note">종류에 따라 형태와 감각이 갈립니다.</p>')
         parts.append(f'<div class="grid{wide}">')
-        for i, u in enumerate(options):
-            src = assets / u.image
-            chip = chip_color(src, FALLBACK_CHIPS[i % len(FALLBACK_CHIPS)])
-            parts.append('<article class="variant">')
-            parts.append(f'<figure class="variant__fig"><img src="{data_uri(src)}" alt="{esc(u.option_tag)}"></figure>')
-            parts.append(f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>{esc(u.option_tag)}</p>')
-            if u.caption:
-                parts.append(f'<p class="variant__body">{emphasize(u.caption)}</p>')
+        for i, (tag, us) in enumerate(cards):
+            fallback = FALLBACK_CHIPS[i % len(FALLBACK_CHIPS)]
+            src = (assets / us[0].image) if us else None
+            chip = chip_color(src, fallback) if src else fallback
+            parts.append(f'<article class="variant{"" if us else " variant--bare"}">')
+            if src:
+                parts.append(f'<figure class="variant__fig"><img src="{data_uri(src)}" alt="{esc(tag)}"></figure>')
+            parts.append(f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>{esc(tag)}</p>')
+            if len(us) > 1:
+                parts.append(f'<p class="variant__count">사진 {len(us)}장</p>')
+            elif us and us[0].caption:
+                parts.append(f'<p class="variant__body">{emphasize(us[0].caption)}</p>')
             parts.append("</article>")
         parts.append("</div></section>")
 
@@ -267,6 +291,24 @@ def render(product, assets: Path, title: str | None = None) -> str:
     for i, a in enumerate(ad[1:]):
         parts.append('<section class="showcase">')
         parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}"></figure>')
+        parts.append("</section>")
+
+    # ④-b 옵션별 상세 — 옵션 하나에 사진이 여럿일 때만 (닛포리류)
+    if detailed:
+        parts.append('<section class="features">')
+        parts.append('<p class="label">By Option</p>')
+        parts.append('<h2 class="features__title">종류별로 보기</h2>')
+        for tag, us in groups:
+            parts.append('<div class="optset">')
+            parts.append(f'<h3 class="optset__name">{esc(tag)}<span>사진 {len(us)}장</span></h3>')
+            parts.append('<div class="optset__grid">')
+            for u in us:
+                parts.append('<figure class="optset__item">')
+                parts.append(f'<img src="{data_uri(assets / u.image)}" alt="{esc(tag)}">')
+                if u.caption:
+                    parts.append(f'<figcaption>{emphasize(u.caption)}</figcaption>')
+                parts.append("</figure>")
+            parts.append("</div></div>")
         parts.append("</section>")
 
     # ⑥ 디테일 — 좌우 교차 (6.2 셋째 레버)
