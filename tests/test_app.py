@@ -171,6 +171,51 @@ def test_그림_옆_글줄은_캡션이고_딱_붙은_글자는_그림이다(tmp
     assert photo.width < 610 - 120, f"캡션까지 그림에 붙어 왔다: 폭 {photo.width}"
 
 
+def test_사진_위에_얹힌_라벨_줄은_그림에서_뗀다(tmp_path: Path):
+    """캡션이 아래로 정해지면 위에 얹힌 글줄은 갈 곳이 없어 그림에 구워진다.
+
+    트리니티의 사진마다 위에 `모에 구멍 트리니티` 라벨과 밑줄이 그렇게 남았다.
+    높이만 보면 안 된다 — 텐가 첫 칸 위의 라벨은 252×48 이라 얇아도 납작하지 않고,
+    잘라내면 광고 구간의 라벨 줄이 사라진다. **글줄은 납작하다.**
+    """
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    from .fixtures import labelled_column
+
+    units, _ad, _ink, _gaps = from_whole_image("x", Image.fromarray(labelled_column(rows=3)), tmp_path)
+    assert len(units) == 3, [f"{u.width}x{u.height}" for u in units]
+    for u in units:
+        assert u.caption_crop
+        assert u.height <= 210, f"라벨 줄이 그림에 붙어 왔다: 높이 {u.height}"
+
+
+def test_배경을_지운_조각은_카드로_둘러_준다(tmp_path: Path):
+    """검은 띠 위에 흰 사각형이 덩그러니 뜨는 것을 막는다.
+
+    흰 네모를 잘라내려 들지 않는다 — 원본 이미지는 손대지 않는다. 조각이 두르고
+    있는 색을 관측해서 같은 색으로 여백을 두르면 그게 카드가 된다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    white = np.full((60, 60, 3), 255, np.uint8)
+    white[20:40, 20:40] = (200, 60, 60)
+    Image.fromarray(white).save(tmp_path / "cut.jpg", quality=95)
+    assert render.plate_color(tmp_path / "cut.jpg") == "#FFFFFF"
+
+    p = _product_with_options(1, lambda i: 1, tmp_path)
+    p.units[0].image = "cut.jpg"
+    html = render.render(p, tmp_path)
+    assert 'variant__fig--card" style="background:#FFFFFF"' in html
+
+    # 가장자리까지 그림이 꽉 찬 조각은 손대지 않는다
+    noisy = np.random.default_rng(0).integers(0, 255, (60, 60, 3), dtype=np.uint8)
+    Image.fromarray(noisy).save(tmp_path / "full.jpg", quality=95)
+    assert render.plate_color(tmp_path / "full.jpg") == "#000"
+
+
 def test_상품명은_특징_한글명_외국어명_세_줄로_갈린다():
     """원본 상품명은 상세페이지용이 아니라 물류용이다.
 
@@ -256,7 +301,10 @@ def test_옵션_사진이_많아도_카드는_옵션_수만큼만(tmp_path: Path
     p = _product_with_options(3, lambda i: 6, tmp_path)
     html = render.render(p, tmp_path)
     assert html.count('<article class="variant') == 3, "카드가 옵션 수와 다르다"
-    assert "사진 6장" in html
+    # 카드에 실리는 것은 옵션명이다. 장수는 살 때 쓸모가 없다
+    for tag in ("옵션00", "옵션01", "옵션02"):
+        assert f'</span>{tag}</p>' in html, f"카드에 옵션명 {tag} 이 없다"
+    assert "사진 6장" not in html
     # 카드에 못 실은 나머지 사진은 옵션별 상세 구간에 전부 나온다
     assert html.count('class="optset__item"') == 18, "사진이 새어 나갔다"
 

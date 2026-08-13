@@ -106,6 +106,40 @@ def chip_color(path: Path, fallback: str) -> str:
         return fallback
 
 
+def plate_color(path: Path, fallback: str = "#000") -> str:
+    """조각이 **제 배경으로 두르고 있는 색**을 그대로 돌려준다.
+
+    옵션 카드를 검은 띠 위에 얹는데, 원본이 배경을 지운 누끼컷이면 흰 사각형이
+    검은 바탕에 덩그러니 뜬다. 흰 네모를 잘라내려 들 일이 아니다 — 원본 이미지는
+    손대지 않는다. 조각이 두르고 있는 색을 깔아 주면 경계가 사라진다.
+
+    색은 판정하지 않고 **가장자리에서 관측한다** (4.4 의 배경 관측과 같은 방식).
+    가장자리가 한 가지 색으로 고르지 않으면 배경이 아니라 그림이 꽉 찬 것이므로
+    그때는 손대지 않는다.
+    """
+    try:
+        import numpy as np
+        from PIL import Image
+
+        a = np.asarray(Image.open(path).convert("RGB"))
+        edge = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]]).astype(int)
+        ref = np.median(edge, axis=0)
+        if (np.abs(edge - ref).max(axis=1) <= 12).mean() < 0.9:
+            return fallback
+        return "#%02X%02X%02X" % tuple(int(v) for v in ref)
+    except Exception:
+        return fallback
+
+
+def _is_light(hexcolor: str) -> bool:
+    """그 색이 밝은 쪽인가. 검은 띠 위에서 카드로 둘러야 할지 가른다."""
+    try:
+        r, g, b = (int(hexcolor[i : i + 2], 16) for i in (1, 3, 5))
+    except (ValueError, IndexError):
+        return False
+    return (r * 299 + g * 587 + b * 114) / 1000 > 170
+
+
 CSS = """
 :root{--ground:#FFFFFF;--ink:#16110F;--muted:#78706C;--rule:#E8E2DF;--accent:#D0020F;
  --plate:#F4F0EE;--plate-soft:#FBF9F8;--band:#0C0A09;--band-ink:#F3EFED;--band-muted:#9A918D}
@@ -156,20 +190,21 @@ p{margin:0}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:36px 22px;margin-top:44px}
 .grid--wide{grid-template-columns:repeat(2,1fr)}
 .variant__fig{margin:0;background:#000}
-.variant__name{margin-top:16px;font-size:17px;font-weight:800;letter-spacing:-.01em;
- display:flex;align-items:center;gap:8px}
+.variant__fig--card{padding:16px;border-radius:3px}
+.variant__name{margin-top:16px;font-size:21px;font-weight:800;letter-spacing:-.02em;
+ display:flex;align-items:center;gap:9px;line-height:1.25}
 .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
 .variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
-.variant__count{margin-top:10px;font-size:13px;font-weight:700;color:var(--band-muted)}
 .variant--bare{display:flex;align-items:center;min-height:74px;padding:18px 18px;
  border:1px solid color-mix(in srgb,var(--band-ink) 22%,transparent);border-radius:2px}
 .variant--bare .variant__name{margin-top:0}
 .optset{padding:8px 0 40px;border-top:1px solid var(--rule)}
 .optset:first-of-type{border-top:0}
-.optset__name{margin:24px 0 20px;font-size:26px;font-weight:800;letter-spacing:-.02em;
- display:flex;align-items:baseline;gap:12px}
-.optset__name span{font-size:13px;font-weight:700;color:var(--muted);letter-spacing:0}
+.optset__name{margin:24px 0 20px;font-size:28px;font-weight:800;letter-spacing:-.025em;
+ display:flex;align-items:center;gap:12px}
+.optset__chip{width:13px;height:13px;border-radius:50%;background:var(--chip);flex:none;
+ box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
 .optset__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:24px 20px}
 .optset__item{margin:0}
 .optset__item img{background:var(--plate);border-radius:2px}
@@ -392,11 +427,19 @@ def render(product, assets: Path, title: str | None = None) -> str:
             chip = chip_color(src, fallback) if src else fallback
             parts.append(f'<article class="variant{"" if us else " variant--bare"}">')
             if src:
-                parts.append(f'<figure class="variant__fig"><img src="{data_uri(src)}" alt="{esc(tag)}"></figure>')
+                # 조각이 두르고 있는 색을 관측해서 그대로 깐다. 배경을 지운 누끼컷이면
+                # 흰 사각형이 검은 띠 위에 덩그러니 뜨는데, 같은 색으로 여백을 둘러
+                # **카드처럼 보이게** 하면 그게 의도한 모양이 된다. 흰 네모를 잘라내려
+                # 들지 않는다 — 원본 이미지는 손대지 않는다.
+                plate = plate_color(src)
+                card = " variant__fig--card" if _is_light(plate) else ""
+                parts.append(
+                    f'<figure class="variant__fig{card}" style="background:{plate}">'
+                    f'<img src="{data_uri(src)}" alt="{esc(tag)}"></figure>'
+                )
+            # 카드에서 사람이 알아야 하는 것은 **옵션명**이다. 장수는 살 때 쓸모가 없다.
             parts.append(f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>{esc(tag)}</p>')
-            if len(us) > 1:
-                parts.append(f'<p class="variant__count">사진 {len(us)}장</p>')
-            elif us and us[0].caption:
+            if us and us[0].caption:
                 parts.append(f'<p class="variant__body">{emphasize(us[0].caption)}</p>')
             parts.append("</article>")
         parts.append("</div></section>")
@@ -414,7 +457,12 @@ def render(product, assets: Path, title: str | None = None) -> str:
         parts.append('<h2 class="features__title">종류별로 보기</h2>')
         for tag, us in groups:
             parts.append('<div class="optset">')
-            parts.append(f'<h3 class="optset__name">{esc(tag)}<span>사진 {len(us)}장</span></h3>')
+            chip = FALLBACK_CHIPS[[t for t, _ in groups].index(tag) % len(FALLBACK_CHIPS)]
+            if us:
+                chip = chip_color(assets / us[0].image, chip)
+            parts.append(
+                f'<h3 class="optset__name"><span class="optset__chip" style="--chip:{chip}"></span>{esc(tag)}</h3>'
+            )
             parts.append('<div class="optset__grid">')
             for u in us:
                 parts.append('<figure class="optset__item">')

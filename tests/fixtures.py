@@ -97,6 +97,24 @@ def ruled_column(rows: int = 4, gutter: int = 0) -> np.ndarray:
     return img
 
 
+def labelled_column(rows: int = 3) -> np.ndarray:
+    """사진마다 **위에** 납작한 라벨 줄이 얹힌 원본 (트리니티).
+
+    캡션은 페이지가 정한 한쪽(여기서는 아래)에서만 나온다. 그러면 위에 얹힌
+    라벨은 갈 곳이 없어 그림에 그대로 구워진다.
+    """
+    img = page(650, 40 + rows * 374)
+    y = 40
+    for _ in range(rows):
+        box(img, 60, y, 520, y + 11, GRAY)      # 라벨 줄 — 461×12, 아주 납작하다
+        y += 12 + 33
+        box(img, 60, y, 560, y + 200, GRAY)     # 사진
+        y += 201 + 27
+        box(img, 60, y, 380, y + 10, GRAY)      # 캡션
+        y += 11 + 90
+    return img
+
+
 def uneven_gaps_column(rows: int = 4, odd: int = 1) -> np.ndarray:
     """유닛 안 간격이 유닛 사이 간격보다 **넓은** 자리가 하나 섞인 1열 원본.
 

@@ -158,8 +158,29 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     above = sum(1 for u in result.units if _head(sorted(u.parts, key=lambda p: p.y0))[1])
     caption_side = _tail if below or not above else _head
 
+    def _strip_headings(rest):
+        """캡션 **반대쪽** 끝에 붙은 납작한 글줄은 그림이 아니다.
+
+        캡션은 페이지가 정한 한쪽에서만 나온다. 그러면 반대쪽에 붙은 글줄은
+        갈 곳이 없어 그림에 그대로 구워진다 — 트리니티의 사진마다 위에 얹힌
+        `모에 구멍 트리니티` 라벨과 그 밑줄이 그랬다.
+
+        높이만 보면 안 된다. 텐가 첫 칸 위의 `SILKY Ⅱ [シルキー2]` 라벨은
+        252×48 이라 얇지만 납작하지 않고, 잘라내면 광고 구간의 라벨 줄이 사라진다.
+        **글줄은 납작하다** — 이미 열을 찾을 때 쓰는 바로 그 잣대다.
+        """
+        thin = _thin(rest)
+        take = (lambda xs: xs[0]) if caption_side is _tail else (lambda xs: xs[-1])
+        while len(rest) > 1:
+            edge = take(rest)
+            if not (6 <= edge.h <= thin and edge.w > CutConfig().max_line_aspect * edge.h):
+                break
+            rest = rest[1:] if caption_side is _tail else rest[:-1]
+        return rest
+
     def split_parts(u):
-        return caption_side(sorted(u.parts, key=lambda p: p.y0))
+        rest, caps = caption_side(sorted(u.parts, key=lambda p: p.y0))
+        return _strip_headings(rest), caps
 
     # 첫 캡션이 나오는 지점부터 설명 구간, 그 위가 상단 광고 구간 (3.1)
     prepared = [(u, *split_parts(u)) for u in result.units]
@@ -207,7 +228,9 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     # 따로 떼면 아이콘 네 개가 페이지 폭짜리 그림 네 장이 된다. 붙여 두면
     # 저자가 늘어놓은 그대로 한 줄로 실린다. 캡션이 붙은 것은 건드리지 않는다 —
     # 텐가의 2열 그리드는 좌우가 각각 제 캡션을 가진 별개의 유닛이다.
-    boxes = [union_all([Rect(u.rect.x0, u.rect.y0, u.rect.x1, p[-1].y1)] + absorbed[i])
+    # 위아래는 **남은 조각**이 정한다. 유닛 사각형으로 잡으면 떼어낸 라벨 줄이
+    # 그림에 그대로 남는다. 좌우는 유닛 폭을 살린다.
+    boxes = [union_all([Rect(u.rect.x0, p[0].y0, u.rect.x1, p[-1].y1)] + absorbed[i])
              for i, (u, p, _c) in enumerate(solid)]
     rows: list[list[int]] = []
     for i, (_u, _p, caps) in enumerate(solid):
