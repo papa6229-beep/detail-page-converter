@@ -121,6 +121,23 @@ def test_무엇의_치수인지_적혀_있어야_스펙이다():
     assert render.guess_specs(Product(units=[Unit(caption="체중 45kg 신장 158cm")])) == []
 
 
+def test_옵션이_있으면_치수를_싣지_않는다():
+    """무게도 길이도 옵션마다 다르다. 어느 옵션의 값인지 못 밝히면 안 싣는다.
+
+    닛포리에서 키타노 미나 한 명의 캡션에 있던 `200g대 초반` 이 페이지 맨 위에
+    **무게 200g** 으로 올라갔다. 세 배우 전부가 200g 이라는 말이 된다.
+    그리고 옵션 수를 유닛 수로 세어 `종류 18종` 이 나왔다 — 배우는 셋이다.
+    """
+    units = [Unit(caption="200g대 초반의 볼륨.", option_tag=t)
+             for t in ("키타노 미나",) * 6 + ("미우라 사쿠라",) * 6 + ("이마이 카호",) * 6]
+    p = Product(units=units)
+    assert render.guess_specs(p) == [("옵션", "3", "종")], "옵션 수를 유닛 수로 셌다"
+
+    # 옵션이 없으면 지금까지대로 캡션에서 캔다
+    단품 = Product(units=[Unit(caption="200g대 초반의 볼륨.")])
+    assert render.guess_specs(단품) == [("무게", "200", "g")]
+
+
 def test_손으로_적은_요약은_이름표가_없어도_받는다():
     """치수가 그림 픽셀로만 있는 원본이 흔하다. 사람은 그 화면을 이미 보고 있다."""
     assert render.parse_specs("233g · 12.5cm") == [("무게", "233", "g"), ("길이", "12.5", "cm")]
@@ -377,7 +394,7 @@ def test_사진_없는_옵션도_개수에_넣는다(tmp_path: Path):
     """엑셀이 옵션 10개라 했으면 10가지다. 설명 이미지 유무로 옵션이 사라지면 거짓말이 된다."""
     p = _product_with_options(10, lambda i: 1 if i < 3 else 0, tmp_path)
     html = render.render(p, tmp_path)
-    assert "10가지 종류" in html
+    assert "10가지 옵션" in html
     assert html.count('<article class="variant') == 10
     assert html.count('<article class="variant variant--bare">') == 7
 

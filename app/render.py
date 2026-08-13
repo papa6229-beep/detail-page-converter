@@ -433,8 +433,8 @@ def render(product, assets: Path, title: str | None = None) -> str:
         wide = "" if len(cards) >= 5 else " grid--wide"
         parts.append('<section class="band">')
         parts.append(f'<p class="label">{len(cards)} Options</p>')
-        parts.append(f'<h2 class="band__title">{len(cards)}가지 종류</h2>')
-        parts.append('<p class="band__note">종류에 따라 형태와 감각이 갈립니다.</p>')
+        parts.append(f'<h2 class="band__title">{len(cards)}가지 옵션</h2>')
+        parts.append('<p class="band__note">옵션에 따라 형태와 감각이 갈립니다.</p>')
         parts.append(f'<div class="grid{wide}">')
         for i, (tag, us) in enumerate(cards):
             fallback = FALLBACK_CHIPS[i % len(FALLBACK_CHIPS)]
@@ -473,7 +473,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
     if detailed:
         parts.append('<section class="features">')
         parts.append('<p class="label">By Option</p>')
-        parts.append('<h2 class="features__title">종류별로 보기</h2>')
+        parts.append('<h2 class="features__title">옵션별로 보기</h2>')
         for n, (tag, us) in enumerate(groups):
             parts.append('<div class="optset">')
             chip = FALLBACK_CHIPS[n % len(FALLBACK_CHIPS)]
@@ -601,7 +601,16 @@ def guess_specs(product) -> list[tuple[str, str, str]]:
     그래서 **원본이 무엇의 치수인지 말해 준 것만** 싣는다. 이름도 우리가 붙이지 않고
     원본이 쓴 말에서 가져온다 — `전장 146mm` 는 길이고, `가슴이 79cm` 는 우리 쪽
     어휘에 없으니 스펙이 아니다. 못 싣는 것이 틀리게 싣는 것보다 낫다.
+
+    **옵션이 있으면 치수는 싣지 않는다.** 무게도 길이도 옵션마다 다르다. 닛포리의
+    `200g대 초반` 은 키타노 미나 한 명의 캡션에 있던 말인데, 페이지 맨 위에 올리면
+    세 배우 전부의 무게가 200g 이라고 말하는 셈이 된다. 어느 옵션의 값인지 못 밝힐
+    바에는 안 싣는다.
     """
+    groups = len(product.option_groups) or len(product.meta.options)
+    if groups:
+        return [("옵션", str(groups), "종")]
+
     text = " ".join(u.caption for u in product.units)
     out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
@@ -614,10 +623,5 @@ def guess_specs(product) -> list[tuple[str, str, str]]:
     if "무게" not in seen:
         m = BARE_RE.search(text)
         if m:
-            seen.add("무게")
             out.append(("무게", m.group(1), "g"))
-    if product.option_units:
-        out.append(("종류", str(len(product.option_units)), "종"))
-    elif product.meta.options:
-        out.append(("옵션", str(len(product.meta.options)), "종"))
     return out
