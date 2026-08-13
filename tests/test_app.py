@@ -129,6 +129,21 @@ def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path
     assert html.count("<img ") == 13, "캡션이 없다고 그림을 버렸다"
 
 
+def test_모델_응답을_여러_모양으로_받아낸다():
+    """JSON 배열 하나만 달라고 해도 앞뒤에 말이 붙거나 코드펜스가 씌워져 온다.
+
+    한 가지 모양만 기대했다가 통째로 실패했다. 화면에는 파싱 오류만 떴다.
+    """
+    from app.server import _parse_captions as parse
+
+    assert parse('["가", "나다라"]') == ["가", "나다라"]
+    assert parse('```json\n["가나다", "라마바"]\n```') == ["가나다", "라마바"]
+    assert parse("다음과 같습니다:\n[\"가나다\", \"라마바\"]\n이상입니다.") == ["가나다", "라마바"]
+    assert parse("1. 첫 캡션입니다\n2. 둘째 캡션입니다") == ["첫 캡션입니다", "둘째 캡션입니다"]
+    assert parse("") is None
+    assert parse("   ") is None
+
+
 def _tiny_jpeg() -> bytes:
     import io
 

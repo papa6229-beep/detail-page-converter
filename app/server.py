@@ -206,6 +206,42 @@ def autofill_available():
     return {"available": bool(os.environ.get("ANTHROPIC_API_KEY"))}
 
 
+def _parse_captions(text: str) -> list[str] | None:
+    """모델이 돌려준 글에서 캡션 목록을 꺼낸다.
+
+    JSON 배열 하나만 달라고 해도 앞뒤에 말을 붙이거나 코드펜스를 씌워 올 때가 있다.
+    한 가지 모양만 기대하면 그때마다 통째로 실패한다.
+    """
+    import re as _re
+
+    if not text:
+        return None
+
+    fenced = _re.search(r"```(?:json)?\s*(.+?)```", text, _re.S)
+    for candidate in (fenced.group(1) if fenced else None, text):
+        if not candidate:
+            continue
+        candidate = candidate.strip()
+        for attempt in (candidate, candidate[candidate.find("[") : candidate.rfind("]") + 1]):
+            if not attempt.startswith("["):
+                continue
+            try:
+                value = json.loads(attempt)
+            except Exception:
+                continue
+            if isinstance(value, list):
+                return [str(v) for v in value]
+
+    # 배열이 아니면 "1. 캡션" 같은 줄 목록이라도 건진다.
+    lines = [
+        _re.sub(r"^\s*(?:#?\d+[.)]|[-*])\s*", "", ln).strip().strip('"')
+        for ln in text.splitlines()
+        if ln.strip()
+    ]
+    lines = [ln for ln in lines if len(ln) > 4]
+    return lines or None
+
+
 class AutofillReq(BaseModel):
     job: str
     #: 화면에서 넣은 키. 없으면 환경변수를 본다.
@@ -226,6 +262,7 @@ def api_autofill(req: AutofillReq):
         raise HTTPException(404, "그 작업을 찾을 수 없다")
 
     import base64
+    import urllib.error
     import urllib.request
 
     content: list[dict] = [{
@@ -255,21 +292,33 @@ def api_autofill(req: AutofillReq):
 
     body = json.dumps({
         "model": os.environ.get("CONVERTER_MODEL", "claude-sonnet-5"),
-        "max_tokens": 2000,
+        # 한국어는 토큰을 많이 먹는다. 넉넉히 주지 않으면 배열이 중간에 잘리고,
+        # 잘린 배열은 파싱에 실패해 "읽지 못했습니다"로만 보인다.
+        "max_tokens": 8000,
         "messages": [{"role": "user", "content": content}],
     }).encode()
+    print(f"[autofill] 그림 글자 {len(idx)}칸을 읽는 중…")
     r = urllib.request.Request(
         "https://api.anthropic.com/v1/messages", data=body,
         headers={"content-type": "application/json", "x-api-key": key,
                  "anthropic-version": "2023-06-01"})
     try:
-        with urllib.request.urlopen(r, timeout=120) as resp:
+        with urllib.request.urlopen(r, timeout=180) as resp:
             out = json.loads(resp.read())
-        text = "".join(b.get("text", "") for b in out.get("content", []))
-        start, end = text.find("["), text.rfind("]")
-        got = json.loads(text[start : end + 1])
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:400]
+        raise HTTPException(502, f"API 호출 실패 ({e.code}): {detail}") from e
     except Exception as e:
-        raise HTTPException(502, f"글자를 읽지 못했습니다: {e}") from e
+        raise HTTPException(502, f"API 에 닿지 못했습니다: {e}") from e
+
+    text = "".join(b.get("text", "") for b in out.get("content", []) if b.get("type") == "text").strip()
+    got = _parse_captions(text)
+    if got is None:
+        # 무엇이 왔는지 보여준다. 감추면 고칠 수가 없다.
+        print("[autofill] 해석 실패. 받은 값:", repr(text[:600]))
+        stop = out.get("stop_reason")
+        hint = " (길이 제한에 걸려 잘렸습니다)" if stop == "max_tokens" else ""
+        raise HTTPException(502, f"읽은 내용을 해석하지 못했습니다{hint}. 받은 값: {text[:160]!r}")
 
     captions = [""] * len(job.work.product.units)
     for slot, value in zip(idx, got):
