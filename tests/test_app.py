@@ -171,6 +171,32 @@ def test_그림_옆_글줄은_캡션이고_딱_붙은_글자는_그림이다(tmp
     assert photo.width < 610 - 120, f"캡션까지 그림에 붙어 왔다: 폭 {photo.width}"
 
 
+def test_옵션에는_번호가_이름_앞에_붙는다(tmp_path: Path):
+    """손님이 주문할 때 고르는 것은 **몇 번 옵션인지**다.
+
+    엑셀 원본이 `01. 키타노 미나` 인데 대조하려고 번호를 벗겼다. 벗기는 것은
+    맞지만 버리면 안 된다 — 값과 번호를 나란히 들고 간다.
+    """
+    from app.excel import parse_option
+    from app.product import Meta
+
+    opt = parse_option("배우=01. 키타노 미나,02. 미우라 사쿠라")
+    assert opt.values == ["키타노 미나", "미우라 사쿠라"]
+    assert opt.numbers == ["01", "02"]
+
+    p = _product_with_options(3, lambda i: 1, tmp_path)
+    p.meta = Meta(name="시험", options=p.meta.options, option_numbers=["01", "02", "03"])
+    html = render.render(p, tmp_path)
+    for no, tag in (("01", "옵션00"), ("02", "옵션01"), ("03", "옵션02")):
+        assert f'<span class="variant__no">{no}.</span>{tag}' in html, f"{no}. {tag} 가 없다"
+
+    # 원본에 번호가 없으면 나온 순서로 매긴다
+    plain = _product_with_options(2, lambda i: 1, tmp_path)
+    html = render.render(plain, tmp_path)
+    assert '<span class="variant__no">1.</span>옵션00' in html
+    assert '<span class="variant__no">2.</span>옵션01' in html
+
+
 def test_사진_위에_얹힌_라벨_줄은_그림에서_뗀다(tmp_path: Path):
     """캡션이 아래로 정해지면 위에 얹힌 글줄은 갈 곳이 없어 그림에 구워진다.
 

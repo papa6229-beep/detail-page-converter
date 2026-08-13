@@ -57,6 +57,8 @@ class Meta:
     category: str = ""
     price: str = ""
     options: list[str] = field(default_factory=list)
+    #: options 와 같은 자리의 원본 옵션 번호. 없던 자리는 빈 칸.
+    option_numbers: list[str] = field(default_factory=list)
     specs: list[tuple[str, str, str]] = field(default_factory=list)
 
 
@@ -114,6 +116,20 @@ class Product:
         """엑셀에는 있는데 딸린 이미지가 하나도 없는 옵션."""
         have = {t for t, _ in self.option_groups}
         return [o for o in self.meta.options if o not in have]
+
+    def option_number(self, tag: str, fallback: int) -> str:
+        """그 옵션이 **몇 번**인지. 손님이 주문할 때 고르는 그 번호다.
+
+        엑셀에 `01. 키타노 미나` 라고 적혀 있었으면 그 번호를 그대로 쓴다.
+        번호가 없던 원본이면 나온 순서로 매긴다. 어느 쪽이든 이름 앞에 번호가 붙는다.
+        """
+        try:
+            i = self.meta.options.index(tag)
+        except ValueError:
+            i = -1
+        if 0 <= i < len(self.meta.option_numbers) and self.meta.option_numbers[i]:
+            return self.meta.option_numbers[i]
+        return str((i if i >= 0 else fallback) + 1)
 
     @property
     def body_units(self) -> list[Unit]:

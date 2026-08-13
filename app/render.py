@@ -195,6 +195,8 @@ p{margin:0}
  display:flex;align-items:center;gap:9px;line-height:1.25}
 .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
+.variant__no{color:var(--band-muted);font-variant-numeric:tabular-nums;flex:none}
+.optset__no{color:var(--muted);font-variant-numeric:tabular-nums}
 .variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
 .variant--bare{display:flex;align-items:center;min-height:74px;padding:18px 18px;
  border:1px solid color-mix(in srgb,var(--band-ink) 22%,transparent);border-radius:2px}
@@ -437,8 +439,12 @@ def render(product, assets: Path, title: str | None = None) -> str:
                     f'<figure class="variant__fig{card}" style="background:{plate}">'
                     f'<img src="{data_uri(src)}" alt="{esc(tag)}"></figure>'
                 )
-            # 카드에서 사람이 알아야 하는 것은 **옵션명**이다. 장수는 살 때 쓸모가 없다.
-            parts.append(f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>{esc(tag)}</p>')
+            # 카드에서 사람이 알아야 하는 것은 **몇 번 옵션인지와 그 이름**이다.
+            # 장수는 살 때 쓸모가 없다. 주문할 때 고르는 건 번호와 이름이다.
+            parts.append(
+                f'<p class="variant__name"><span class="variant__chip" style="--chip:{chip}"></span>'
+                f'<span class="variant__no">{esc(product.option_number(tag, i))}.</span>{esc(tag)}</p>'
+            )
             if us and us[0].caption:
                 parts.append(f'<p class="variant__body">{emphasize(us[0].caption)}</p>')
             parts.append("</article>")
@@ -455,13 +461,14 @@ def render(product, assets: Path, title: str | None = None) -> str:
         parts.append('<section class="features">')
         parts.append('<p class="label">By Option</p>')
         parts.append('<h2 class="features__title">종류별로 보기</h2>')
-        for tag, us in groups:
+        for n, (tag, us) in enumerate(groups):
             parts.append('<div class="optset">')
-            chip = FALLBACK_CHIPS[[t for t, _ in groups].index(tag) % len(FALLBACK_CHIPS)]
+            chip = FALLBACK_CHIPS[n % len(FALLBACK_CHIPS)]
             if us:
                 chip = chip_color(assets / us[0].image, chip)
             parts.append(
-                f'<h3 class="optset__name"><span class="optset__chip" style="--chip:{chip}"></span>{esc(tag)}</h3>'
+                f'<h3 class="optset__name"><span class="optset__chip" style="--chip:{chip}"></span>'
+                f'<span class="optset__no">{esc(product.option_number(tag, n))}.</span>{esc(tag)}</h3>'
             )
             parts.append('<div class="optset__grid">')
             for u in us:

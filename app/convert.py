@@ -306,7 +306,7 @@ def convert(row, workdir: Path, cache: Path) -> Work:
     product = Product(
         meta=Meta(
             code=row.code, name=row.name, brand=row.brand, category=row.category,
-            price=row.price, options=opts,
+            price=row.price, options=opts, option_numbers=row.option_numbers,
         ),
         lead=body.lead,
         intro=[Lead(text=b.text, strong=b.strong) for b in body.lead_blocks],

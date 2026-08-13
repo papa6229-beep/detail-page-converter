@@ -38,6 +38,8 @@ def norm(s) -> str:
 class Option:
     name: str
     values: list[str] = field(default_factory=list)
+    #: 원본에 붙어 있던 번호(`01`). 없으면 빈 칸. values 와 길이가 같다.
+    numbers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -60,11 +62,18 @@ class Row:
     def option_values(self) -> list[str]:
         return [v for o in self.options for v in o.values]
 
+    @property
+    def option_numbers(self) -> list[str]:
+        """option_values 와 같은 자리의 원본 번호. 없던 자리는 빈 칸."""
+        return [n for o in self.options for n in o.numbers]
+
 
 def parse_option(cell: str) -> Option | None:
     """`옵션명=값,값,값` 형식을 푼다 (2.1).
 
-    7장 — 원본 접두 번호(`01. `)는 벗긴다. 그대로 두면 출력 쪽 번호와 겹친다.
+    7장 — 원본 접두 번호(`01. `)는 값에서 벗기되 **버리지는 않는다.**
+    그대로 두면 대조가 안 되고(캡션 쪽도 벗겨서 맞춘다), 버리면 손님이 주문할 때
+    몇 번 옵션인지 알 수 없다. 값과 번호를 나란히 들고 간다.
     """
     text = str(cell or "").strip()
     if not text:
@@ -72,14 +81,16 @@ def parse_option(cell: str) -> Option | None:
     name, sep, rest = text.partition("=")
     if not sep:
         name, rest = "", text
-    values = []
+    values, numbers = [], []
     for v in rest.split(","):
-        v = re.sub(r"^\s*\d+\s*[.)]\s*", "", v.strip())
-        if v:
-            values.append(v)
+        m = re.match(r"^\s*(\d+)\s*[.)]\s*", v.strip())
+        text = v.strip()[m.end():].strip() if m else v.strip()
+        if text:
+            values.append(text)
+            numbers.append(m.group(1) if m else "")
     if not values:
         return None
-    return Option(name=name.strip(), values=values)
+    return Option(name=name.strip(), values=values, numbers=numbers)
 
 
 def _header_map(header: list) -> dict[str, int]:
