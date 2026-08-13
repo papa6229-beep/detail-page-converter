@@ -117,32 +117,41 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     cfg = CutConfig()
     bg = result.sections[0].bg if result.sections else (255, 255, 255)
 
-    def split_parts(u):
-        """유닛을 그림 부분과 캡션 글줄로 가른다.
+    def _thin(parts) -> int:
+        """그 유닛 안에서 '글줄'이라 부를 높이.
 
-        기준은 **그 유닛 자신의 그림 높이**다. 페이지 전체의 높이 분포로 임계값을
-        잡으려다 실패했다 — 광고 구간에 1~2px 잔여 조각이 섞여 있어 분포의 가장 큰
-        틈이 엉뚱한 바닥에 생겼다. 유닛 안에서 재면 그런 잡음이 끼지 않는다.
-
-        뒤에 붙은 것만 캡션으로 본다. 텐가 오른쪽 첫 칸의 `약 40g` 주석은
-        그림 **앞**에 있어 그림의 일부로 남는다.
+        페이지 전체의 높이 분포로 임계값을 잡으려다 실패했다 — 광고 구간에
+        1~2px 잔여 조각이 섞여 있어 분포의 가장 큰 틈이 엉뚱한 바닥에 생겼다.
+        유닛 안에서 재면 그런 잡음이 끼지 않는다.
         """
-        parts = sorted(u.parts, key=lambda p: p.y0)
-        thin = max(2, int(0.3 * max(p.h for p in parts)))
+        return max(2, int(0.3 * max(p.h for p in parts)))
 
-        # 뒤에 붙은 글줄을 먼저 본다. 대부분의 디자인이 캡션을 그림 아래 둔다.
-        caps: list = []
-        while len(parts) > 1 and parts[-1].h <= thin:
-            caps.insert(0, parts.pop())
-        if caps:
-            return parts, caps
+    def _tail(parts):
+        out = []
+        rest = list(parts)
+        while len(rest) > 1 and rest[-1].h <= _thin(parts):
+            out.insert(0, rest.pop())
+        return rest, out
 
-        # 뒤에 없으면 그때 앞을 본다 — 4.3 이 경고한 대로 캡션이 위에 오는 디자인도 있다.
-        # 순서를 이렇게 둬야 텐가 오른쪽 첫 칸의 `약 40g` 주석(그림 위의 짧은 글)이
-        # 캡션으로 오해받지 않는다. 그 칸은 뒤에 진짜 캡션을 갖고 있기 때문이다.
-        while len(parts) > 1 and parts[0].h <= thin:
-            caps.append(parts.pop(0))
-        return parts, caps
+    def _head(parts):
+        out = []
+        rest = list(parts)
+        # 2px 짜리 잔여 조각은 글줄이 아니다. 위쪽을 볼 때는 특히 조심해야 한다 —
+        # 광고컷 맨 위에 낀 얇은 띠를 캡션으로 오해하면 광고 구간 전체가 사라진다.
+        while len(rest) > 1 and 6 <= rest[0].h <= _thin(parts):
+            out.append(rest.pop(0))
+        return rest, out
+
+    # 캡션이 그림 위인지 아래인지는 **페이지마다 하나로 정해져 있다** (4.3).
+    # 유닛마다 따로 판단하면 광고컷 조각 하나에 끌려 전체가 뒤집힌다. 실제로 그랬다 —
+    # 텐가에서 2px 조각 하나를 캡션으로 읽어 광고 구간이 통째로 날아갔다.
+    # 그러니 페이지 전체를 한 번 보고 어느 쪽인지 정한 다음, 그 쪽으로만 가른다.
+    below = sum(1 for u in result.units if _tail(sorted(u.parts, key=lambda p: p.y0))[1])
+    above = sum(1 for u in result.units if _head(sorted(u.parts, key=lambda p: p.y0))[1])
+    caption_side = _tail if below or not above else _head
+
+    def split_parts(u):
+        return caption_side(sorted(u.parts, key=lambda p: p.y0))
 
     # 첫 캡션이 나오는 지점부터 설명 구간, 그 위가 상단 광고 구간 (3.1)
     prepared = [(u, *split_parts(u)) for u in result.units]

@@ -224,6 +224,31 @@ def test_캡션이_이미지_위에_있어도_찾는다(tmp_path: Path):
     units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
     assert len(units) == 4, f"캡션을 못 찾아 유닛이 {len(units)}개"
     assert all(u.caption_crop for u in units)
+    assert ad == [], "캡션을 못 찾아 광고컷으로 넘어갔다"
+
+
+def test_캡션_방향은_페이지마다_하나로_정한다(tmp_path: Path):
+    """유닛마다 따로 판단하면 조각 하나에 끌려 전체가 뒤집힌다.
+
+    텐가에서 광고컷 맨 위의 2px 잔여 조각을 캡션으로 읽는 바람에 광고 구간이
+    통째로 사라지고 유닛이 12개에서 13개로 늘었다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    img = np.full((760, 560, 3), 255, np.uint8)
+    img[20:22, 30:530] = 200               # 광고컷 위의 얇은 잔여 띠
+    img[30:250, 30:530] = 160              # 광고컷 그림
+    y = 300
+    for _ in range(2):                      # 아래에는 캡션이 그림 밑에 붙는 유닛들
+        img[y : y + 150, 30:530] = 150
+        img[y + 160 : y + 172, 30:400] = 110
+        y += 210
+    units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
+    assert len(units) == 2, f"광고컷이 유닛으로 새어 들어왔다: {len(units)}개"
+    assert ad, "광고 구간이 사라졌다"
 
 
 def _tiny_jpeg() -> bytes:
