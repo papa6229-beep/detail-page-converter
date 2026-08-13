@@ -188,6 +188,44 @@ def test_푸터에는_상품마다_달라지는_말을_두지_않는다():
         assert word not in joined, f"푸터에 상품 전용 표현이 남아 있다: {word}"
 
 
+def test_닛포리_옵션_태그의_접두_번호를_벗긴다():
+    """캡션은 `[01. 키타노 미나]`, 엑셀 옵션값은 `키타노 미나` 다 (7장).
+
+    양쪽에서 똑같이 벗기지 않으면 대조가 실패해 옵션 가이드가 통째로 안 생긴다.
+    """
+    from app.excel import parse_option
+
+    opt = parse_option("배우=01. 키타노 미나,02. 미우라 사쿠라")
+    assert opt.values == ["키타노 미나", "미우라 사쿠라"]
+    assert split_tag("[01. 키타노 미나] 청순한 외모.")[0] == "키타노 미나"
+
+    units = [Unit(caption="[01. 키타노 미나] 청순한 외모."), Unit(caption="[02. 미우라 사쿠라] 설명.")]
+    apply_tags(units, opt.values)
+    assert [u.option_tag for u in units] == ["키타노 미나", "미우라 사쿠라"]
+
+
+def test_캡션이_이미지_위에_있어도_찾는다(tmp_path: Path):
+    """4.3 — 캡션이 이미지 위인지 아래인지는 디자인마다 다르다.
+
+    뒤에 붙은 것만 찾다가, 캡션이 위에 오는 원본에서 캡션 0개로 읽혔다.
+    그러면 유닛이 전부 광고컷으로 넘어가 페이지가 통짜 이미지 나열이 된다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    img = np.full((900, 560, 3), 255, np.uint8)
+    y = 40
+    for _ in range(4):
+        img[y : y + 12, 30:400] = 110       # 캡션이 먼저
+        img[y + 22 : y + 170, 30:530] = 150  # 그 아래 이미지
+        y += 210
+    units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
+    assert len(units) == 4, f"캡션을 못 찾아 유닛이 {len(units)}개"
+    assert all(u.caption_crop for u in units)
+
+
 def _tiny_jpeg() -> bytes:
     import io
 

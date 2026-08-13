@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 
 #: 캡션 접두어 `[웨이비 2] …` — 7장. 옵션 태그는 여기서 온다.
 TAG_RE = re.compile(r"^\s*[\[(]\s*([^\])]{1,24})\s*[\])]\s*")
+#: 접두 번호 `01. ` — 엑셀 옵션값과 캡션 양쪽에 붙어 있다. 벗겨야 서로 맞는다 (7장).
+ORDINAL_RE = re.compile(r"^\s*\d+\s*[.)]\s*")
 
 
 @dataclass
@@ -107,7 +109,9 @@ def split_tag(caption: str) -> tuple[str, str]:
     m = TAG_RE.match(caption or "")
     if not m:
         return "", (caption or "").strip()
-    return m.group(1).strip(), caption[m.end() :].strip()
+    # 닛포리 캡션은 `[01. 키타노 미나]`, 엑셀 옵션값은 `키타노 미나` 다.
+    # 접두 번호를 양쪽에서 똑같이 벗겨야 대조가 된다. 안 벗기면 옵션이 하나도 안 붙는다.
+    return ORDINAL_RE.sub("", m.group(1)).strip(), caption[m.end() :].strip()
 
 
 def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> None:

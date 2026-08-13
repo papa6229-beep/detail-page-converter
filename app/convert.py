@@ -129,9 +129,19 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
         """
         parts = sorted(u.parts, key=lambda p: p.y0)
         thin = max(2, int(0.3 * max(p.h for p in parts)))
+
+        # 뒤에 붙은 글줄을 먼저 본다. 대부분의 디자인이 캡션을 그림 아래 둔다.
         caps: list = []
         while len(parts) > 1 and parts[-1].h <= thin:
             caps.insert(0, parts.pop())
+        if caps:
+            return parts, caps
+
+        # 뒤에 없으면 그때 앞을 본다 — 4.3 이 경고한 대로 캡션이 위에 오는 디자인도 있다.
+        # 순서를 이렇게 둬야 텐가 오른쪽 첫 칸의 `약 40g` 주석(그림 위의 짧은 글)이
+        # 캡션으로 오해받지 않는다. 그 칸은 뒤에 진짜 캡션을 갖고 있기 때문이다.
+        while len(parts) > 1 and parts[0].h <= thin:
+            caps.append(parts.pop(0))
         return parts, caps
 
     # 첫 캡션이 나오는 지점부터 설명 구간, 그 위가 상단 광고 구간 (3.1)
