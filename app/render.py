@@ -534,6 +534,13 @@ SPEC_RE = re.compile(
     r"[^.。]{0," + str(SPEC_GAP) + r"}?(\d+(?:\.\d+)?)\s*(mm|cm|m|kg|g|ml|l)(?![A-Za-z])"
 )
 
+#: 이름표 없이도 받아 주는 단위.
+#:
+#: `g` 은 **사람 몸을 재는 단위가 아니다.** 가슴둘레와 신장은 cm 로, 몸무게는 kg 로
+#: 적힌다. 그래서 그램은 이름표 없이 나와도 제품 무게다 — `200g대 초반의 묵직한
+#: 볼륨감` 이 그렇다. 길이 단위는 반대로 몸 치수일 수 있으므로 이름표를 요구한다.
+BARE_RE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*g(?![A-Za-z])")
+
 
 def guess_specs(product) -> list[tuple[str, str, str]]:
     """캡션에 적힌 수치를 스펙으로 끌어올린다 (6.1 ②).
@@ -558,6 +565,11 @@ def guess_specs(product) -> list[tuple[str, str, str]]:
             continue
         seen.add(key)
         out.append((key, value, unit))
+    if "무게" not in seen:
+        m = BARE_RE.search(text)
+        if m:
+            seen.add("무게")
+            out.append(("무게", m.group(1), "g"))
     if product.option_units:
         out.append(("종류", str(len(product.option_units)), "종"))
     elif product.meta.options:

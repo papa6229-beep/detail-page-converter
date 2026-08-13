@@ -114,6 +114,12 @@ def test_무엇의_치수인지_적혀_있어야_스펙이다():
     spec = Product(units=[Unit(caption="각부 치수 (무게 : 372g) 전장 146mm 최대폭 73mm")])
     assert render.guess_specs(spec) == [("무게", "372", "g"), ("길이", "146", "mm"), ("폭", "73", "mm")]
 
+    # 그램은 사람 몸을 재는 단위가 아니다. 이름표가 없어도 제품 무게다
+    bare = Product(units=[Unit(caption="200g대 초반의 묵직한 볼륨감을 지녔습니다.")])
+    assert render.guess_specs(bare) == [("무게", "200", "g")]
+    # 몸무게는 kg 로 적힌다 — 그건 안 받는다
+    assert render.guess_specs(Product(units=[Unit(caption="체중 45kg 신장 158cm")])) == []
+
 
 def test_리드는_히어로와_본문에_두_번_실리지_않는다():
     head, rest = render.split_lead("첫 문장이다. 나머지 문장이다.")
