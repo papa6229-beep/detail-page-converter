@@ -40,14 +40,49 @@ def emphasize(text: str) -> str:
 
     원본의 노란 형광펜을 그대로 옮기지 않는다. 그건 원본 쇼핑몰의 디자인이고,
     우리는 같은 자리를 우리 색으로 다시 칠한다.
+
+    저자가 끊어 놓은 줄(`\n`)은 지킨다. 뜻으로 끊은 자리라, 브라우저가 폭에 맞춰
+    아무 데서나 접게 두면 `…나선을 이루며 / 돈다 즉시…` 처럼 어긋난다.
     """
     out = esc(text)
-    return re.sub(r"\*\*(.+?)\*\*", r'<b class="em">\1</b>', out)
+    out = re.sub(r"\*\*(.+?)\*\*", r'<b class="em">\1</b>', out)
+    return out.replace("\n", "<br>")
 
 
 def data_uri(path: Path) -> str:
     mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
     return f"data:{mime};base64," + base64.b64encode(path.read_bytes()).decode()
+
+
+def natural_width(path: Path) -> int:
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            return im.width
+    except Exception:
+        return 0
+
+
+def page_scaler(widths):
+    """페이지 전체를 **한 배율로** 늘린다.
+
+    조각마다 폭을 꽉 채우면, 원본에서 손톱만 하던 아이콘 네 개가 페이지 폭짜리
+    그림이 된다 — 트리니티 하단의 아이콘 줄이 실제로 그렇게 나왔다.
+    원본에서 제일 넓은 것이 800px 이 되도록 맞추고, 나머지는 그 비율로 따라간다.
+    커지는 것은 그림이지 배치가 아니다.
+    """
+    widest = max([w for w in widths if w], default=0)
+    if not widest:
+        return lambda w: ""
+    ratio = WIDTH / widest
+
+    def style(w: int) -> str:
+        if not w or w >= widest:
+            return ""
+        return f' style="max-width:{round(w * ratio)}px;margin-inline:auto"'
+
+    return style
 
 
 def chip_color(path: Path, fallback: str) -> str:
@@ -284,6 +319,8 @@ def render(product, assets: Path, title: str | None = None) -> str:
     cards = groups + [(tag, []) for tag in product.orphan_options]
     detailed = any(len(us) > 1 for _t, us in groups)
     body = product.body_units
+    # 통짜로 싣는 그림들은 한 배율로 늘린다. 원본의 크기 관계를 지킨다.
+    fit = page_scaler([natural_width(p) for p in ad] + [u.width for u in body])
 
     full = title or m.name or "상세페이지"
     tags, name, alt = split_name(full)
@@ -313,7 +350,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
     if hero_lead:
         parts.append(f'<p class="hero__lead">{emphasize(hero_lead)}</p>')
     if ad:
-        parts.append(f'<figure class="hero__shot"><img src="{data_uri(ad[0])}" alt="{esc(name)}"></figure>')
+        parts.append(f'<figure class="hero__shot"><img src="{data_uri(ad[0])}" alt="{esc(name)}"{fit(natural_width(ad[0]))}></figure>')
     parts.append("</header>")
 
     # ①-b 인트로 — 원본 맨 위에 직접 타이핑돼 있던 구간 (거의 모든 원본에 있다)
@@ -367,7 +404,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
     # ⑤ 남은 광고컷
     for i, a in enumerate(ad[1:]):
         parts.append('<section class="showcase">')
-        parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}"></figure>')
+        parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}"{fit(natural_width(a))}></figure>')
         parts.append("</section>")
 
     # ④-b 옵션별 상세 — 옵션 하나에 사진이 여럿일 때만 (닛포리류)
@@ -399,7 +436,7 @@ def render(product, assets: Path, title: str | None = None) -> str:
                 # 캡션이 없으면 그림만 크게. 버리지 않는다.
                 parts.append(
                     f'<figure class="feature__solo">'
-                    f'<img src="{data_uri(assets / u.image)}" alt="{esc(name)}">'
+                    f'<img src="{data_uri(assets / u.image)}" alt="{esc(name)}"{fit(u.width)}>'
                     f"</figure>"
                 )
                 continue

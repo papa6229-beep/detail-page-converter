@@ -81,7 +81,61 @@ def image_floor(bands: list[Rect]) -> int:
     return gs.threshold if gs.separated else 0
 
 
-def _merge_imageless(groups: list[list[Rect]], floor: int, crossed: list[bool] | None = None) -> list[list[Rect]]:
+#: 캡션이 그림 아래에 붙는 페이지 / 위에 붙는 페이지
+BELOW, ABOVE = -1, 1
+
+
+def caption_direction(plans) -> int:
+    """캡션이 그림의 어느 쪽에 붙는 페이지인지 **한 번만** 정한다 (4.3).
+
+    묶음마다 따로 정하면 조각 하나에 끌려 뒤집힌다. 버진루프가 그랬다 —
+    액자 위변이 사진에 7px 밖에 안 붙어 구획선으로 안 잡히는 바람에, 캡션 두 줄이
+    아래 사진 쪽으로 넘어가 그림에 문구와 선이 그대로 딸려 나왔다.
+
+    페이지 전체로 세면 그런 한 자리는 묻힌다. 이미지 없는 묶음마다 위 그림이
+    가까운지 아래 그림이 가까운지 세고, 많은 쪽을 그 페이지의 방향으로 삼는다.
+
+    돌려주는 값이 BELOW 면 캡션은 그림 아래에 붙는다 — 즉 **위쪽 묶음**에 되돌린다.
+
+    증거는 세 가지를 이 순서로 본다. 앞의 것이 갈리면 뒤는 안 본다.
+
+      한 묶음 안   이미 그림과 글줄이 같이 묶인 자리. 글줄이 그림 위인지 아래인지가
+                   그대로 답이다. 제일 흔하고 제일 확실하다
+      한쪽 끝      칸의 맨 끝에 놓인 글줄은 갈 곳이 한 군데뿐이다
+      가운데       양쪽에 그림이 있으면 가까운 쪽. 액자 하나에 뒤집히는 바로 그
+                   자리이므로 맨 나중에 본다
+    """
+    inside = [0, 0]  # [위쪽에 붙는다 → BELOW 표, 아래쪽에 붙는다 → ABOVE 표]
+    edge = [0, 0]
+    mid = [0, 0]
+    for _cell, groups, floor in plans:
+        for i, g in enumerate(groups):
+            tall = [r for r in g if r.h > floor]
+            if tall:
+                lo, hi = tall[0].y0, tall[-1].y1
+                inside[0] += sum(1 for r in g if r.y1 < lo)
+                inside[1] += sum(1 for r in g if r.y0 > hi)
+                continue
+            has_prev, has_next = i > 0, i + 1 < len(groups)
+            if has_prev and has_next:
+                before = g[0].y0 - groups[i - 1][-1].y1
+                after = groups[i + 1][0].y0 - g[-1].y1
+                mid[0] += before < after
+                mid[1] += after < before
+            elif has_prev:
+                edge[0] += 1
+            elif has_next:
+                edge[1] += 1
+
+    # inside 는 '글줄이 그림 위에 있었다'가 [0], '아래'가 [1] 이다. 아래에 있었다면
+    # 그 페이지 캡션은 그림 아래이고, 그건 위쪽 묶음에 되돌린다는 뜻(BELOW)이다.
+    for up, down in ((inside[1], inside[0]), (edge[0], edge[1]), (mid[0], mid[1])):
+        if up != down:
+            return BELOW if up > down else ABOVE
+    return BELOW
+
+
+def _merge_imageless(groups: list[list[Rect]], floor: int, prefer: int = BELOW) -> list[list[Rect]]:
     """이미지가 없는 묶음은 유닛이 아니다. 이웃에 되돌린다.
 
     불변식 ⑤(캡션 수 ≤ 이미지 수)를 묶는 단계에서 바로 지키는 것이다.
@@ -90,26 +144,19 @@ def _merge_imageless(groups: list[list[Rect]], floor: int, crossed: list[bool] |
     이 한 문장이 표 선과 액자를 갈라 준다 — 표 선은 이미지 있는 칸 둘 사이에 있고,
     액자 아랫변은 이미지와 그 캡션 사이에 끼어 있다. 선을 보고 판정하지 않아도 된다.
 
-    crossed[i] 는 groups[i-1] 과 groups[i] 사이가 괘선이었는지다. 되돌릴 곳을 고를 때
-    **괘선을 넘지 않는 쪽을 먼저** 본다. 그래야 텐가 4번째 칸(유닛 안 간격 31px 이
-    칸 사이 간격 24px 보다 넓다)에서 캡션이 옆 칸으로 넘어가지 않는다.
+    되돌릴 쪽은 **페이지가 정한 캡션 방향**을 따른다. 가까운 쪽을 고르면 액자 하나가
+    한 픽셀 차이로 안 잡힐 때 그 자리만 뒤집힌다. 그쪽에 이웃이 없을 때만 반대쪽을 본다.
     """
-    crossed = list(crossed) if crossed is not None else [False] * (len(groups) - 1)
     while len(groups) > 1:
         for i, g in enumerate(groups):
             if any(r.h > floor for r in g):
                 continue
-            options = []
-            if i > 0:
-                options.append((crossed[i - 1], g[0].y0 - groups[i - 1][-1].y1, i - 1))
-            if i + 1 < len(groups):
-                options.append((crossed[i], groups[i + 1][0].y0 - g[-1].y1, i + 1))
-            if not options:
+            wanted = i - 1 if prefer == BELOW else i + 1
+            other = i + 1 if prefer == BELOW else i - 1
+            j = wanted if 0 <= wanted < len(groups) else other
+            if not 0 <= j < len(groups):
                 break
-            options.sort()  # 괘선을 안 넘는 쪽 먼저, 그다음 가까운 쪽
-            j = options[0][2]
             groups[j] = sorted(groups[j] + g, key=lambda r: (r.y0, r.x0))
-            crossed.pop(i - 1 if j == i - 1 else i)
             groups.pop(i)
             break
         else:
@@ -164,6 +211,10 @@ def slice_image(
     gap_stats: list[GapSplit] = []
     column_counts: list[int] = []
 
+    #: (칸, 묶음들, 이미지 바닥) — 캡션 방향을 페이지 전체로 정한 뒤에 되돌린다
+    plans: list[tuple[Node, list[list[Rect]], int]] = []
+    sec_of: dict[int, int] = {}
+
     for si, sec in enumerate(sections):
         rect = Rect(0, sec.y0, arr.shape[1] - 1, sec.y1)
 
@@ -188,34 +239,36 @@ def slice_image(
                 for a, b in zip(bands, bands[1:]):
                     gaps.append(b.y0 - a.y1 - 1)
 
-            # 표 선이 낀 자리에서 먼저 끊고, 그 안에서 간격 이중구조를 본다.
-            # 다만 괘선을 **최종 경계로 확정하지는 않는다** — 액자 아랫변처럼
+            # 구획선이 낀 자리에서 먼저 끊고, 그 안에서 간격 이중구조를 본다.
+            # 다만 구획선을 **최종 경계로 확정하지는 않는다** — 액자 아랫변처럼
             # 이미지와 그 캡션 사이에 낀 선도 있기 때문이다. 마지막에 한 번 더 본다.
             floor = image_floor(bands)
             groups: list[list[Rect]] = []
-            crossed: list[bool] = []
-            for cell_bands, cell_gaps, at_rule in _split_at_rules(
+            for cell_bands, cell_gaps, _at_rule in _split_at_rules(
                 bands, gaps, rule_gaps(arr, bands, sec.bg, cfg, scan)
             ):
                 subs, gs = group_by_gaps(cell_bands, cell_gaps, min_ratio=min_gap_ratio)
                 gap_stats.append(gs)
-                for j, sub in enumerate(subs):
-                    if groups:
-                        crossed.append(at_rule if j == 0 else False)
-                    groups.append(sub)
+                groups.extend(subs)
 
-            for group in _merge_imageless(groups, floor, crossed):
-                image, captions = _classify(group)
-                units.append(
-                    Unit(
-                        rect=union_all(group),
-                        parts=list(group),
-                        image=image,
-                        captions=captions,
-                        section=si,
-                        column=cell.col_index,
-                    )
+            sec_of[len(plans)] = si
+            plans.append((cell, groups, floor))
+
+    # 캡션 방향은 페이지마다 하나다 (4.3). 다 모은 다음에 한 번 정하고 되돌린다.
+    prefer = caption_direction(plans)
+    for k, (cell, groups, floor) in enumerate(plans):
+        for group in _merge_imageless(groups, floor, prefer):
+            image, captions = _classify(group)
+            units.append(
+                Unit(
+                    rect=union_all(group),
+                    parts=list(group),
+                    image=image,
+                    captions=captions,
+                    section=sec_of[k],
+                    column=cell.col_index,
                 )
+            )
 
     return SliceResult(
         sections=sections,

@@ -97,6 +97,24 @@ def ruled_column(rows: int = 4, gutter: int = 0) -> np.ndarray:
     return img
 
 
+def uneven_gaps_column(rows: int = 4, odd: int = 1) -> np.ndarray:
+    """유닛 안 간격이 유닛 사이 간격보다 **넓은** 자리가 하나 섞인 1열 원본.
+
+    텐가 4번째 칸과 버진루프가 그렇다. 그 한 자리에서 가까운 쪽만 보고 붙이면
+    캡션이 아래 그림으로 넘어가, 그림에 문구가 그대로 딸려 나온다.
+    캡션 방향은 페이지마다 하나이므로 페이지 전체로 정해야 한다 (4.3).
+    """
+    img = page(650, 60 + rows * 261)
+    y = 40
+    for r in range(rows):
+        inner, outer = (31, 24) if r == odd else (10, 40)
+        box(img, 60, y, 560, y + 200, GRAY)
+        y += 200 + inner
+        box(img, 60, y, 380, y + 10, GRAY)
+        y += 10 + outer
+    return img
+
+
 def collage_unit() -> np.ndarray:
     """유닛 하나 안에 사진이 두 장 놓인 콜라주 (텐가 왼쪽 칸).
 

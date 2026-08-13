@@ -31,7 +31,8 @@ EMPHASIS_STYLE = re.compile(r"(background(-color)?\s*:\s*(?!(transparent|none|#f
 
 #: 리드에서 걸러낼 상투구 — 상품 설명이 아니라 쇼핑몰 안내문이다
 LEAD_NOISE = re.compile(
-    r"(사은품|배송|무통장|입금|적립금|쿠폰|이벤트\s*상품|재고\s*문의|고객센터|카카오톡|반품|교환)"
+    r"(사은품|배송|무통장|입금|적립금|쿠폰|이벤트\s*상품|재고\s*문의|고객센터|카카오톡|반품|교환"
+    r"|상품\s*(본)?\s*(내용|상세|정보)\s*(시작|보기)?$|상세\s*정보\s*시작)"
 )
 
 
@@ -96,6 +97,18 @@ def classify(url: str) -> str:
     if any(k in low for k in KEEP):
         return "keep"
     return "unknown"
+
+
+def _clean_lines(s: str) -> str:
+    """줄바꿈은 남기고 나머지 공백만 정리한다.
+
+    저자가 `<br>` 로 끊어 놓은 자리는 **뜻으로 끊은 자리**다.
+    `…나선을 이루며 돈다 <br> 즉시 필연의 높은 자극…` 을 한 줄로 이어붙이면
+    브라우저가 아무 데서나 접어 뜻이 어긋난 자리에서 줄이 바뀐다.
+    """
+    s = re.sub(r"[^\S\n]+", " ", s or "")
+    s = re.sub(r" *\n *", "\n", s)
+    return re.sub(r"\n{2,}", "\n", s).strip()
 
 
 def _clean_text(s: str) -> str:
@@ -204,10 +217,28 @@ def lead_blocks(soup, first_image) -> list[Block]:
 
     out: list[Block] = []
     for _box, parts in groups:
-        text = _clean_text(" ".join(str(x) for x in parts))
+        # 조각과 조각 사이에 `<br>` 이 있었으면 그 자리에서 줄을 바꾼다.
+        # 저자가 뜻으로 끊어 놓은 자리이므로 우리도 지킨다.
+        pieces = []
+        for i, x in enumerate(parts):
+            if i and _br_between(parts[i - 1], x):
+                pieces.append("\n")
+            # 원문 HTML 자체의 줄바꿈은 편집기가 접은 자리일 뿐이다. 먼저 지운다.
+            pieces.append(_clean_text(str(x)))
+        text = _clean_lines(" ".join(pieces))
         if len(text) < 2 or LEAD_NOISE.search(text):
             continue
         if any(text == b.text for b in out):
             continue
         out.append(Block(text=text, strong=any(_is_emphasized(x) for x in parts)))
     return out
+
+
+def _br_between(a, b) -> bool:
+    """두 글자 조각 사이에 `<br>` 이 있었는지."""
+    node = a.next_element
+    while node is not None and node is not b:
+        if getattr(node, "name", None) == "br":
+            return True
+        node = node.next_element
+    return False

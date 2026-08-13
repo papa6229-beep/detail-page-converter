@@ -99,6 +99,22 @@ def test_구획선은_본문_단_폭에만_그어져도_보인다():
     assert len([u for u in slice_image(img).units if u.rect.y0 >= 460]) == 3
 
 
+def test_캡션_방향은_한_자리에_뒤집히지_않는다():
+    """유닛 안 간격이 유닛 사이 간격보다 넓은 자리가 하나만 있어도,
+
+    가까운 쪽만 보고 붙이면 그 자리에서 캡션이 아래 그림으로 넘어간다.
+    버진루프에서 `네잎 클로버 모양의 …` 두 줄이 그렇게 아래 그림에 딸려갔다.
+    방향은 페이지 전체로 한 번 정한다 (4.3).
+    """
+    from .fixtures import uneven_gaps_column
+
+    result = slice_image(uneven_gaps_column(rows=4, odd=1))
+    assert len(result.units) == 4, [u.rect for u in result.units]
+    for u in result.units:
+        assert u.has_caption, f"캡션이 옆 유닛으로 넘어갔다: {u.rect}"
+        assert all(c.y0 > u.image.y1 for c in u.captions), "캡션이 그림 위로 갔다"
+
+
 def test_사진의_아랫변은_구획선이_아니다():
     """구획선은 여백 **속에** 놓인다. 한쪽만 보면 사진 아랫변도 통과한다.
 

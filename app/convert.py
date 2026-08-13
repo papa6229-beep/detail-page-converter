@@ -203,14 +203,37 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
         gap = max(art.x0 - su.rect.x1, su.rect.x0 - art.x1, 0)
         (extra_caps if gap > su.rect.h else absorbed)[j].append(su.rect)
 
+    # 한 줄에 나란히 놓인, 캡션 없는 것들은 **원본에서 한 줄이었다.**
+    # 따로 떼면 아이콘 네 개가 페이지 폭짜리 그림 네 장이 된다. 붙여 두면
+    # 저자가 늘어놓은 그대로 한 줄로 실린다. 캡션이 붙은 것은 건드리지 않는다 —
+    # 텐가의 2열 그리드는 좌우가 각각 제 캡션을 가진 별개의 유닛이다.
+    boxes = [union_all([Rect(u.rect.x0, u.rect.y0, u.rect.x1, p[-1].y1)] + absorbed[i])
+             for i, (u, p, _c) in enumerate(solid)]
+    rows: list[list[int]] = []
+    for i, (_u, _p, caps) in enumerate(solid):
+        prev = rows[-1][-1] if rows else None
+        same_row = (
+            prev is not None
+            and not caps and not extra_caps[i]
+            and not solid[prev][2] and not extra_caps[prev]
+            and boxes[i].y0 <= boxes[prev].y1 and boxes[prev].y0 <= boxes[i].y1
+        )
+        rows[-1].append(i) if same_row else rows.append([i])
+
+    merged = []
+    for row in rows:
+        head = row[0]
+        u, parts, caps = solid[head]
+        merged.append((u, parts, caps, union_all([boxes[i] for i in row]),
+                       [b for i in row for b in extra_caps[i]]))
+
     units: list[Unit] = []
-    for i, (u, parts, caps) in enumerate(solid):
-        art_box = union_all([Rect(u.rect.x0, u.rect.y0, u.rect.x1, parts[-1].y1)] + absorbed[i])
+    for i, (u, parts, caps, art_box, side_caps) in enumerate(merged):
         art = im.crop((art_box.x0, art_box.y0, art_box.x1 + 1, art_box.y1 + 1))
         name = _save(art, out, f"unit_{i:02d}.jpg")
 
         crop_name = ""
-        cap_boxes = list(caps) + extra_caps[i]
+        cap_boxes = list(caps) + side_caps
         if cap_boxes:
             box = union_all(cap_boxes)
             # 캡션이 유닛 폭 안에 있으면 폭을 그대로 살린다 — 글줄 앞뒤 여백이
