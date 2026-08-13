@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .background import DEFAULT_TOL, bg_mask
-from .geometry import Rect
+from .geometry import Rect, union_all
 
 ROW, COL = 0, 1
 
@@ -398,33 +398,60 @@ def build_columns(
         if len(cols) <= 1 and depth < cfg.max_rounds:
             # 열이 하나로 보여도 한 겹 아래에 열이 숨어 있을 수 있다
             # (텐가 상단 광고컷의 3열 그리드가 그렇다).
-            # 다만 **정말 열이 나왔을 때만** 그 분해를 받아들인다. 그러지 않으면
-            # 세로로 [이미지][캡션] 이 쌓인 1열 원본이 밴드마다 따로 놀아
-            # 짝을 지을 기회 자체가 사라진다.
+            #
+            # 예전에는 sub-band 하나에서 열이 나오면 **나머지 전부**를 따로 떼어
+            # 각각 칸으로 만들었다. 그래서 표가 없는 1열 원본에서 칸이 23개까지
+            # 생겼고, 이미지와 그 캡션이 서로 다른 칸으로 갈려 짝을 지을 기회 자체가
+            # 사라졌다. 열이 **정말 나온 자리만** 따로 떼고, 나오지 않은 것들은
+            # 붙여서 한 칸으로 둔다.
             subs, _ = split_axis(arr, band, bg, cfg, ROW, scan)
             if len(subs) > 1:
-                deeper = [c for s in subs for c in build_columns(arr, s, bg, cfg, depth + 1, scan)]
-                if any(c.col_total > 1 for c in deeper):
-                    out.extend(deeper)
+                pieces: list[tuple[str, object]] = []
+                for sub in subs:
+                    deeper = build_columns(arr, sub, bg, cfg, depth + 1, scan)
+                    if any(c.col_total > 1 for c in deeper):
+                        pieces.append(("cells", deeper))
+                    else:
+                        pieces.append(("plain", sub))
+                if any(kind == "cells" for kind, _ in pieces):
+                    i = 0
+                    while i < len(pieces):
+                        if pieces[i][0] == "cells":
+                            out.extend(pieces[i][1])
+                            i += 1
+                            continue
+                        j = i
+                        while j < len(pieces) and pieces[j][0] == "plain":
+                            j += 1
+                        span = union_all([r for _, r in pieces[i:j]])
+                        cell = _make_cell(arr, span, bg, cfg, scan, 0, 1)
+                        if cell is not None:
+                            out.append(cell)
+                        i = j
                     continue
 
         total = len(cols)
         for i, col in enumerate(cols):
-            col = trim(arr, col, bg, cfg, scan)
-            if col is None:
-                continue
-            subs, _ = split_axis(arr, col, bg, cfg, ROW, scan)
-            subs = [t for t in (trim(arr, s, bg, cfg, scan) for s in subs) if t is not None]
-            if not subs:
-                subs = [col]
-            out.append(
-                Node(
-                    rect=col,
-                    kind="column",
-                    axis=ROW if len(subs) > 1 else None,
-                    children=[Node(rect=s, kind="leaf") for s in subs],
-                    col_index=i,
-                    col_total=total,
-                )
-            )
+            cell = _make_cell(arr, col, bg, cfg, scan, i, total)
+            if cell is not None:
+                out.append(cell)
     return out
+
+
+def _make_cell(arr, rect: Rect, bg, cfg: CutConfig, scan: Scan, index: int, total: int) -> Node | None:
+    """칸 하나를 세로 순서의 밴드로 채운다."""
+    rect = trim(arr, rect, bg, cfg, scan)
+    if rect is None:
+        return None
+    subs, _ = split_axis(arr, rect, bg, cfg, ROW, scan)
+    subs = [t for t in (trim(arr, s, bg, cfg, scan) for s in subs) if t is not None]
+    if not subs:
+        subs = [rect]
+    return Node(
+        rect=rect,
+        kind="column",
+        axis=ROW if len(subs) > 1 else None,
+        children=[Node(rect=s, kind="leaf") for s in subs],
+        col_index=index,
+        col_total=total,
+    )

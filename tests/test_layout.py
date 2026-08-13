@@ -5,7 +5,7 @@ from slicer import slice_image
 from slicer.geometry import Rect
 from slicer.layout import CutConfig, build_columns, gutter_extents, trim
 
-from .fixtures import WHITE, box, page, two_column_grid
+from .fixtures import GRAY, WHITE, box, page, two_column_grid
 
 
 def _extents(img):
@@ -73,3 +73,27 @@ def test_괘선_두께_상한이_단색_콘텐츠를_지킨다():
     result = slice_image(img)
     banner = [u for u in result.units if u.rect.y0 < 160]
     assert banner and banner[0].rect.h > 100, "단색 배너가 구분자로 먹혔다"
+
+
+def test_열이_있는_밴드_하나가_나머지를_떼어놓지_않는다():
+    """한 밴드에서 열이 나왔다고 다른 밴드까지 각각 칸으로 만들면 안 된다.
+
+    예전에는 전부 아니면 전무였다. 표가 없는 1열 원본에서 칸이 23개까지 생겼고,
+    이미지와 그 캡션이 서로 다른 칸으로 갈려 짝을 지을 기회 자체가 사라졌다.
+    짝짓기는 칸 **안에서** 일어나기 때문이다.
+    """
+    img = page(600, 1200)
+    # 위: 3열 그리드 (열이 있는 밴드)
+    for x in (40, 230, 420):
+        box(img, x, 40, x + 140, 240, GRAY)
+    # 아래: 1열로 쌓인 [이미지][캡션] — 열이 없다
+    y = 320
+    for _ in range(3):
+        box(img, 40, y, 560, y + 200, GRAY)
+        box(img, 40, y + 214, 400, y + 226, GRAY)
+        y += 280
+
+    cells = build_columns(img, Rect(0, 0, 599, 1199), WHITE, CutConfig())
+    stacked = [c for c in cells if c.rect.y0 >= 300]
+    assert len(stacked) == 1, f"1열 구간이 칸 {len(stacked)}개로 쪼개졌다"
+    assert len(stacked[0].children) == 6, [b.rect.h for b in stacked[0].children]
