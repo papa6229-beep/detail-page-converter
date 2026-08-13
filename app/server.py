@@ -208,6 +208,8 @@ def autofill_available():
 
 class AutofillReq(BaseModel):
     job: str
+    #: 화면에서 넣은 키. 없으면 환경변수를 본다.
+    key: str | None = None
 
 
 @app.post("/api/autofill")
@@ -216,9 +218,9 @@ def api_autofill(req: AutofillReq):
 
     호출을 유닛마다 쪼개지 않는다. 한 상품에 한 번이면 5~10초 예산에 들어간다.
     """
-    key = os.environ.get("ANTHROPIC_API_KEY")
+    key = (req.key or "").strip() or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
-        raise HTTPException(400, "ANTHROPIC_API_KEY 가 없다")
+        raise HTTPException(400, "API 키가 없습니다. 화면 위쪽 키 칸에 넣으세요.")
     job = JOBS.get(req.job)
     if job is None or job.work is None:
         raise HTTPException(404, "그 작업을 찾을 수 없다")
@@ -249,7 +251,7 @@ def api_autofill(req: AutofillReq):
                        "data": base64.b64encode(crop.read_bytes()).decode()},
         })
     if not idx:
-        return {"captions": [], "note": "읽을 캡션 조각이 없다 (조각형 원본은 이미 텍스트가 있다)"}
+        return {"captions": [], "note": "읽을 그림 글자가 없습니다 (조각형 원본은 이미 텍스트가 들어 있습니다)."}
 
     body = json.dumps({
         "model": os.environ.get("CONVERTER_MODEL", "claude-sonnet-5"),
@@ -267,7 +269,7 @@ def api_autofill(req: AutofillReq):
         start, end = text.find("["), text.rfind("]")
         got = json.loads(text[start : end + 1])
     except Exception as e:
-        raise HTTPException(502, f"자동 채우기 실패: {e}") from e
+        raise HTTPException(502, f"글자를 읽지 못했습니다: {e}") from e
 
     captions = [""] * len(job.work.product.units)
     for slot, value in zip(idx, got):

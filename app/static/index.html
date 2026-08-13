@@ -73,6 +73,12 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       <input type="url" id="url" class="grow" placeholder="https://cdn-banana.bizhost.kr/banana_img/product_image/man/2439903_detail_20180720.jpg">
       <button class="ghost" id="btnUrl">URL로 변환</button>
     </div>
+    <div class="row" style="margin-top:14px">
+      <input type="password" id="apikey" class="grow" placeholder="Anthropic API 키 (sk-ant-…) — 그림에 박힌 글자를 자동으로 읽습니다">
+      <button class="ghost" id="btnKey">저장</button>
+    </div>
+    <p class="msg" id="keyMsg">키를 넣으면 <b>변환할 때 캡션이 저절로 채워집니다.</b>
+      이 브라우저에만 저장되고 서버에 남지 않습니다.</p>
     <div id="sheetMsg" class="msg"></div>
   </section>
 
@@ -111,7 +117,7 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
   </section>
 
   <p class="foot">캡션 칸 위의 점선 이미지는 <b>원본에서 잘라낸 그 자리</b>입니다. 보면서 문구를 고치세요.<br>
-  자동 채우기는 <code>ANTHROPIC_API_KEY</code> 가 설정돼 있을 때만 켜집니다.</p>
+  키를 넣으면 그 자리를 <b>자동으로 읽어</b> 채웁니다. 사장님은 확인하고 다듬기만 하시면 됩니다.</p>
 </div>
 
 <script>
@@ -122,6 +128,15 @@ const post = async (url, body) => {
   const r = await fetch(url, {method:'POST', headers:{'content-type':'application/json'}, body:JSON.stringify(body)});
   if (!r.ok) throw new Error((await r.json().catch(()=>({detail:r.statusText}))).detail);
   return r.json();
+};
+
+const KEY_STORE = 'converter.anthropic.key';
+const apiKey = () => ($('#apikey').value || localStorage.getItem(KEY_STORE) || '').trim();
+$('#apikey').value = localStorage.getItem(KEY_STORE) || '';
+$('#btnKey').onclick = () => {
+  const v = $('#apikey').value.trim();
+  if (v) localStorage.setItem(KEY_STORE, v); else localStorage.removeItem(KEY_STORE);
+  $('#keyMsg').textContent = v ? '저장했습니다. 이제 변환하면 캡션이 저절로 채워집니다.' : '지웠습니다.';
 };
 
 $('#btnXlsx').onclick = async () => {
@@ -181,18 +196,29 @@ async function runConvert(req) {
   $('#editCard').classList.remove('hide');
   $('#outCard').classList.add('hide');
   $('#editCard').scrollIntoView({behavior:'smooth', block:'start'});
+
+  // 그림에 박힌 글자는 사람이 칠 것이 아니다. 키가 있으면 바로 읽어 채운다.
+  const needsOcr = d.units.some(u => u.caption_crop && !u.caption);
+  if (needsOcr && apiKey()) await autofill();
 }
 
-$('#btnAuto').onclick = async () => {
-  if (!job) return;
-  $('#autoMsg').className='msg'; $('#autoMsg').textContent = '읽는 중…';
+async function autofill() {
+  $('#autoMsg').className='msg'; $('#autoMsg').textContent = '그림에서 글자를 읽는 중…';
+  $('#btnAuto').disabled = true;
   try {
-    const d = await post('/api/autofill', {job});
+    const d = await post('/api/autofill', {job, key: apiKey()});
     const areas = [...document.querySelectorAll('#units textarea')];
-    (d.captions||[]).forEach((c,i) => { if (c && areas[i]) areas[i].value = c; });
-    $('#autoMsg').textContent = d.note || '채웠습니다. 확인하고 고치세요.';
-  } catch (e) { $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message; }
-};
+    let n = 0;
+    (d.captions||[]).forEach((c,i) => { if (c && areas[i]) { areas[i].value = c; n++; } });
+    $('#autoMsg').textContent = d.note || `${n}칸을 채웠습니다. 보시고 고치세요.`;
+  } catch (e) {
+    $('#autoMsg').className='msg err'; $('#autoMsg').textContent = e.message;
+  } finally {
+    $('#btnAuto').disabled = false;
+  }
+}
+
+$('#btnAuto').onclick = () => { if (job) autofill(); };
 
 $('#btnRender').onclick = async () => {
   if (!job) return;
@@ -213,7 +239,7 @@ $('#btnRender').onclick = async () => {
 };
 
 fetch('/api/autofill/available').then(r=>r.json()).then(d=>{
-  if (!d.available) { $('#btnAuto').disabled = true; $('#btnAuto').title = 'ANTHROPIC_API_KEY 가 없습니다'; }
+  if (d.available) $('#keyMsg').textContent = '서버에 키가 설정돼 있습니다. 변환하면 캡션이 저절로 채워집니다.';
 });
 </script>
 </body>
