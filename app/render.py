@@ -93,8 +93,14 @@ p{margin:0}
 .band .em{color:#FF6B76}
 .hero{padding:72px 40px 32px;border-bottom:1px solid var(--rule)}
 .hero__brand{color:var(--accent)}
-.hero__title{margin:18px 0 0;font-size:48px;line-height:1.04;font-weight:800;letter-spacing:-.035em;text-wrap:balance}
-.hero__title em{font-style:normal;display:block;color:var(--muted);font-weight:700;font-size:.55em;margin-top:8px}
+.hero__tags{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px}
+.hero__tag{font-size:12.5px;font-weight:700;letter-spacing:-.01em;padding:5px 10px;
+ border:1px solid var(--rule);border-radius:999px;color:var(--muted);white-space:nowrap}
+.hero__title{margin:14px 0 0;font-size:48px;line-height:1.06;font-weight:800;letter-spacing:-.035em;text-wrap:balance}
+.hero__alt{display:block;margin-top:10px;font-size:.42em;font-weight:700;line-height:1.4;
+ color:var(--muted);letter-spacing:-.01em}
+.hero__title em{font-style:normal;display:block;color:var(--muted);font-weight:700;font-size:.28em;
+ margin-top:14px;letter-spacing:.04em}
 .hero__lead{margin-top:20px;max-width:34em;font-size:16px;line-height:1.8;color:var(--muted)}
 .hero__shot{margin:36px 0 0;background:var(--plate)}
 .specs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-bottom:1px solid var(--rule)}
@@ -175,6 +181,62 @@ FOOTER = [
 ]
 
 
+#: 상품명 맨 앞의 대괄호 묶음 — `[초보자세트][일본 직수입]` 처럼 여러 개 붙는다
+BRACKETS_RE = re.compile(r"^\s*((?:\[[^\]]*\]\s*)+)")
+TAIL_PAREN_RE = re.compile(r"\(([^()]*)\)\s*$")
+HANGUL_RE = re.compile(r"[가-힣]")
+#: 모델번호·브랜드 약자 — `(OH-3036)` `(NPR)` `(LVH)`. 창고에서 물건 찾을 때 쓰는 표시다.
+#: 띄어쓰기가 없고, 숫자가 섞였거나 아주 짧다. 이 선을 넓히면 `(ROMP Switch X)` 같은
+#: 진짜 외국어명까지 물류 표시로 오인해 잘라버린다.
+CODE_RE = re.compile(r"^(?=.*\d)[A-Z0-9][A-Z0-9\-.]{0,11}$|^[A-Z]{2,4}$")
+
+
+def split_name(name: str) -> tuple[list[str], str, str]:
+    """상품명을 특징 · 한글명 · 외국어명 세 줄로 가른다.
+
+    원본 상품명은 상세페이지용이 아니라 **물류용**이다. 브랜드명, 모델번호,
+    브랜드 약자가 뒤에 줄줄이 붙는다. 그대로 제목에 실으면 세 줄을 잡아먹는다.
+
+        [일본 직수입] AV 미니 명기 미우라 사쿠라(AVミニ名器 水卜さくら) - 니포리기프트 (OH-3037)(NPR)
+        └── 특징 ──┘ └──── 한글명 ────┘ └──── 외국어명 ────┘ └────── 버린다 ──────┘
+
+    브랜드는 이미 제목 위에 따로 실린다. 모델번호는 창고에서 물건 찾을 때 쓰는 것이다.
+
+    자리로만 가른다 — 특정 브랜드 이름이나 약자 목록을 적어두지 않는다.
+    그런 표를 만들면 새 브랜드가 들어올 때마다 고쳐야 한다.
+
+      · 맨 앞 대괄호들      → 특징
+      · ` - ` 뒤            → 버린다 (브랜드·모델번호 자리)
+      · 끝에 붙은 코드 괄호  → 버린다 (`(NPR)` `(OH-3036)` `(LVH)`)
+      · **맨 끝 괄호**      → 외국어명. 그 앞이 한글명
+
+    끝에서부터 본다. 첫 괄호를 외국어명으로 잡으면 `명기(名器) 시리즈 2(メイキシリーズ)`
+    에서 `시리즈 2` 가 통째로 사라진다. 맨 끝만 떼면 무엇도 조용히 없어지지 않는다.
+
+    괄호 안에 한글이 있으면 외국어명이 아니라 상품명의 일부다. 그때는 세 줄로 안 가른다 —
+    나누지 못하는 것보다 글자를 잃는 쪽이 나쁘다.
+    """
+    text = (name or "").strip()
+    m = BRACKETS_RE.match(text)
+    tags = re.findall(r"\[([^\]]*)\]", m.group(1)) if m else []
+    tags = [t.strip() for t in tags if t.strip()]
+    rest = (text[m.end():] if m else text).strip()
+
+    rest = re.split(r"\s+[-–—]\s+", rest)[0].strip()
+    while True:
+        mm = TAIL_PAREN_RE.search(rest)
+        if not (mm and CODE_RE.match(mm.group(1).strip())):
+            break
+        rest = rest[: mm.start()].strip()
+
+    mm = TAIL_PAREN_RE.search(rest)
+    if mm and not HANGUL_RE.search(mm.group(1)):
+        korean = rest[: mm.start()].strip(" -–—·,")
+        if korean:
+            return tags, korean, mm.group(0)
+    return tags, rest, ""
+
+
 def split_lead(lead: str) -> tuple[str, str]:
     """리드를 히어로용 첫 문장과 나머지로 가른다."""
     text = (lead or "").strip()
@@ -184,16 +246,18 @@ def split_lead(lead: str) -> tuple[str, str]:
     return (m.group(1).strip(), m.group(2).strip()) if m else (text, "")
 
 
+def _same_thing(name: str, text: str) -> bool:
+    """그 줄이 사실상 상품명인가."""
+    key = re.sub(r"[\s\[\]()]", "", (name or "")).lower()
+    text = re.sub(r"[\s\[\]()]", "", text or "").lower()
+    if not key or not text:
+        return False
+    return text == key or (len(text) >= 4 and text in key) or (len(key) >= 4 and key in text)
+
+
 def _squeeze(name: str, blocks):
     """제목과 같은 줄은 뺀다. 같은 말을 두 번 싣지 않는다."""
-    key = re.sub(r"[\s\[\]()]", "", (name or "")).lower()
-    out = []
-    for b in blocks:
-        text = re.sub(r"[\s\[\]()]", "", b.text).lower()
-        if key and (text == key or (len(text) >= 4 and text in key) or (len(key) >= 4 and key in text)):
-            continue
-        out.append(b)
-    return out
+    return [b for b in blocks if not _same_thing(name, b.text)]
 
 
 def _spec_row(specs) -> str:
@@ -221,7 +285,8 @@ def render(product, assets: Path, title: str | None = None) -> str:
     detailed = any(len(us) > 1 for _t, us in groups)
     body = product.body_units
 
-    name = title or m.name or "상세페이지"
+    full = title or m.name or "상세페이지"
+    tags, name, alt = split_name(full)
     sub = m.brand or m.category
 
     parts = [f"<title>{esc(name)}</title>", f"<style>{CSS}</style>", '<div class="page">']
@@ -230,11 +295,21 @@ def render(product, assets: Path, title: str | None = None) -> str:
     parts.append('<header class="hero">')
     if sub:
         parts.append(f'<p class="label hero__brand">{esc(sub)}</p>')
+    if tags:
+        chips = "".join(f'<span class="hero__tag">{esc(t)}</span>' for t in tags)
+        parts.append(f'<p class="hero__tags">{chips}</p>')
     parts.append(f'<h1 class="hero__title">{esc(name)}')
+    if alt:
+        parts.append(f'<span class="hero__alt">{esc(alt)}</span>')
     if m.code:
         parts.append(f"<em>No. {esc(m.code)}</em>")
     parts.append("</h1>")
     hero_lead, rest_lead = split_lead(product.lead)
+    # 리드 첫 줄이 상품명을 그대로 다시 적어둔 것이면 건너뛴다. 원본은 이미지 위에
+    # 상품명을 한 번 더 타이핑해 두는 일이 잦아서, 그대로 두면 제목 바로 밑에 같은
+    # 말이 또 실린다.
+    while hero_lead and _same_thing(full, hero_lead):
+        hero_lead, rest_lead = split_lead(rest_lead)
     if hero_lead:
         parts.append(f'<p class="hero__lead">{emphasize(hero_lead)}</p>')
     if ad:
@@ -244,7 +319,9 @@ def render(product, assets: Path, title: str | None = None) -> str:
     # ①-b 인트로 — 원본 맨 위에 직접 타이핑돼 있던 구간 (거의 모든 원본에 있다)
     intro = [b for b in getattr(product, "intro", []) if b.text.strip()]
     # 상품명 줄은 이미 제목으로 썼다. 두 번 싣지 않는다.
-    squeezed = _squeeze(name, intro)
+    # 원본 맨 위 타이핑 줄은 상품명을 통째로 다시 적어둔 경우가 많다. 자른 뒤가
+    # 아니라 **자르기 전 원문**과 대조해야 그 줄이 걸린다.
+    squeezed = _squeeze(full, intro)
     if squeezed:
         # 크게 세울 줄은 **하나만** 고른다. 원본에서 강조돼 있던 짧은 줄이 그것이다.
         # 둘 이상을 크게 세우면 큰 덩어리가 되어 오히려 안 읽힌다.

@@ -129,6 +129,40 @@ def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path
     assert html.count("<img ") == 13, "캡션이 없다고 그림을 버렸다"
 
 
+def test_상품명은_특징_한글명_외국어명_세_줄로_갈린다():
+    """원본 상품명은 상세페이지용이 아니라 물류용이다.
+
+    브랜드·모델번호·브랜드 약자가 뒤에 줄줄이 붙어 제목이 세 줄을 잡아먹는다.
+    브랜드는 이미 제목 위에 실리고, 모델번호는 창고에서 쓰는 것이다.
+    """
+    cases = {
+        "[일본 직수입] AV 미니 명기 미우라 사쿠라(AVミニ名器 水卜さくら) - 니포리기프트 (OH-3037)(NPR)":
+            (["일본 직수입"], "AV 미니 명기 미우라 사쿠라", "(AVミニ名器 水卜さくら)"),
+        # 대괄호는 여러 개 붙는다
+        "[초보자세트][일본 직수입] AV 미니 명기(AVミニ名器) - 니포리기프트 (OH-3036)(NPR)":
+            (["초보자세트", "일본 직수입"], "AV 미니 명기", "(AVミニ名器)"),
+        # 하이픈 없이 코드 괄호만 붙기도 한다
+        "[독일 직수입] 롬프 스위치 X(ROMP Switch X) (LVH)":
+            (["독일 직수입"], "롬프 스위치 X", "(ROMP Switch X)"),
+        # 괄호도 대괄호도 없으면 한 줄 그대로
+        "텐가 에그 실키2": ([], "텐가 에그 실키2", ""),
+    }
+    for name, want in cases.items():
+        assert render.split_name(name) == want, name
+
+
+def test_상품명을_가르다가_글자를_잃지_않는다():
+    """맨 끝 괄호만 뗀다. 첫 괄호를 외국어명으로 잡으면 뒷말이 통째로 사라진다."""
+    # `시리즈 2` 가 남아야 한다
+    assert render.split_name("명기(名器) 시리즈 2(メイキシリーズ) - 텐가") == (
+        [], "명기(名器) 시리즈 2", "(メイキシリーズ)")
+    # 끝 괄호에 한글이 있으면 외국어명이 아니다. 못 가르는 편이 잃는 것보다 낫다
+    tags, korean, alt = render.split_name("버진 루프(ヴァージンループ) 2세대(신형) - 라이드재팬")
+    assert alt == "" and "2세대(신형)" in korean
+    # 띄어쓴 외국어명을 모델번호로 오인해 잘라내면 안 된다
+    assert render.split_name("상품명(FOREIGN NAME) (OH-3037)(NPR)")[2] == "(FOREIGN NAME)"
+
+
 def _product_with_options(n_options: int, per_option, tmp_path: Path) -> Product:
     """옵션 n개, 옵션마다 사진 per_option(i)장짜리 상품을 만든다."""
     from app.product import Meta
