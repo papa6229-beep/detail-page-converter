@@ -82,6 +82,10 @@ class Meta:
     options: list[str] = field(default_factory=list)
     #: options 와 같은 자리의 원본 옵션 번호. 없던 자리는 빈 칸.
     option_numbers: list[str] = field(default_factory=list)
+    #: 엑셀을 읽었는가. **"옵션이 0개"와 "모른다"는 다른 말이다** —
+    #: 엑셀이 0개라고 했으면 그것은 사실이고, 그때 대괄호 말머리는 옵션명이 아니라
+    #: 세트 구성품 이름이다. 엑셀 없이 URL 하나로 돌릴 때는 알 길이 없으므로 믿는다.
+    options_known: bool = False
     specs: list[tuple[str, str, str]] = field(default_factory=list)
 
 
@@ -180,9 +184,17 @@ def split_tag(caption: str) -> tuple[str, str]:
 def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> None:
     """캡션 접두어를 옵션 태그로 옮긴다.
 
-    엑셀 옵션값이 있으면 대조해서 확인하고, 없으면 접두어를 그대로 믿는다.
-    판정이 아니라 관측이다 — 접두어가 있으면 있는 것이다.
+    엑셀 옵션값이 있으면 대조해서 확인한다. 판정이 아니라 관측이다.
+
+    **빈 리스트와 `None` 은 다른 말이다.** 빈 리스트는 엑셀이 "옵션이 없다"고
+    말해 준 것이고, `None` 은 엑셀이 없어 모른다는 뜻이다(URL 하나로 돌릴 때).
+    예전에는 둘 다 "모른다"로 읽고 말머리를 그대로 믿었다. 그래서 맨즈맥스
+    4종 BOX 세트에서 구성품 이름이 옵션 카드가 되고, `촉촉 홀 사용법 2STEP`
+    까지 5번 옵션으로 올라갔다. 한 박스에 든 세트는 옵션이 아니라 **1상품**이다.
     """
+    if option_values is not None and not option_values:
+        return  # 엑셀이 옵션이 없다고 했다 — 말머리는 세트 구성품 이름이다
+
     known = {re.sub(r"\s+", "", v).lower() for v in (option_values or [])}
     for u in units:
         tag, rest = split_tag(u.caption)

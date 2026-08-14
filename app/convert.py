@@ -327,6 +327,7 @@ def convert(row, workdir: Path, cache: Path) -> Work:
         meta=Meta(
             code=row.code, name=row.name, brand=row.brand, category=row.category,
             price=row.price, options=opts, option_numbers=row.option_numbers,
+            options_known=True,
         ),
         lead=body.lead,
         intro=[Lead(text=b.text, strong=b.strong) for b in body.lead_blocks],
@@ -365,5 +366,7 @@ def convert_url(url: str, workdir: Path, cache: Path, meta: Meta | None = None) 
     im = Image.open(io.BytesIO(fetch(url, cache))).convert("RGB")
     product = Product(meta=meta or Meta(), adapter="통이미지형")
     product.units, product.ad, ink, gaps = from_whole_image(url, im, out)
-    apply_tags(product.units, product.meta.options)
+    # 엑셀 없이 URL 하나로 돌리는 입구다. 옵션이 없다는 것이 아니라 **모르는 것**이므로
+    # 말머리를 그대로 믿는다. 빈 리스트를 넘기면 "없다"는 뜻이 되어 태그가 다 죽는다.
+    apply_tags(product.units, product.meta.options or None)
     return Work(product=product, verdict=gate.post_check(product, ink, gaps), ink_coverage=ink)

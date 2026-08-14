@@ -164,7 +164,8 @@ def api_render(req: RenderReq):
         if i < len(req.tags):
             u.option_tag = req.tags[i]
     if not any(req.tags):
-        apply_tags(p.units, p.meta.options)
+        # 엑셀에서 온 상품만 '옵션 0개' 를 사실로 받는다. URL 입구는 모르는 것이다.
+        apply_tags(p.units, p.meta.options if p.meta.options_known else None)
     if req.name is not None:
         p.meta.name = req.name
     if req.brand is not None:

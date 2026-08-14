@@ -130,6 +130,29 @@ def test_엑셀_옵션값에_없는_말머리는_태그가_아니다():
     assert units[1].option_tag == "웨이비 2"
 
 
+def test_엑셀이_옵션_0개라고_하면_세트_상품이다():
+    """맨즈맥스 4종 BOX — 한 박스에 다른 종류 넷이 든 **1상품**이다.
+
+    구성품마다 설명이 있고 말머리도 붙어 있지만 엑셀에는 옵션이 없다. 예전에는
+    빈 리스트를 "모른다"로 읽고 말머리를 그대로 믿어서, 구성품이 옵션 카드가 되고
+    `촉촉 홀 사용법 2STEP` 까지 5번 옵션으로 올라갔다.
+    """
+    def units():
+        return [Unit(caption="[웨이브] 물결 형태."),
+                Unit(caption="[도트] 알갱이 형태."),
+                Unit(caption="[촉촉 홀 사용법 2STEP] 사용 방법 안내.")]
+
+    세트 = units()
+    apply_tags(세트, [])  # 엑셀이 "옵션 없다" 고 말했다
+    assert [u.option_tag for u in 세트] == ["", "", ""]
+    assert 세트[0].caption.startswith("[웨이브"), "말머리는 본문에 남는다"
+
+    # 엑셀이 없으면(URL 하나로 돌릴 때) 모르는 것이므로 말머리를 믿는다
+    모름 = units()
+    apply_tags(모름, None)
+    assert [u.option_tag for u in 모름] == ["웨이브", "도트", "촉촉 홀 사용법 2STEP"]
+
+
 def test_사전_게이트는_이미지_없으면_보류():
     v = gate.pre_gate([], 0, 0)
     assert not v.ok and gate.NO_BODY_IMAGE in v.reasons
