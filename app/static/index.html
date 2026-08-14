@@ -42,6 +42,8 @@ tr[data-ok="false"]{opacity:.6}
 .pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;
   border:1px solid currentColor}
 .pill.ok{color:var(--ok)}.pill.no{color:var(--warn)}.pill.bad{color:var(--accent)}
+.chk{display:flex;align-items:center;gap:7px;font-size:13.5px;color:var(--muted);cursor:pointer;user-select:none}
+.chk input{margin:0;cursor:pointer}
 .work{display:flex;gap:18px;align-items:flex-start;margin-top:12px}
 .done{flex:none;width:330px;border:1px solid var(--rule);border-radius:9px;padding:14px;
   position:sticky;top:16px;max-height:82vh;overflow:auto}
@@ -104,8 +106,10 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
     </div>
     <div class="row" style="margin-top:10px">
       <button id="btnBatch">선택한 상품 한꺼번에 변환</button>
+      <label class="chk"><input type="checkbox" id="noFill">문구는 원본 그대로 (기준선용)</label>
       <span id="batchMsg" class="msg" style="margin:0"></span>
     </div>
+    <p class="msg" id="noFillMsg" style="margin-top:6px"></p>
     <div class="work">
       <div style="overflow-x:auto;min-width:0"><table id="tbl">
         <thead><tr><th><input type="checkbox" id="chkAll"></th><th>상품번호</th><th>상품명</th>
@@ -208,6 +212,16 @@ $('#btnXlsx').onclick = async () => {
 
 const rows = () => [...document.querySelectorAll('#tbl tbody tr')];
 
+// 켜 두면 다음에도 켜져 있어야 한다. 기준선은 여러 번 만들게 된다.
+$('#noFill').checked = localStorage.getItem('converter.nofill') === '1';
+$('#noFill').onchange = () => {
+  localStorage.setItem('converter.nofill', $('#noFill').checked ? '1' : '0');
+  $('#noFillMsg').textContent = $('#noFill').checked
+    ? '모델을 부르지 않고 원본 문구 그대로 변환합니다. 같은 상품은 몇 번을 돌려도 같은 파일이 나옵니다 — 고치기 전후를 비교할 때 쓰세요.'
+    : '';
+};
+$('#noFill').onchange();
+
 // 관리자 페이지가 카테고리 전체(800개)만 내려준다. 고르는 일은 이쪽에서 한다.
 $('#btnPick').onclick = () => {
   const want = new Set(($('#pick').value.match(/\d{4,}/g) || []));
@@ -276,7 +290,9 @@ $('#btnBatch').onclick = async () => {
       const d = await post('/api/convert', {sheet:sheetKey, row:Number(tr.dataset.i)});
       const caps = d.units.map(u => u.caption || '');
       let kept = '';
-      if (apiKey()) {
+      // 기준선을 만들 때는 모델을 부르지 않는다. 문구가 돌릴 때마다 조금씩 달라져
+      // 50개가 전부 "달라짐" 으로 뜨면, 우리 코드가 바꾼 것이 그 안에 묻힌다.
+      if (apiKey() && !$('#noFill').checked) {
         const a = await post('/api/autofill', {job:d.job, key:apiKey()});
         (a.captions||[]).forEach((c,k) => { if (c) caps[k] = c; });
         if (a.kept) kept = ` · 되돌린 칸 ${a.kept}`;
