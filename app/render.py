@@ -225,7 +225,13 @@ p{margin:0}
  display:flex;align-items:center;gap:12px}
 .optset__chip{width:13px;height:13px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
-.optset__grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:24px 20px}
+/* 열 수는 **사진 장수에서 정한다.** 예전에는 "210px 이상 들어가는 만큼" 이라
+   장수를 안 봤다. 그래서 2장이면 3열 중 둘만 채워 오른쪽 246px(34%)가 비고 사진이
+   227px 로 작았고, 4장이면 3+1 로 마지막 줄에 하나만 남았다. 49개 중 17묶음이 그랬다.
+   규칙은 하나다 — **마지막 줄에 하나만 남기지 않는다.** 2장·4장은 2열, 나머지는 3열. */
+.optset__grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px 20px}
+.optset__grid--2{grid-template-columns:repeat(2,1fr)}
+.optset__grid--1{grid-template-columns:1fr}
 .optset__item{margin:0}
 .optset__item img{background:var(--plate);border-radius:2px}
 .optset__item figcaption{margin-top:10px;font-size:13.5px;line-height:1.7;color:var(--muted)}
@@ -257,7 +263,11 @@ p{margin:0}
  .grid,.grid--wide{grid-template-columns:repeat(2,1fr)}
  .feature,.feature--flip{grid-template-columns:1fr;gap:18px}
  .feature--flip .feature__fig{order:0}
+ /* 열 수를 고정으로 바꿨으므로 좁은 화면 규칙을 직접 적는다.
+    예전에는 auto-fill 이 알아서 내려 줬다 — 700px 에서 2열, 430px 에서 1열. */
+ .optset__grid{grid-template-columns:repeat(2,1fr)}
  .foot__row{grid-template-columns:1fr}}
+@media (max-width:520px){.optset__grid{grid-template-columns:1fr}}
 """
 
 #: 공통 푸터 (6.1 ⑦). **상품마다 달라지는 말을 여기 두면 안 된다.**
@@ -514,7 +524,8 @@ def render(product, assets: Path, title: str | None = None) -> str:
                 f'<h3 class="optset__name"><span class="optset__chip" style="--chip:{chip}"></span>'
                 f'<span class="optset__no">{esc(product.option_number(tag, n))}.</span>{esc(tag)}</h3>'
             )
-            parts.append('<div class="optset__grid">')
+            span = {1: " optset__grid--1", 2: " optset__grid--2", 4: " optset__grid--2"}.get(len(us), "")
+            parts.append(f'<div class="optset__grid{span}">')
             for u in us:
                 parts.append('<figure class="optset__item">')
                 parts.append(f'<img src="{data_uri(assets / u.image)}" alt="{esc(tag)}">')
@@ -653,7 +664,10 @@ def guess_specs(product) -> list[tuple[str, str, str]]:
     상품 정보의 전부이고, 치수도 거기에만 있다 — 49개 중 10개가 그랬다.
     캡션만 보느라 `본체 사이즈(mm): 125 × 60 × 60` 을 통째로 놓치고 있었다.
     """
-    groups = len(product.option_groups) or len(product.meta.options)
+    # 옵션이 몇 종인지는 **엑셀이 말한 사실**이다. 사진이 붙은 옵션 수로 세면
+    # 2497907 처럼 4종인데 `옵션 3종` 이라고 적힌다 — 카드는 4개인데 스펙은 3종이라
+    # 서로 어긋난다. 손님이 주문할 때 고르는 것은 엑셀에 있는 4개다.
+    groups = len(product.meta.options) or len(product.option_groups)
     if groups:
         return [("옵션", str(groups), "종")]
 
