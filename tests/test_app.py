@@ -913,3 +913,29 @@ def _tiny_jpeg() -> bytes:
     b = io.BytesIO()
     Image.new("RGB", (8, 8), (200, 200, 200)).save(b, "JPEG")
     return b.getvalue()
+
+
+def test_CSS_는_페이지_밖으로_안_나간다():
+    """이 CSS 는 남의 페이지 안에서 산다 — 고도몰 상세설명 칸.
+
+    2496310 을 실제로 올려놓고 재보니 `img{width:100%}` 가 쇼핑몰 로고를 1200px 로
+    늘렸고, `body{font-family}` 가 쇼핑몰 글꼴을 바꿨고, 다크모드 규칙이 쇼핑몰
+    배경을 #121010 으로 만들었다. 선택자 하나가 밖으로 나가면 상세페이지가 아니라
+    쇼핑몰을 고치는 것이 된다.
+
+    사람이 57개를 눈으로 지킬 수 없으므로 여기서 센다.
+    """
+    import re
+
+    from app.render import CSS
+
+    css = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    나간것 = [
+        s.strip()
+        for m in re.finditer(r"(?:^|[{}])\s*([^{}@]+?)\s*\{", css, re.M)
+        for s in m.group(1).split(",")
+        if s.strip() and not s.strip().startswith(".page")
+    ]
+    assert not 나간것, f"쇼핑몰까지 잡는 선택자: {나간것}"
+    # 다크모드는 뺐다 — 쇼핑몰은 한 가지 모습으로 서 있다
+    assert "prefers-color-scheme" not in css and ":root" not in css
