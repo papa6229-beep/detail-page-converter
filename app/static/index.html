@@ -57,6 +57,8 @@ tr[data-ok="false"]{opacity:.6}
 .made .go{display:flex;gap:6px;margin-top:6px}
 .made .go button{padding:5px 10px;font-size:12px}
 @media(max-width:1000px){.work{flex-wrap:wrap}.done{width:100%;position:static;max-height:none}}
+#pastList{margin-top:12px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:0 20px}
+#pastList .made{border-top:1px solid var(--rule)}
 .units{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px;margin-top:18px}
 .unit{border:1px solid var(--rule);border-radius:9px;padding:14px;background:var(--panel)}
 .unit img.art{width:100%;border-radius:5px;background:#EFEBE9}
@@ -95,6 +97,16 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
     <p class="msg" id="keyMsg">키를 넣으면 <b>변환할 때 캡션이 저절로 채워집니다.</b>
       어디 키인지는 앞자리를 보고 알아서 가립니다. 이 브라우저에만 저장되고 서버에 남지 않습니다.</p>
     <div id="sheetMsg" class="msg"></div>
+  </section>
+
+  <section class="card hide" id="pastCard">
+    <p class="label">지난 회차</p>
+    <div class="row" style="margin-top:12px">
+      <span id="pastMsg" class="msg" style="margin:0"></span>
+      <button class="ghost" id="btnPast">목록 보기</button>
+      <button class="ghost" id="btnPastZip">전부 zip 으로 내려받기</button>
+    </div>
+    <div id="pastList" class="hide"></div>
   </section>
 
   <section class="card hide" id="listCard">
@@ -284,25 +296,31 @@ function addMade(code, name, job, d, caps) {
   $('#doneCard').classList.remove('hide');
 }
 
-// 이미 만들어 둔 것은 켤 때 되살린다. 어제 돌린 것을 오늘 다시 볼 수 있어야 한다.
+// 이미 만들어 둔 것이 있으면 **몇 개인지만** 알린다. 첫 화면에 목록을 펼치면
+// 아직 고르지도 않은 상품 칸을 밀어내고 자리를 차지한다. 실제로 그랬다.
 fetch('/api/made').then(r => r.json()).then(d => {
-  if (!d.made || !d.made.length) return;
-  const box = $('#doneList');
-  d.made.forEach(m => {
-    const el = document.createElement('div');
-    el.className = 'made';
-    el.innerHTML = `<span class="dot" style="background:var(--rule)"></span>
-      <div class="who"><p class="code">${m.code} <span style="font-weight:400;color:var(--muted)">${Math.round(m.bytes/1024)}KB</span></p>
-      <p class="nm">지난 회차</p>
-      <div class="go"><button class="ghost">미리보기</button><button class="ghost">내려받기</button></div></div>`;
-    const [see, get] = el.querySelectorAll('button');
-    see.onclick = () => window.open('/out/' + m.code, '_blank');
-    get.onclick = () => { location.href = '/out/' + m.code + '/file'; };
-    box.appendChild(el);
-  });
-  $('#doneCard').classList.remove('hide');
-  // 엑셀을 올리기 전에도 보여야 한다. 어제 만든 것을 다시 보려고 켠 것일 수 있다.
-  $('#listCard').classList.remove('hide');
+  const made = d.made || [];
+  if (!made.length) return;
+  $('#pastMsg').textContent = `${made.length}개를 만들어 뒀습니다. 서버를 껐다 켜도 남아 있습니다.`;
+  $('#pastCard').classList.remove('hide');
+  $('#btnPast').onclick = () => {
+    const box = $('#pastList');
+    box.classList.toggle('hide');
+    $('#btnPast').textContent = box.classList.contains('hide') ? '목록 보기' : '접기';
+    if (box.childElementCount) return;
+    made.forEach(m => {
+      const el = document.createElement('div');
+      el.className = 'made';
+      el.innerHTML = `<span class="dot" style="background:var(--rule)"></span>
+        <div class="who"><p class="code">${m.code} <span style="font-weight:400;color:var(--muted)">${Math.round(m.bytes/1024)}KB</span></p>
+        <div class="go"><button class="ghost">미리보기</button><button class="ghost">내려받기</button></div></div>`;
+      const [see, get] = el.querySelectorAll('button');
+      see.onclick = () => window.open('/out/' + m.code, '_blank');
+      get.onclick = () => { location.href = '/out/' + m.code + '/file'; };
+      box.appendChild(el);
+    });
+  };
+  $('#btnPastZip').onclick = () => { location.href = '/download/batch/all'; };
 });
 
 $('#btnBatch').onclick = async () => {
