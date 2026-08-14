@@ -68,8 +68,15 @@ def pre_gate(images: list[str], n_captions: int, n_options: int) -> Verdict:
     if not images:
         v.fail(NO_BODY_IMAGE, "상품 이미지가 한 장도 없다")
         return v
+    # 캡션 없는 여러 장은 **정상이다** — 적어만 두고 보류시키지 않는다.
+    #
+    #   없는 것은 유닛이 아니라 캡션이다 (3.1). 글 없이 광고컷만 늘어놓은 원본이
+    #   779행에 12개 있고, 그런 페이지는 그림을 순서대로 크게 싣는 것이 정답이다.
+    #   실물 49개에서 이 규칙은 2495239 · 2495240 둘을 빨강으로 켰고 **둘 다
+    #   멀쩡했다** — 히어로 · 광고컷 6~8장 · 푸터로 제대로 나왔다.
+    #   CAPTION_TRUNCATED 와 같은 자리다. 사람이 손댈 것이 없으면 빨간불이 아니다.
     if len(images) >= 6 and n_captions == 0:
-        v.fail(NO_CAPTION_MULTI_IMG, f"이미지 {len(images)}장인데 캡션이 0개")
+        v.note(NO_CAPTION_MULTI_IMG, f"이미지 {len(images)}장인데 캡션이 0개")
     if n_options and len(images) > 1 and n_options > len(images):
         v.fail(OPTION_UNMAPPABLE, f"옵션 {n_options}종 > 유닛 {len(images)}개")
     return v

@@ -209,11 +209,24 @@ def test_사전_게이트는_이미지_없으면_보류():
 
 
 def test_사전_게이트는_SI_X_같은_경우를_거른다():
-    # 이미지 9장 · 캡션 0 · 옵션 10 — 세 숫자가 서로 맞지 않는다 (7장)
+    # 이미지 9장 · 캡션 0 · 옵션 10 — 옵션이 유닛보다 많으면 배분할 수 없다 (7장)
     v = gate.pre_gate([f"u{i}.jpg" for i in range(9)], 0, 10)
     assert not v.ok
-    assert gate.NO_CAPTION_MULTI_IMG in v.reasons
     assert gate.OPTION_UNMAPPABLE in v.reasons
+
+
+def test_캡션_없는_여러_장은_보류시키지_않는다():
+    """없는 것은 유닛이 아니라 캡션이다 (3.1).
+
+    글 없이 광고컷만 늘어놓은 원본이 779행에 12개 있다. 그런 페이지는 그림을
+    순서대로 크게 싣는 것이 정답이고, 실제로 그렇게 나온다 — 실물 49개에서
+    이 규칙이 켠 빨간불 둘(2495239·2495240)은 **둘 다 멀쩡한 결과물**이었다.
+
+    사람이 손댈 것이 없으면 빨간불이 아니다. 적어만 둔다.
+    """
+    v = gate.pre_gate([f"u{i}.jpg" for i in range(9)], 0, 0)
+    assert v.ok, "멀쩡한 광고컷 페이지를 보류시켰다"
+    assert any(gate.NO_CAPTION_MULTI_IMG in n for n in v.notes), "적어는 둬야 한다"
 
 
 def test_문장이_안_끊겼는데_보류시키지_않는다():
