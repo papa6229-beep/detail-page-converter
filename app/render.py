@@ -576,10 +576,20 @@ SPEC_GAP = 8
 #: 어림수는 스펙이 아니다 — `200g대`, `10cm쯤`, `40g 안팎`.
 #: 스펙은 **잰 값**이라 어림말이 붙지 않는다. 붙었으면 그건 문장이다.
 ABOUT = r"(?!\s*(?:대|쯤|가량|안팎|남짓|여|정도))"
-SPEC_RE = re.compile(
-    r"(" + "|".join(sorted(SPEC_WORDS, key=len, reverse=True)) + r")"
-    r"[^.。]{0," + str(SPEC_GAP) + r"}?(\d+(?:\.\d+)?)\s*(mm|cm|m|kg|g|ml|l)(?![A-Za-z])" + ABOUT
+_WORDS = "|".join(sorted(SPEC_WORDS, key=len, reverse=True))
+_UNIT = r"(mm|cm|m|kg|g|ml|l)(?![A-Za-z])"
+SPEC_RE = re.compile(rf"({_WORDS})[^.。]{{0,{SPEC_GAP}}}?(\d+(?:\.\d+)?)\s*{_UNIT}" + ABOUT)
+
+#: 세 변을 한 줄에 적어 놓은 꼴 — `본체 사이즈：60×55×135mm`.
+#: 하나만 뽑으면 셋 중 아무거나 집어 `크기 135mm` 같은 오해를 남긴다. 통째로 싣는다.
+SPEC_XYZ = re.compile(rf"({_WORDS})[^.。]{{0,{SPEC_GAP}}}?(\d+(?:\s*[×xX*]\s*\d+)+)\s*{_UNIT}" + ABOUT)
+#: 단위를 앞에 괄호로 적어 놓은 꼴 — `본체 크기(mm): 130 × 18 × 18`.
+#: 값에 한글이 섞이면 멈춘다. `상품 사이즈(mm) 전체 길이132×전체 폭75` 같은 것은 안 받는다.
+SPEC_PAREN = re.compile(
+    rf"({_WORDS})\s*\(\s*(mm|cm|m|kg|g|ml|l)\s*\)\s*[:：]?\s*([HWDhwd]?\d+(?:\s*[×xX*]\s*[HWDhwd]?\d+)*)"
 )
+#: 손님이 사는 것은 상품이지 상자가 아니다. 상자 치수가 먼저 적힌 원본이 있다.
+SPEC_SKIP = ("패키지", "외장", "포장", "박스", "총중량", "총 중량")
 
 
 #: 사람이 손으로 적어 넣은 요약. `233g · 12.5cm` · `무게 233g, 전장 12.5cm` 둘 다 받는다.
@@ -638,18 +648,36 @@ def guess_specs(product) -> list[tuple[str, str, str]]:
     `200g대 초반` 은 키타노 미나 한 명의 캡션에 있던 말인데, 페이지 맨 위에 올리면
     세 배우 전부의 무게가 200g 이라고 말하는 셈이 된다. 어느 옵션의 값인지 못 밝힐
     바에는 안 싣는다.
+
+    **원본이 타이핑해 둔 글도 본다.** 상세페이지의 상당수는 위쪽에 직접 친 글이
+    상품 정보의 전부이고, 치수도 거기에만 있다 — 49개 중 10개가 그랬다.
+    캡션만 보느라 `본체 사이즈(mm): 125 × 60 × 60` 을 통째로 놓치고 있었다.
     """
     groups = len(product.option_groups) or len(product.meta.options)
     if groups:
         return [("옵션", str(groups), "종")]
 
-    text = " ".join(u.caption for u in product.units)
+    lines = [u.caption for u in product.units]
+    lines += [product.lead] + [b.text for b in getattr(product, "intro", [])]
     out: list[tuple[str, str, str]] = []
     seen: set[str] = set()
-    for word, value, unit in SPEC_RE.findall(text):
-        key = SPEC_WORDS[word]
-        if key in seen:
-            continue
+
+    def take(key: str, value: str, unit: str) -> None:
+        if key in seen or len(out) >= 4:
+            return
         seen.add(key)
-        out.append((key, value, unit))
+        out.append((key, re.sub(r"\s*([×xX*])\s*", r" \1 ", value).strip(), unit))
+
+    for raw in lines:
+        # 한 줄에 상품과 상자가 같이 적히기도 한다 — `중량: 본체 200g / 총중량 230g`.
+        # 줄째로 버리면 멀쩡한 본체 무게까지 날아간다. 조각으로 끊어서 본다.
+        for line in re.split(r"[\n/,]", raw or ""):
+            if any(w in line for w in SPEC_SKIP):
+                continue  # 상자 치수다. 손님이 사는 것은 상품이다
+            for word, value, unit in SPEC_XYZ.findall(line):
+                take(SPEC_WORDS[word], value, unit)
+            for word, unit, value in SPEC_PAREN.findall(line):
+                take(SPEC_WORDS[word], value, unit)
+            for word, value, unit in SPEC_RE.findall(line):
+                take(SPEC_WORDS[word], value, unit)
     return out
