@@ -15,7 +15,12 @@ import re
 from dataclasses import dataclass, field
 
 #: 캡션 접두어 `[웨이비 2] …` — 7장. 옵션 태그는 여기서 온다.
-TAG_RE = re.compile(r"^\s*[\[(]\s*([^\])]{1,24})\s*[\])]\s*")
+#:
+#: **여는 글자에 맞는 닫는 글자만 본다.** 예전에는 `[…]` 와 `(…)` 를 둘 다 받으려고
+#: 두 닫는 글자를 함께 막아 뒀는데(`[^\])]`), 그러면 이름 안의 괄호가 말머리의 끝이
+#: 되어 `[유니 다이아몬드 (화이트)]` 가 `유니 다이아몬드 (화이트` 로 잘렸다.
+#: 엑셀에는 괄호까지 붙은 이름으로 있으므로 그대로 대조가 실패한다.
+TAG_RE = re.compile(r"^\s*(?:\[\s*([^\]]{1,24}?)\s*\]|\(\s*([^)]{1,24}?)\s*\))\s*")
 #: 접두 번호 `01. ` — 엑셀 옵션값과 캡션 양쪽에 붙어 있다. 벗겨야 서로 맞는다 (7장).
 ORDINAL_RE = re.compile(r"^\s*\d+\s*[.)]\s*")
 
@@ -176,9 +181,10 @@ def split_tag(caption: str) -> tuple[str, str]:
     m = TAG_RE.match(caption or "")
     if not m:
         return "", (caption or "").strip()
+    inside = m.group(1) if m.group(1) is not None else m.group(2)
     # 닛포리 캡션은 `[01. 키타노 미나]`, 엑셀 옵션값은 `키타노 미나` 다.
     # 접두 번호를 양쪽에서 똑같이 벗겨야 대조가 된다. 안 벗기면 옵션이 하나도 안 붙는다.
-    return ORDINAL_RE.sub("", m.group(1)).strip(), caption[m.end() :].strip()
+    return ORDINAL_RE.sub("", inside).strip(), caption[m.end() :].strip()
 
 
 def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> None:
