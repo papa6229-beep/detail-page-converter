@@ -154,44 +154,17 @@ def split_tag(caption: str) -> tuple[str, str]:
     return ORDINAL_RE.sub("", m.group(1)).strip(), caption[m.end() :].strip()
 
 
-def _flat(s: str) -> str:
-    return re.sub(r"\s+", "", s or "").lower()
-
-
 def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> None:
     """캡션 접두어를 옵션 태그로 옮긴다.
 
     엑셀 옵션값이 있으면 대조해서 확인하고, 없으면 접두어를 그대로 믿는다.
     판정이 아니라 관측이다 — 접두어가 있으면 있는 것이다.
-
-    **이름이 하나도 안 맞을 때는 개수로 맞춘다.** 텐가 엑셀은 `복시(EGG-014)` 인데
-    상세페이지 말머리는 `[보쿠]` 다 — 모델코드가 붙은 데다 한글 표기까지 다르다
-    (Boxy 를 한쪽은 복시, 한쪽은 보쿠로 적었다). 글자로는 영영 못 맞춘다.
-    말머리 가짓수와 엑셀 옵션 수가 같으면 나온 순서대로 1:1 이다. 사람도 그렇게 읽고,
-    원본 쇼핑몰도 그래서 오타가 나도 굴러갔다.
-
-    이 되맞춤은 **이름으로 하나도 못 붙였을 때만** 한다. 이미 붙던 상품(닛포리)은
-    이 줄에 닿지도 않는다. 고치다가 딴 데가 깨질 자리를 안 만든다.
-
-    붙는 이름은 **엑셀 것**을 쓴다. 손님이 주문할 때 보는 글자가 그것이다.
     """
-    found: list[tuple[Unit, str, str]] = []
-    order: list[str] = []  # 나온 순서대로의 서로 다른 말머리
+    known = {re.sub(r"\s+", "", v).lower() for v in (option_values or [])}
     for u in units:
         tag, rest = split_tag(u.caption)
         if not tag:
             continue
-        found.append((u, tag, rest))
-        if tag not in order:
-            order.append(tag)
-
-    known = {_flat(v): v for v in (option_values or [])}
-    hit = [(u, known.get(_flat(t), t), r) for u, t, r in found if not known or _flat(t) in known]
-    if hit:
-        for u, tag, rest in hit:
-            u.option_tag, u.caption = tag, rest
-        return
-    if known and len(order) == len(option_values):
-        seat = dict(zip(order, option_values))
-        for u, tag, rest in found:
-            u.option_tag, u.caption = seat[tag], rest
+        if known and re.sub(r"\s+", "", tag).lower() not in known:
+            continue  # 옵션값에 없는 접두어는 태그가 아니라 그냥 말머리다
+        u.option_tag, u.caption = tag, rest

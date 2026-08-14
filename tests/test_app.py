@@ -81,39 +81,6 @@ def test_엑셀_옵션값에_없는_말머리는_태그가_아니다():
     assert units[1].option_tag == "웨이비 2"
 
 
-def test_이름이_하나도_안_맞으면_순서로_맞춘다():
-    """텐가 엑셀은 `복시(EGG-014)`, 상세페이지 말머리는 `[보쿠]` 다.
-
-    모델코드가 붙은 데다 Boxy 를 한쪽은 복시, 한쪽은 보쿠로 적었다. 글자로는 영영
-    못 맞춘다 — 여섯 개가 전부 실패해 옵션 카드가 빈 채로 나오고 설명은 특징으로
-    흘렀다. 가짓수가 같으면 나온 순서대로다. 원본 쇼핑몰도 그래서 굴러갔다.
-    """
-    엑셀 = ["웨이비2 (EGG-013) (DJ)", "복시(EGG-014)", "브러쉬(EGG-015) (DJ)"]
-    units = [Unit(caption="[웨이비 2] 물결이 얽힌 형태."),
-             Unit(caption="[보쿠] 여성의 음부와 유사한 형태."),
-             Unit(caption="[브러쉬] 사마귀 같은 돌기들.")]
-    apply_tags(units, 엑셀)
-    assert [u.option_tag for u in units] == 엑셀, "개수가 같은데도 못 붙였다"
-    assert units[1].caption == "여성의 음부와 유사한 형태."  # 말머리는 본문에서 뗀다
-
-
-def test_이름으로_붙던_상품은_순서_규칙에_닿지_않는다():
-    """되맞춤은 하나도 못 붙었을 때만. 이미 되던 것을 고치면 딴 데가 깨진다."""
-    units = [Unit(caption="[미우라 사쿠라] 설명."), Unit(caption="[키타노 미나] 설명.")]
-    apply_tags(units, ["키타노 미나", "미우라 사쿠라"])
-    # 순서로 붙였다면 미우라가 1번 자리(키타노)를 받았을 것이다
-    assert units[0].option_tag == "미우라 사쿠라"
-    assert units[1].option_tag == "키타노 미나"
-
-
-def test_개수가_안_맞으면_순서로_붙이지_않는다():
-    """`[주의]` 같은 말머리가 섞이면 가짓수가 어긋난다. 그때는 손대지 않는다."""
-    units = [Unit(caption="[주의] 사용 전 확인."), Unit(caption="[가나] 설명."),
-             Unit(caption="[다라] 설명.")]
-    apply_tags(units, ["에이", "비"])
-    assert [u.option_tag for u in units] == ["", "", ""]
-
-
 def test_사전_게이트는_이미지_없으면_보류():
     v = gate.pre_gate([], 0, 0)
     assert not v.ok and gate.NO_BODY_IMAGE in v.reasons
