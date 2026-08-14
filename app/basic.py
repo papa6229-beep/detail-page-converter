@@ -35,7 +35,8 @@ class Shot:
     white: float      #: 흰 바탕이 차지하는 비율
     color: float      #: 유채색 화소 비율 — 컬러 배경·배너를 가른다
     ink: float        #: 어두운 화소 비율 — 제품이 화면을 얼마나 채우는가
-    letters: int      #: 글자꼴 작은 덩어리 개수 — 글이 구워져 있는가
+    letters: int      #: 글자꼴 작은 덩어리 개수 — 검은 본문 글이 구워져 있는가
+    design: float     #: 유채색이 가장 빽빽한 가로 띠 — 분홍 제목·컬러 배경이 있는가
     solo: float       #: 가장 큰 덩어리가 어두운 화소에서 차지하는 몫 — 제품이 하나인가
     area: int
 
@@ -60,11 +61,28 @@ def _stats(arr: np.ndarray, r: Rect) -> Shot:
     lum = (crop[..., 0] * 299 + crop[..., 1] * 587 + crop[..., 2] * 114) // 1000
     sat = crop.max(2) - crop.min(2)
     white = float((lum >= 232).mean())
-    color = float(((sat >= 45) & (lum < 245)).mean())
+    tint = (sat >= 45) & (lum < 245)
+    color = float(tint.mean())
     ink = float(((lum < 115) & (sat < 40)).mean())
     letters, solo = _blobs(lum)
     area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
-    return Shot(r, white, color, ink, letters, solo, area)
+    return Shot(r, white, color, ink, letters, _densest(tint), solo, area)
+
+
+def _densest(mask: np.ndarray) -> float:
+    """유채색이 **가장 빽빽하게 몰린 가로 띠**의 밀도.
+
+    조각 전체 비율로는 못 잡는다. `03 제품 사이즈` 분홍 제목은 699×1823 조각에서
+    전체의 1.3% 밖에 안 되어 묽어지지만, 그 제목이 놓인 줄만 보면 32% 다.
+    **디자인 글은 넓게 흩어지지 않고 한 띠에 몰려 있다** — 그게 사진과 다른 점이다.
+
+    핑거위글 실측: 깨끗한 사진 0.4~4.2% ↔ 디자인 글이 박힌 것 23~100%.
+    """
+    rows = mask.mean(1)
+    k = max(1, len(rows) // 60)  # 제목은 한 줄이 아니라 띠다. 조각 높이의 1/60 로 묶는다
+    if len(rows) < k:
+        return float(rows.max()) if len(rows) else 0.0
+    return float(np.convolve(rows, np.ones(k) / k, mode="valid").max())
 
 
 def _blobs(lum: np.ndarray) -> tuple[int, float]:
@@ -177,13 +195,10 @@ def pick_hero(cands: list[Shot]) -> Shot | None:
     """
     if not cands:
         return None
-    # 이 페이지에서 '유채색이 많다'가 얼마인지부터 관측한다.
-    mid = float(np.median([c.color for c in cands]))
-    ceiling = max(0.15, mid * 2)
     clean = [
         c
         for c in cands
-        if c.color < ceiling and c.letters <= 6 and c.solo >= 0.9 and 0.03 <= c.ink <= 0.75
+        if c.design < DESIGN_INK and c.letters <= 6 and c.solo >= 0.9 and 0.03 <= c.ink <= 0.75
     ]
     if not clean:
         return None
@@ -243,6 +258,28 @@ CSS = """
 .gpage .key__d{font-size:14px;font-weight:500;color:var(--body);line-height:1.375}
 .gpage .keys__fig{position:absolute;left:0;top:0;width:320px;height:380px}
 .gpage .keys__fig img{width:100%;height:100%;object-fit:contain}
+.gpage .rule{margin:0 50px;height:1px;background:var(--ink)}
+.gpage .pt__t{display:flex;align-items:center;gap:8px;margin-top:12px;font-size:24px;font-weight:900}
+.gpage .pt{display:flex;flex-direction:column;gap:52px;margin-top:10px}
+.gpage .pt__b{display:flex;flex-direction:column;gap:16px}
+.gpage .pt__d{font-size:16px;font-weight:500;color:var(--body);line-height:1.625;
+ max-width:420px;white-space:pre-line}
+.gpage .pt__d--bar{border-left:4px solid var(--accent);border-radius:999px 0 0 999px;
+ padding:2px 0 2px 16px;max-width:436px}
+.gpage .pt__f{margin:0;border:1px solid var(--line);overflow:hidden}
+.gpage .sec--size{background:#f9fafb}
+.gpage .sec__h--flat{margin-top:0}
+.gpage .size__n{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:16px;
+ font-weight:700;color:var(--mute)}
+.gpage .size__w{display:flex;justify-content:center;margin-top:32px}
+.gpage .size__pill{display:inline-flex;align-items:center;gap:16px;padding:16px 40px;
+ border-radius:999px;border:2px solid var(--accent);background:#fff}
+.gpage .size__w span{display:inline-block}
+.gpage .size__wk{font-size:14px;font-weight:700;color:var(--soft);letter-spacing:.2em;
+ text-transform:uppercase}
+.gpage .size__wv{font-size:24px;font-weight:900;margin-left:16px}
+.gpage .size__w{align-items:center}
+.gpage .size__f{margin:32px 0 0;border:1px solid var(--line);background:#fff;overflow:hidden}
 .gpage .band{border-top:1px solid #d1d5db;border-bottom:1px solid #d1d5db;padding:16px 0;
  overflow:hidden;white-space:nowrap;text-align:center;color:var(--soft);
  font-size:14px;font-weight:500;letter-spacing:.25em;text-transform:uppercase}
@@ -257,7 +294,9 @@ CSS = """
  .gpage .pkg{position:static;width:160px;height:190px;margin:24px 0 0 auto}
  .gpage .keys{min-height:0}
  .gpage .keys__list,.gpage .keys__fig{position:static;width:100%;gap:16px}
- .gpage .keys__fig{height:260px;margin-bottom:16px}}
+ .gpage .keys__fig{height:260px;margin-bottom:16px}
+ .gpage .rule{margin:0 22px}
+ .gpage .sec__h{font-size:44px}}
 """
 
 
@@ -283,6 +322,12 @@ class Page:
     main: Path | None = None
     package: Path | None = None
     feature: Path | None = None
+    #: POINT 01 · 02 — (구간 제목, [(설명, 그림)] 최대 3덩어리)
+    #: 고도몰 생성기가 정한 칸 수다. 원본의 특징 구간이 몇 덩어리든 여기 여섯에 담긴다.
+    point1: tuple[str, list[tuple[str, Path | None]]] = ("", [])
+    point2: tuple[str, list[tuple[str, Path | None]]] = ("", [])
+    #: 사이즈 도해. 무게는 그림 위에 알약 모양으로 얹힌다.
+    size: Path | None = None
 
 
 #: 사장님이 고정한 다섯 항목. 1행 셋, 2행 둘 — 2행을 왼쪽에 두는 것은
@@ -360,9 +405,50 @@ def render_page(page: Page) -> str:
         out.append(f'<div class="keys__fig">{img(page.feature, page.name_kr)}</div>')
     out.append("</div></section>")
 
-    # ③ 영문명 띠 — 구간을 가르는 장식이다
-    if page.name_en:
-        out.append(f'<div class="band">{esc("  ·  ".join([page.name_en] * 6))}</div>')
+    # ③ 영문명 띠 — 구간을 가르는 장식이다. KEY FEATURE 아래와 SIZE 위 두 곳.
+    band = f'<div class="band">{esc("  ·  ".join([page.name_en] * 6))}</div>' if page.name_en else ""
+    out.append(band)
+
+    # ④ POINT 01 · 02 — 제목 · 부제 · (설명 + 그림) 덩어리들
+    for n, (title, blocks) in (("01", page.point1), ("02", page.point2)):
+        blocks = [(d, i) for d, i in blocks if d or i]
+        if not (title or blocks):
+            continue
+        if n == "02":
+            out.append('<div class="rule"></div>')
+        out.append('<section class="sec">')
+        out.append(dot(22))
+        out.append(f'<h2 class="sec__h">Point {n}</h2>')
+        if title:
+            out.append(f'<p class="pt__t">{esc(title)}{dot(12)}</p>')
+        out.append('<div class="pt">')
+        for i, (desc, im) in enumerate(blocks):
+            out.append('<div class="pt__b">')
+            if desc:
+                # 첫 덩어리 위에는 제목이 있어 그냥 글이고, 아래 덩어리들은 허전해서
+                # 강조색 세로 막대를 붙인다 (생성기의 그 콜아웃).
+                cls = "pt__d" if i == 0 else "pt__d pt__d--bar"
+                out.append(f'<p class="{cls}">{esc(desc)}</p>')
+            if im:
+                out.append(f'<figure class="pt__f">{img(im, title or page.name_kr)}</figure>')
+            out.append("</div>")
+        out.append("</div></section>")
+
+    # ⑤ SIZE — 무게 알약이 그림 **위**에 온다 (사장님 확정 사항)
+    if page.size or page.spec.get("무게"):
+        out.append(band)
+        out.append('<section class="sec sec--size">')
+        out.append('<h2 class="sec__h sec__h--flat">SIZE</h2>')
+        out.append(f'<p class="size__n">측정 방법에 따라 약간의 오차가 있을 수 있습니다{dot(12)}</p>')
+        if page.spec.get("무게"):
+            out.append(
+                f'<div class="size__w"><span class="size__pill">'
+                f'<span class="size__wk">Weight</span>'
+                f'<span class="size__wv">{esc(page.spec["무게"])}</span></span></div>'
+            )
+        if page.size:
+            out.append(f'<figure class="size__f">{img(page.size, "사이즈")}</figure>')
+        out.append("</section>")
 
     out.append(
         '<footer class="foot"><p class="foot__b">GODO MALL</p>'
@@ -370,3 +456,35 @@ def render_page(page: Page) -> str:
     )
     out.append("</div>")
     return "\n".join(x for x in out if x)
+
+
+#: 원본 디자인의 색 글씨·배경이 박혀 있다고 보는 자리. 핑거위글 실측 —
+#: 깨끗한 사진 0.4·0.6·0.6·4.2% ↔ 디자인이 박힌 것 23·31·31·32·38·61·62·100%.
+#: **8.8% 와 22.9% 사이가 통째로 비어 있어** 어디에 그어도 답이 같다.
+DESIGN_INK = 0.15
+
+#: 글 구간과 사진을 가르는 자리. 핑거위글 조각 열넷에서 **23 과 51 사이가 비어 있다** —
+#: 사진 쪽은 0·0·0·2·2·2·7·14·22·23, 글 구간 쪽은 51·53·89·125.
+TEXT_BAND = 40
+
+
+def pick_photos(cands: list[Shot]) -> list[Shot]:
+    """POINT 칸에 쓸 사진들. 대표컷보다 잣대가 헐거워야 한다.
+
+    깨끗한 누끼컷은 한 페이지에 두세 장뿐이라 여섯 칸을 못 채운다. POINT 사진은
+    손이 들고 있어도, 거치대에 얹혀 있어도, 작은 주석이 붙어 있어도 쓸 수 있다.
+    **못 쓰는 것은 세 가지뿐이다.**
+
+        글 구간이다      원본 디자인의 글이 통째로 딸려 온다 (글자꼴 51개 이상)
+        컬러 배경·배너다  원본 쇼핑몰의 색이 따라 들어온다
+        상자다          제 네모를 꽉 채운 검은 덩어리 — 패키지 자리로 간다
+
+    순서는 원본 그대로 둔다. 사장님이 *"동일한 사진 배치순을 쓰지 않고 변화를 줄
+    수 있으면 주는걸로"* 하셨지만, 그건 **무엇이 더 적절한지 알 때** 할 일이다.
+    사례가 하나뿐인 지금 순서를 흔들면 근거 없이 흔드는 것이다.
+    """
+    return [
+        c
+        for c in cands
+        if c.design < DESIGN_INK and c.letters < TEXT_BAND and 0.03 <= c.ink <= 0.75
+    ]

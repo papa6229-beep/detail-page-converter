@@ -1059,3 +1059,32 @@ def test_기본형_KEY_FEATURE_부제는_요약정보의_특징이다():
     assert "손가락 튕김 헤드" in html
     # `특징` 은 스펙 다섯 칸에는 안 들어간다
     assert 'class="specs"' not in html
+
+
+def test_원본의_색_글씨가_박힌_조각은_안_쓴다():
+    """`03 제품 사이즈` 같은 분홍 제목이 딸려 오면 남의 디자인이 따라 들어온다.
+
+    조각 전체 비율로는 못 잡는다 — 699×1823 조각에서 그 제목은 1.3% 라 묽어진다.
+    **디자인 글은 한 띠에 몰려 있다.** 그 띠만 보면 32% 다.
+    핑거위글 실측: 깨끗한 사진 0.4~4.2% ↔ 디자인이 박힌 것 23~100%.
+    """
+    import numpy as np
+
+    from app.basic import pick_photos, shots
+
+    img = np.full((2400, 800, 3), 255, np.uint8)
+    # ① 깨끗한 제품컷
+    _blob(img, 200, 700, 100, 700)
+    # ② 같은 제품컷인데 위에 분홍 제목 띠가 얹혀 있다
+    img[1300:1380, 120:680] = (233, 30, 140)
+    _blob(img, 1450, 1950, 100, 700)
+
+    got = shots(img)
+    깨끗 = [c for c in got if c.rect.y0 < 1000]
+    디자인 = [c for c in got if c.rect.y0 >= 1000]
+    assert 깨끗 and 디자인, f"시험 그림이 두 경우를 안 담았다: {[(c.rect.y0, c.size) for c in got]}"
+    assert 깨끗[0].design < 0.15 <= 디자인[0].design, (
+        f"색 띠를 못 쟀다: 깨끗 {깨끗[0].design:.1%} · 디자인 {디자인[0].design:.1%}"
+    )
+    골른것 = pick_photos(got)
+    assert 깨끗[0] in 골른것 and 디자인[0] not in 골른것
