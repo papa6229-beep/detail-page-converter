@@ -13,7 +13,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
@@ -187,3 +188,185 @@ def pick_hero(cands: list[Shot]) -> Shot | None:
     if not clean:
         return None
     return max(clean, key=lambda c: c.product_pixels)
+
+
+#: 강조색. 고도몰 생성기의 기본값을 그대로 쓴다 (`DEFAULT_THEME_COLOR`).
+ACCENT = "#E11D48"
+
+#: 이 CSS 도 **남의 페이지 안에서 산다** (#18). 선택자는 전부 `.gpage` 로 시작한다.
+#: 치수는 눈대중이 아니라 `PreviewGodo.tsx` 에 박힌 값을 그대로 옮겼다 —
+#: 폭 800 · Pretendard · 좌우 여백 50 · 메인이미지 700 · 제목 52px · 섹션제목 72px.
+CSS = """
+.gpage{--accent:#E11D48;--ink:#111827;--mute:#6b7280;--soft:#9ca3af;--body:#4b5563;
+ --plate:#f3f4f6;--line:#e5e7eb;
+ width:800px;max-width:100%;margin:0 auto;background:#fff;color:var(--ink);
+ font-family:"Pretendard","Pretendard Variable",-apple-system,BlinkMacSystemFont,
+ "Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
+ -webkit-font-smoothing:antialiased;word-break:keep-all;overflow-wrap:break-word}
+.gpage,.gpage *{box-sizing:border-box}
+.gpage p,.gpage h1,.gpage h2{margin:0}
+.gpage img{display:block;width:100%;height:auto}
+.gpage .dot{display:inline-block;border-radius:50%;flex:none;background:var(--accent)}
+.gpage .hero{padding:56px 50px}
+.gpage .hero__maker{text-align:right;margin-bottom:12px;font-size:24px;font-weight:900;letter-spacing:-.025em}
+.gpage .hero__wrap{position:relative}
+.gpage .hero__main{width:700px;margin:0 auto;border:1px solid var(--line);overflow:hidden}
+.gpage .hero__name{margin-top:32px;font-size:52px;line-height:1.05;font-weight:900;
+ letter-spacing:-.025em;max-width:460px;white-space:pre-line}
+.gpage .hero__en{margin-top:4px;font-size:20px;font-weight:500;letter-spacing:.15em;
+ color:var(--soft);text-transform:uppercase}
+.gpage .specs{margin-top:40px;display:flex;flex-direction:column;gap:16px}
+.gpage .specs__row{display:flex;gap:16px}
+.gpage .spec{width:145px;flex:none;min-width:0}
+.gpage .spec__k{display:flex;align-items:center;gap:6px;font-size:14px;font-weight:700;
+ color:var(--mute);white-space:nowrap}
+.gpage .spec__rule{height:2px;background:var(--ink);margin:8px 0}
+.gpage .spec__v{font-size:15px;font-weight:900;line-height:1.375}
+/* 패키지는 히어로 오른쪽 아래에 얹는다. 생성기에서는 마우스로 옮기지만 여기서는
+   기본 자리(x 468 · y 430 · 210×250)를 그대로 쓴다 — 원본에 없으면 아예 안 그린다. */
+.gpage .pkg{position:absolute;left:468px;top:430px;width:210px;height:250px;
+ display:flex;flex-direction:column;z-index:2}
+.gpage .pkg__box{flex:1;border:2px solid var(--ink);border-bottom:0;background:#fff;
+ display:flex;align-items:center;justify-content:center;overflow:hidden}
+.gpage .pkg__box img{width:100%;height:100%;object-fit:contain;padding:8px}
+.gpage .pkg__bar{background:var(--ink);color:#fff;text-align:center;font-weight:900;
+ font-size:14px;letter-spacing:.025em;padding:8px 0}
+.gpage .sec{padding:56px 50px;position:relative}
+.gpage .sec__h{margin-top:16px;font-size:72px;line-height:.9;font-weight:900;letter-spacing:-.05em}
+.gpage .sec__sub{margin-top:12px;font-size:18px;font-weight:700;color:var(--mute)}
+.gpage .keys{position:relative;margin-top:10px;min-height:440px}
+.gpage .keys__list{position:absolute;right:0;top:0;width:360px;display:flex;
+ flex-direction:column;gap:52px}
+.gpage .key{background:var(--plate);border-radius:12px;padding:16px 20px}
+.gpage .key__t{display:flex;align-items:center;gap:8px;margin-bottom:6px;
+ font-size:18px;font-weight:900}
+.gpage .key__d{font-size:14px;font-weight:500;color:var(--body);line-height:1.375}
+.gpage .keys__fig{position:absolute;left:0;top:0;width:320px;height:380px}
+.gpage .keys__fig img{width:100%;height:100%;object-fit:contain}
+.gpage .band{border-top:1px solid #d1d5db;border-bottom:1px solid #d1d5db;padding:16px 0;
+ overflow:hidden;white-space:nowrap;text-align:center;color:var(--soft);
+ font-size:14px;font-weight:500;letter-spacing:.25em;text-transform:uppercase}
+.gpage .foot{padding:64px 0;text-align:center;background:var(--ink)}
+.gpage .foot__b{font-size:24px;font-weight:900;color:var(--accent)}
+.gpage .foot__c{margin-top:12px;color:#6b7280;font-size:12px;letter-spacing:.2em;font-weight:500}
+@media (max-width:800px){
+ .gpage .hero,.gpage .sec{padding-left:22px;padding-right:22px}
+ .gpage .hero__main{width:100%}
+ .gpage .hero__name{font-size:34px;max-width:100%}
+ .gpage .sec__h{font-size:44px}
+ .gpage .pkg{position:static;width:160px;height:190px;margin:24px 0 0 auto}
+ .gpage .keys{min-height:0}
+ .gpage .keys__list,.gpage .keys__fig{position:static;width:100%;gap:16px}
+ .gpage .keys__fig{height:260px;margin-bottom:16px}}
+"""
+
+
+@dataclass
+class Page:
+    """기본형 한 장이 채워야 하는 칸. **고도몰 생성기의 칸과 같은 이름**이다.
+
+    사장님이 항목을 다섯으로 줄여 고정하셨다 — `타입 · 재질 · 치수 · 무게 · 전원`.
+    원본 요약정보에는 `특징` `색상` `메이커` 도 있지만 쓰지 않는다.
+    브랜드는 우상단에 따로 박히고, `특징` 은 KEY FEATURE 부제로 간다.
+
+    비어 있는 칸은 **그리지 않는다.** 없는 것을 지어내지 않는 것이 이 프로젝트의
+    규칙이고, 여기서는 화면에서도 그렇게 한다.
+    """
+
+    name_kr: str = ""
+    name_en: str = ""
+    maker: str = ""
+    #: `타입` `재질` `치수` `무게` `전원` `특징` — 원본이 적어 놓은 그대로
+    spec: dict[str, str] = field(default_factory=dict)
+    #: KEY FEATURE 세 칸 — (제목, 한 줄 설명)
+    keys: list[tuple[str, str]] = field(default_factory=list)
+    main: Path | None = None
+    package: Path | None = None
+    feature: Path | None = None
+
+
+#: 사장님이 고정한 다섯 항목. 1행 셋, 2행 둘 — 2행을 왼쪽에 두는 것은
+#: 오른쪽 패키지 상자에 안 가리게 하려는 것이다 (`PreviewGodo.tsx` 주석).
+SPEC_ROWS = (("타입", "재질", "치수"), ("무게", "전원"))
+#: 치수는 읽지 않는다. 옵션마다 다르고 그림에서 재면 부정확하다 — 고정값이다.
+SIZE_FIXED = "상세페이지 참조"
+
+
+def render_page(page: Page) -> str:
+    """기본형 한 장을 HTML 로. 단순형 렌더러와 **완전히 따로** 둔다.
+
+    고도몰 쪽 보고서의 금지선 5번과 같은 이유다 — *"기본형과 단순형의 렌더러를
+    합치지 말 것. 격리가 회귀 0을 만든 장치다."* 우리도 단순형 49개를 지켜야 한다.
+    """
+    from .render import data_uri, esc
+
+    def dot(px: int) -> str:
+        return f'<span class="dot" style="width:{px}px;height:{px}px"></span>'
+
+    def img(path: Path | None, alt: str) -> str:
+        return f'<img src="{data_uri(path)}" alt="{esc(alt)}">' if path else ""
+
+    out = [f"<style>{CSS}</style>", '<div class="gpage">']
+
+    # ① HERO — 제조사 우상단 · 누끼컷 700 중앙 · 상품명 · 영문명 · 스펙 · 패키지
+    out.append('<header class="hero">')
+    if page.maker:
+        out.append(f'<p class="hero__maker">{esc(page.maker)}</p>')
+    out.append('<div class="hero__wrap">')
+    if page.main:
+        out.append(f'<div class="hero__main">{img(page.main, page.name_kr)}</div>')
+    out.append(f'<h1 class="hero__name">{esc(page.name_kr)}</h1>')
+    if page.name_en:
+        out.append(f'<p class="hero__en">{esc(page.name_en)}</p>')
+
+    rows = [[(k, page.spec[k]) for k in row if page.spec.get(k)] for row in SPEC_ROWS]
+    if any(rows):
+        out.append('<div class="specs">')
+        for row in rows:
+            if not row:
+                continue
+            out.append('<div class="specs__row">')
+            for k, v in row:
+                out.append(
+                    f'<div class="spec"><p class="spec__k">{esc(k)}{dot(9)}</p>'
+                    f'<div class="spec__rule"></div>'
+                    f'<p class="spec__v">{esc(v)}</p></div>'
+                )
+            out.append("</div>")
+        out.append("</div>")
+
+    if page.package:
+        out.append(
+            f'<div class="pkg"><div class="pkg__box">{img(page.package, "패키지")}</div>'
+            f'<div class="pkg__bar">package desing</div></div>'
+        )
+    out.append("</div></header>")
+
+    # ② KEY FEATURE — 좌 이미지 · 우 세 칸. 부제는 요약정보의 `특징`.
+    out.append('<section class="sec">')
+    out.append(dot(22))
+    out.append('<h2 class="sec__h">KEY<br>FEATURE</h2>')
+    if page.spec.get("특징"):
+        out.append(f'<p class="sec__sub">{esc(page.spec["특징"])}</p>')
+    out.append('<div class="keys">')
+    out.append('<div class="keys__list">')
+    for title, desc in page.keys[:3]:
+        out.append(f'<div class="key"><p class="key__t">{dot(12)}{esc(title)}</p>')
+        if desc:
+            out.append(f'<p class="key__d">{esc(desc)}</p>')
+        out.append("</div>")
+    out.append("</div>")
+    if page.feature:
+        out.append(f'<div class="keys__fig">{img(page.feature, page.name_kr)}</div>')
+    out.append("</div></section>")
+
+    # ③ 영문명 띠 — 구간을 가르는 장식이다
+    if page.name_en:
+        out.append(f'<div class="band">{esc("  ·  ".join([page.name_en] * 6))}</div>')
+
+    out.append(
+        '<footer class="foot"><p class="foot__b">GODO MALL</p>'
+        '<p class="foot__c">COPYRIGHT © GODO MALL. ALL RIGHTS RESERVED.</p></footer>'
+    )
+    out.append("</div>")
+    return "\n".join(x for x in out if x)

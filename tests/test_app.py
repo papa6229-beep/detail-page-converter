@@ -1009,3 +1009,53 @@ def test_대표컷은_화면이_아니라_제품이_큰_것으로_고른다():
     assert 큰화면[0].area > 답[0].area, "큰화면 쪽이 더 커야 시험이 성립한다"
     assert 답[0].product_pixels > 큰화면[0].product_pixels, "제품 화소는 답 쪽이 많아야 한다"
     assert pick_hero(cands).rect.y0 == 답[0].rect.y0
+
+
+def test_기본형_CSS_도_페이지_밖으로_안_나간다():
+    """단순형과 같은 불변식 (#18). 기본형도 고도몰 상세설명 칸에 들어간다."""
+    import re
+
+    from app.basic import CSS
+
+    css = re.sub(r"/\*.*?\*/", "", CSS, flags=re.S)
+    나간것 = [
+        s.strip()
+        for m in re.finditer(r"(?:^|[{}])\s*([^{}@]+?)\s*\{", css, re.M)
+        for s in m.group(1).split(",")
+        if s.strip() and not s.strip().startswith(".gpage")
+    ]
+    assert not 나간것, f"쇼핑몰까지 잡는 선택자: {나간것}"
+
+
+def test_기본형은_빈_칸을_그리지_않는다():
+    """없는 것을 지어내지 않는 규칙을 화면에서도 지킨다.
+
+    고도몰 스펙은 다섯 칸으로 고정돼 있지만(타입·재질·치수·무게·전원), 원본이
+    안 적어 둔 항목은 칸 자체를 안 만든다. 빈 칸을 그리면 손님은 정보가 없는 것이
+    아니라 **값이 비어 있는 제품**으로 읽는다.
+    """
+    from app.basic import Page, render_page
+
+    가득 = render_page(Page(name_kr="가", name_en="A", maker="B",
+                          spec={"타입": "t", "재질": "m", "치수": "s", "무게": "w", "전원": "p"}))
+    assert 가득.count('class="spec"') == 5
+    assert 가득.count('class="specs__row"') == 2
+
+    성긴 = render_page(Page(name_kr="가", spec={"재질": "실리콘"}))
+    assert 성긴.count('class="spec"') == 1
+    assert 성긴.count('class="specs__row"') == 1, "값 없는 줄까지 그렸다"
+    # CSS 에는 규칙이 늘 있으므로 **마크업**을 본다
+    assert 'class="hero__maker"' not in 성긴 and 'class="hero__en"' not in 성긴
+    assert 'class="pkg"' not in 성긴, "패키지가 없는데 빈 상자를 그렸다"
+
+
+def test_기본형_KEY_FEATURE_부제는_요약정보의_특징이다():
+    """사장님 설명 — 요약정보 `특징` 이 KEY FEATURE 부제로 간다."""
+    from app.basic import Page, render_page
+
+    html = render_page(Page(name_kr="가", spec={"특징": "전립선 및 애널 자극 바이브레이터"},
+                            keys=[("손가락 튕김 헤드", "헤드로 전립선을 자극")]))
+    assert "전립선 및 애널 자극 바이브레이터" in html
+    assert "손가락 튕김 헤드" in html
+    # `특징` 은 스펙 다섯 칸에는 안 들어간다
+    assert 'class="specs"' not in html
