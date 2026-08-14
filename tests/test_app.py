@@ -939,3 +939,73 @@ def test_CSS_는_페이지_밖으로_안_나간다():
     assert not 나간것, f"쇼핑몰까지 잡는 선택자: {나간것}"
     # 다크모드는 뺐다 — 쇼핑몰은 한 가지 모습으로 서 있다
     assert "prefers-color-scheme" not in css and ":root" not in css
+
+
+def _canvas():
+    """기본형 원본을 흉내낸 세로 통이미지 — 대표컷 후보 다섯 가지를 늘어놓는다.
+
+    덩어리 사이는 넉넉히 벌리고(400px) 한 덩어리 안은 좁게(40px) 둔다. 분할기는
+    그 간격 차이를 보고 나누므로, 이렇게 두어야 의도한 조각이 나온다.
+    """
+    import numpy as np
+
+    img = np.full((4400, 800, 3), 255, np.uint8)
+    # ① 컬러 배경 위의 제품 — 원본 대표컷이 늘 이 꼴이라 못 쓴다
+    img[100:700, 60:740] = (250, 200, 220)
+    img[250:550, 200:600] = 30
+    # ② 글이 함께 구워진 조각 — 작은 덩어리를 흩어 놓는다
+    img[1100:1380, 200:600] = 30
+    for r in range(1420, 1660, 40):
+        for c in range(80, 720, 26):
+            img[r : r + 16, c : c + 14] = 40
+    # ③ 제품 둘이 위아래로 — 한 덩어리가 아니다
+    _blob(img, 2100, 2280, 250, 550)
+    _blob(img, 2320, 2500, 250, 550)
+    # ④ 제품 단독컷 (화면은 작아도 제품이 크게 찍힌 것) ← 이것이 답
+    _blob(img, 3000, 3400, 150, 650)
+    # ⑤ 충전 케이블처럼 가늘고 넓게 퍼진 것 — 화면은 제일 큰데 제품은 제일 작다
+    _blob(img, 3800, 4300, 60, 740, thick=0.035)
+    return img
+
+
+def _blob(img, y0, y1, x0, x1, thick=0.18):
+    """제품 실루엣 흉내 — 비스듬한 띠.
+
+    네모나 타원으로 그리면 제 네모를 8할 넘게 채워 '상자'로 걸린다. 실물 제품컷은
+    실루엣이 들쭉날쭉해 제 네모의 3할쯤만 채운다(핑거위글 단독컷 31%).
+    """
+    import numpy as np
+
+    h, w = y1 - y0, x1 - x0
+    yy, xx = np.ogrid[0:h, 0:w]
+    img[y0:y1, x0:x1][np.abs(xx / w - yy / h) < thick] = 30
+
+
+def test_대표컷은_컬러배경도_글자도_없는_제품_단독컷이다():
+    """기본형은 원본 대표컷을 못 쓴다 — 하나같이 컬러 배경 위에 제품을 얹어 놨다.
+
+    사장님 말: "기존 기본형의 디자인 냄새가 아예 없어야 한다."
+
+    그래서 페이지 어딘가의 흰 바탕 제품 단독컷을 찾아 세운다. 핑거위글 실측 —
+    컬러배경 유채 43% · 글 섞인 조각 글자꼴 89~125개 · 제품 둘 한덩어리 36~49%
+    · 제품 단독컷 한덩어리 100%.
+    """
+    from app.basic import pick_hero, shots
+
+    got = pick_hero(shots(_canvas()))
+    assert got is not None, "대표컷을 하나도 못 골랐다"
+    assert 2900 <= got.rect.y0 <= 3100, f"엉뚱한 조각을 골랐다: y0={got.rect.y0} {got.size}"
+
+
+def test_대표컷은_화면이_아니라_제품이_큰_것으로_고른다():
+    """충전 케이블 컷(726×774)이 제품 단독컷(608×455)보다 화면은 크지만
+    제품은 훨씬 작다(잉크 8% 대 31%). 크기로 고르면 케이블이 대표컷이 된다."""
+    from app.basic import pick_hero, shots
+
+    cands = shots(_canvas())
+    답 = [c for c in cands if 2900 <= c.rect.y0 <= 3100]
+    큰화면 = [c for c in cands if c.rect.y0 >= 3700]
+    assert 답 and 큰화면, f"시험 그림이 두 경우를 다 담고 있지 않다: {[(c.rect.y0, c.size) for c in cands]}"
+    assert 큰화면[0].area > 답[0].area, "큰화면 쪽이 더 커야 시험이 성립한다"
+    assert 답[0].product_pixels > 큰화면[0].product_pixels, "제품 화소는 답 쪽이 많아야 한다"
+    assert pick_hero(cands).rect.y0 == 답[0].rect.y0
