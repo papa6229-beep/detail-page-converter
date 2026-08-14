@@ -21,8 +21,9 @@ from dataclasses import dataclass, field
 #: 되어 `[유니 다이아몬드 (화이트)]` 가 `유니 다이아몬드 (화이트` 로 잘렸다.
 #: 엑셀에는 괄호까지 붙은 이름으로 있으므로 그대로 대조가 실패한다.
 TAG_RE = re.compile(r"^\s*(?:\[\s*([^\]]{1,24}?)\s*\]|\(\s*([^)]{1,24}?)\s*\))\s*")
-#: 접두 번호 `01. ` — 엑셀 옵션값과 캡션 양쪽에 붙어 있다. 벗겨야 서로 맞는다 (7장).
-ORDINAL_RE = re.compile(r"^\s*\d+\s*[.)]\s*")
+#: 접두 번호 `01. ` `#001 ` — 엑셀 옵션값과 캡션 양쪽에 붙어 있다. 벗겨야 서로 맞는다 (7장).
+#: `#` 형은 779행에서 2492321 하나뿐이지만(`#001 고백편` ← `고백편`) 규칙은 같은 자리다.
+ORDINAL_RE = re.compile(r"^\s*(?:#\s*\d+|\d+\s*[.)])\s*")
 
 
 @dataclass
@@ -184,7 +185,11 @@ def split_tag(caption: str) -> tuple[str, str]:
     inside = m.group(1) if m.group(1) is not None else m.group(2)
     # 닛포리 캡션은 `[01. 키타노 미나]`, 엑셀 옵션값은 `키타노 미나` 다.
     # 접두 번호를 양쪽에서 똑같이 벗겨야 대조가 된다. 안 벗기면 옵션이 하나도 안 붙는다.
-    return ORDINAL_RE.sub("", inside).strip(), caption[m.end() :].strip()
+    #
+    # **벗겨서 빈 값이 되면 그건 번호가 아니라 이름이다.** 2489395 의 옵션은
+    # `#1` `#2` `#3` 자체가 이름이다. 벗기면 태그가 사라진다.
+    bare = ORDINAL_RE.sub("", inside).strip()
+    return (bare or inside.strip()), caption[m.end() :].strip()
 
 
 def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> None:
@@ -201,11 +206,41 @@ def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> Non
     if option_values is not None and not option_values:
         return  # 엑셀이 옵션이 없다고 했다 — 말머리는 세트 구성품 이름이다
 
-    known = {re.sub(r"\s+", "", v).lower() for v in (option_values or [])}
+    flat = lambda s: re.sub(r"\s+", "", s).lower()
+    known = {flat(v): v for v in (option_values or [])}
     for u in units:
         tag, rest = split_tag(u.caption)
         if not tag:
             continue
-        if known and re.sub(r"\s+", "", tag).lower() not in known:
-            continue  # 옵션값에 없는 접두어는 태그가 아니라 그냥 말머리다
+        if known:
+            tag = _match(flat(tag), known)
+            if not tag:
+                continue  # 옵션값에 없는 접두어는 태그가 아니라 그냥 말머리다
         u.option_tag, u.caption = tag, rest
+
+
+def _match(tag: str, known: dict[str, str]) -> str:
+    """말머리를 엑셀 옵션값에 대어 본다. **붙으면 엑셀 쪽 이름으로 돌려준다.**
+
+    사장님 말: "옵션은 엑셀대로 가."
+
+    같은 옵션을 상세페이지와 엑셀이 다르게 적어 놓은 것이 779행에 흔하다.
+    한쪽이 다른 쪽을 **그대로 품고 앞에서부터 겹치는** 것이 대부분이다 —
+
+        루미카              ← 루미카(핑크)              페이지가 색을 뺐다
+        능숙한 입술(소프트)    ← 능숙한 입술               페이지가 경도를 더 적었다
+        슬림 타입(오렌지      ← 슬림 타입(오렌지)          말머리 괄호가 잘렸다
+
+    그래서 **앞머리가 겹치면 같은 것으로 본다. 단, 걸리는 옵션이 딱 하나일 때만.**
+    둘 이상 걸리면 어느 쪽인지 모르는 것이므로 안 붙인다 —
+    `멜티` 는 `멜티 관통` 과 `멜티 비관통` 둘 다에 걸린다.
+
+    779행 실측: 어긋난 말머리 80개 중 **30개가 붙고 2개는 애매해서 안 붙는다.**
+    붙은 30개는 전부 맞다. 나머지 48개는 애초에 옵션명이 아니거나(`사용 예시`
+    `일본 직수입`) 표기가 아주 다르다(`하시모토 아레나` ← `하시모토 아리나`).
+    그건 앞머리로 안 걸리므로 **틀리게 붙는 일이 없다.**
+    """
+    if tag in known:
+        return known[tag]
+    hits = [v for k, v in known.items() if k.startswith(tag) or tag.startswith(k)]
+    return hits[0] if len(hits) == 1 else ""
