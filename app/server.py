@@ -199,6 +199,35 @@ def download(jid: str):
     return FileResponse(path, filename=f"detail_{jid}.html", media_type="text/html")
 
 
+#: 저장된 결과물은 상품번호로 찾는다. 난수 작업번호는 서버 메모리에만 있어서
+#: 껐다 켜면 미리보기가 통째로 죽는다 — 파일은 멀쩡한데 링크만 끊긴다. 실제로 겪었다.
+def _made(code: str) -> Path:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,40}", code or ""):
+        raise HTTPException(404, "없는 상품번호")
+    path = WORK / "out" / f"{code}.html"
+    if not path.exists():
+        raise HTTPException(404, f"{code}.html 이 없습니다. 아직 안 만들었거나 초기화되었습니다.")
+    return path
+
+
+@app.get("/api/made")
+def api_made():
+    """이미 만들어 둔 것 목록. 서버를 껐다 켜도 남아 있다."""
+    out = WORK / "out"
+    files = sorted(out.glob("*.html"), key=lambda f: f.stat().st_mtime, reverse=True) if out.exists() else []
+    return {"made": [{"code": f.stem, "bytes": f.stat().st_size} for f in files]}
+
+
+@app.get("/out/{code}", response_class=HTMLResponse)
+def made_preview(code: str):
+    return _made(code).read_text(encoding="utf-8")
+
+
+@app.get("/out/{code}/file")
+def made_download(code: str):
+    return FileResponse(_made(code), filename=f"{code}.html", media_type="text/html")
+
+
 @app.get("/asset/{jid}/{name}")
 def asset(jid: str, name: str):
     job = JOBS.get(jid)
