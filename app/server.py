@@ -445,6 +445,31 @@ def api_save(req: SaveReq):
     return {"ok": True, "code": code, "file": str(dst), "bytes": dst.stat().st_size}
 
 
+@app.get("/download/batch/all")
+def download_all(codes: str = ""):
+    """만든 것을 한 덩어리로 내려준다.
+
+    상품 하나에 파일 하나라, 열 개만 돌려도 열 번 내려받게 된다. 폴더가 어디인지
+    설명하는 것보다 zip 한 번이 빠르다. HTML 안에 이미지가 통째로 들어 있어서
+    (data URI) 파일 하나가 곧 완성된 페이지다 — 따로 챙길 이미지 폴더가 없다.
+    """
+    import zipfile
+
+    out = WORK / "out"
+    files = sorted(out.glob("*.html")) if out.exists() else []
+    # 이번에 돌린 것만. 어제 것까지 딸려 오면 무엇이 새로 된 것인지 알 수 없다.
+    want = {c for c in (codes or "").split(",") if c.strip()}
+    if want:
+        files = [f for f in files if f.stem in want]
+    if not files:
+        raise HTTPException(404, "아직 만든 것이 없다")
+    bundle = WORK / "detail_all.zip"
+    with zipfile.ZipFile(bundle, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in files:
+            z.write(f, f.name)
+    return FileResponse(bundle, filename="detail_all.zip", media_type="application/zip")
+
+
 @app.post("/api/reset")
 def reset():
     for job in list(JOBS.values()):

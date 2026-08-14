@@ -201,10 +201,15 @@ p{margin:0}
 .band__note{margin-top:14px;font-size:16px;line-height:1.7;color:var(--band-muted);max-width:36em}
 .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:36px 22px;margin-top:44px}
 .grid--wide{grid-template-columns:repeat(2,1fr)}
+/* 칸은 제 몫보다 좁아질 수 있어야 한다. 격자 칸의 기본값(min-width:auto)은 안에 든
+   글자보다 작아지기를 거부해서, `GODSR-012/4582588350631` 같은 옵션명 하나가
+   세 칸을 통째로 밖으로 밀어낸다 — 2496310 에서 3번 카드가 검은 띠를 탈출했다. */
+.grid>*{min-width:0}
 .variant__fig{margin:0;background:#000}
 .variant__fig--card{padding:16px;border-radius:3px}
 .variant__name{margin-top:16px;font-size:21px;font-weight:800;letter-spacing:-.02em;
- display:flex;align-items:center;gap:9px;line-height:1.25}
+ display:flex;flex-wrap:wrap;align-items:center;gap:9px;line-height:1.25;
+ min-width:0;overflow-wrap:anywhere}
 .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
 .variant__no{color:var(--band-muted);font-variant-numeric:tabular-nums;flex:none}
@@ -216,6 +221,7 @@ p{margin:0}
 .optset{padding:8px 0 40px;border-top:1px solid var(--rule)}
 .optset:first-of-type{border-top:0}
 .optset__name{margin:24px 0 20px;font-size:28px;font-weight:800;letter-spacing:-.025em;
+ overflow-wrap:anywhere;
  display:flex;align-items:center;gap:12px}
 .optset__chip{width:13px;height:13px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}

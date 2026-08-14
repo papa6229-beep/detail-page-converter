@@ -212,6 +212,7 @@ $('#btnBatch').onclick = async () => {
   $('#batchLog').textContent = '';
   const log = s => { $('#batchLog').textContent += s + '\n'; };
   let done = 0, fail = 0;
+  const made = [];
   // 한 번에 하나씩. 동시에 던지면 API 한도에 걸리고 어디서 터졌는지도 알 수 없다.
   for (const [n, tr] of picked.entries()) {
     const code = tr.dataset.code;
@@ -230,7 +231,7 @@ $('#btnBatch').onclick = async () => {
                                  name:d.meta.name||'', brand:d.meta.brand||d.meta.category||'',
                                  lead:'', specs:''});
       const s = await post('/api/save', {job:d.job});
-      done++;
+      done++; made.push(s.code);
       log(`  ✓ ${code} · 유닛 ${d.units.length}개${kept} → ${s.code}.html`);
     } catch (e) {
       fail++;
@@ -240,6 +241,11 @@ $('#btnBatch').onclick = async () => {
   $('#batchMsg').className = fail ? 'msg err' : 'msg';
   $('#batchMsg').textContent = `끝. 성공 ${done}개${fail ? ` · 실패 ${fail}개` : ''} — work/out 폴더에 상품번호로 저장됐습니다.`;
   $('#btnBatch').disabled = false;
+  // 사람이 마지막에 한 번 더 눌러야 하는 단추를 남기지 않는다. 다 됐으면 받아 놓는다.
+  if (done) {
+    log(`\n  ${done}개를 zip 으로 내려받습니다.`);
+    location.href = '/download/batch/all?codes=' + encodeURIComponent(made.join(','));
+  }
 };
 
 $('#btnUrl').onclick = () => {
