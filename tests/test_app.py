@@ -283,6 +283,46 @@ def test_없는_섹션은_그리지_않는다(tmp_path: Path):
     assert "class=\"feature" in html
 
 
+def test_짝이_없는_페이지는_글이_위_그림이_아래다(tmp_path: Path):
+    """상세페이지의 상당수가 타이핑 글 + 제품컷 몇 장이다.
+
+    글이 정보고 그림은 구색이라, 원본이 놓은 순서를 그대로 따른다. 히어로가 대표컷을
+    가져가면 그림이 글보다 위로 올라가고, 남은 광고컷은 페이지 맨 아래로 밀려나
+    이어진 한 장이 위아래로 갈라진다(2495089).
+    """
+    from app.product import Lead
+
+    for n in ("ad0.jpg", "ad1.jpg"):
+        (tmp_path / n).write_bytes(_tiny_jpeg())
+    p = Product(intro=[Lead(text="원본 맨 위에 타이핑된 설명입니다.")], ad=["ad0.jpg", "ad1.jpg"])
+    html = render.render(p, tmp_path, title="짝 없음")
+    assert 'class="hero__shot"' not in html, "그림이 글보다 위로 갔다"
+    assert html.index('class="intro"') < html.index('class="showcase"'), "글이 그림보다 아래다"
+    assert html.count('class="showcase__shot"') == 2, "광고컷이 이어서 안 실렸다"
+
+    # 짝이 있으면 지금까지대로 히어로가 대표컷을 안는다
+    (tmp_path / "u.jpg").write_bytes(_tiny_jpeg())
+    q = Product(units=[Unit(image="u.jpg", caption="설명이 붙은 그림.")], ad=["ad0.jpg", "ad1.jpg"])
+    html2 = render.render(q, tmp_path, title="짝 있음")
+    assert 'class="hero__shot"' in html2
+
+
+def test_배치는_자동_채우기_여부에_흔들리지_않는다(tmp_path: Path):
+    """통이미지형은 사람이 채우기 전까지 캡션이 비어 있다.
+
+    캡션이 채워졌는지로 갈랐더니 자동 채우기를 켰느냐에 따라 레이아웃이 뒤집혔다.
+    원본에 글자리가 있었다는 증거는 **잘라 둔 캡션 조각**이다 — 변환할 때 정해진다.
+    """
+    for n in ("ad0.jpg", "u.jpg", "crop.jpg"):
+        (tmp_path / n).write_bytes(_tiny_jpeg())
+
+    def sections(caption):
+        p = Product(units=[Unit(image="u.jpg", caption=caption, caption_crop="crop.jpg")], ad=["ad0.jpg"])
+        return "hero__shot" in render.render(p, tmp_path, title="시험")
+
+    assert sections("") == sections("나중에 채워진 문구입니다."), "채우기 여부로 배치가 바뀐다"
+
+
 def test_캡션을_안_채워도_그림은_사라지지_않는다(tmp_path: Path):
     """사람이 캡션 칸을 비워둔 채 변환해도 유닛 12장이 다 나와야 한다.
 

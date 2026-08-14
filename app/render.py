@@ -350,6 +350,19 @@ def _squeeze(name: str, blocks):
     return [b for b in blocks if not _same_thing(name, b.text)]
 
 
+def _showcase(shots, name: str, fit, first: int = 1) -> list[str]:
+    """광고컷을 원본 순서대로 이어서 싣는다."""
+    out = []
+    for i, a in enumerate(shots):
+        out.append('<section class="showcase">')
+        out.append(
+            f'<figure class="showcase__shot"><img src="{data_uri(a)}" '
+            f'alt="{esc(name)} 안내 {i + first}"{fit(natural_width(a))}></figure>'
+        )
+        out.append("</section>")
+    return out
+
+
 def _spec_row(specs) -> str:
     if not specs:
         return ""
@@ -405,7 +418,17 @@ def render(product, assets: Path, title: str | None = None) -> str:
         hero_lead, rest_lead = split_lead(rest_lead)
     if hero_lead:
         parts.append(f'<p class="hero__lead">{emphasize(hero_lead)}</p>')
-    if ad:
+    # 이 페이지에 `이미지+설명` 짝이 하나라도 있는가. 없으면 **글이 정보고 그림은
+    # 구색**이다(사장님 말) — 상세페이지의 상당수가 그렇다. 원본이 글을 위에 두고
+    # 그림을 아래에 놓았으니 그 순서를 그대로 따른다. 히어로가 대표컷을 가져가면
+    # 그림이 글보다 위로 올라가고, 남은 광고컷은 페이지 맨 아래로 밀려나
+    # 이어진 한 장이 위아래로 갈라진다(2495089 에서 실제로 그랬다).
+    #
+    # **캡션이 채워졌는지를 보면 안 된다.** 통이미지형은 사람이나 모델이 채우기
+    # 전까지 캡션이 비어 있어서, 자동 채우기를 켰느냐에 따라 레이아웃이 뒤집힌다.
+    # 원본에 글자리가 있었다는 증거는 잘라 둔 캡션 조각이다 — 그건 변환할 때 정해진다.
+    paired = any(u.caption.strip() or u.caption_crop for u in product.units)
+    if ad and paired:
         parts.append(f'<figure class="hero__shot"><img src="{data_uri(ad[0])}" alt="{esc(name)}"{fit(natural_width(ad[0]))}></figure>')
     parts.append("</header>")
 
@@ -426,6 +449,10 @@ def render(product, assets: Path, title: str | None = None) -> str:
             cls = "intro__tag" if blk is tag else "intro__p"
             parts.append(f'<p class="{cls}">{emphasize(blk.text)}</p>')
         parts.append("</section>")
+
+    # ①-c 짝이 없는 페이지의 그림은 글 바로 다음에, **원본 순서대로 이어서** 놓는다.
+    if not paired:
+        parts.extend(_showcase(ad, name, fit, first=1))
 
     # ② 스펙 요약
     parts.append(_spec_row(m.specs))
@@ -469,11 +496,9 @@ def render(product, assets: Path, title: str | None = None) -> str:
             parts.append("</article>")
         parts.append("</div></section>")
 
-    # ⑤ 남은 광고컷
-    for i, a in enumerate(ad[1:]):
-        parts.append('<section class="showcase">')
-        parts.append(f'<figure class="showcase__shot"><img src="{data_uri(a)}" alt="{esc(name)} 안내 {i + 2}"{fit(natural_width(a))}></figure>')
-        parts.append("</section>")
+    # ⑤ 남은 광고컷 — 히어로가 첫 장을 가져간 경우에만 남는다
+    if paired:
+        parts.extend(_showcase(ad[1:], name, fit, first=2))
 
     # ④-b 옵션별 상세 — 옵션 하나에 사진이 여럿일 때만 (닛포리류)
     if detailed:
