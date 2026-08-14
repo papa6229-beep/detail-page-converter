@@ -420,6 +420,31 @@ def api_autofill(req: AutofillReq):
     return {"captions": captions, "kept": kept}
 
 
+class SaveReq(BaseModel):
+    job: str
+
+
+@app.post("/api/save")
+def api_save(req: SaveReq):
+    """만든 페이지를 상품번호로 한 폴더에 모아 둔다.
+
+    작업 폴더는 이름이 난수라 800개를 돌리고 나면 어느 것이 어느 상품인지 알 수 없다.
+    `work/out/2496310.html` 로 떨궈 두면 파일 이름만 보고 찾는다.
+    """
+    job = JOBS.get(req.job)
+    if job is None or job.work is None:
+        raise HTTPException(404, "그 작업을 찾을 수 없다")
+    src = job.dir / "detail.html"
+    if not src.exists():
+        raise HTTPException(400, "아직 렌더하지 않았다")
+    out = WORK / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    code = getattr(job.row, "code", "") or job.id
+    dst = out / f"{code}.html"
+    shutil.copyfile(src, dst)
+    return {"ok": True, "code": code, "file": str(dst), "bytes": dst.stat().st_size}
+
+
 @app.post("/api/reset")
 def reset():
     for job in list(JOBS.values()):

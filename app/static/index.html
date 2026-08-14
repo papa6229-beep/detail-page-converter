@@ -84,8 +84,19 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
 
   <section class="card hide" id="listCard">
     <p class="label">2 · 상품 고르기</p>
+    <div class="row" style="margin-top:12px">
+      <input type="text" id="pick" class="grow" placeholder="상품번호를 붙여넣으세요 — 2496310 2496138 2496325 (줄바꿈·쉼표 아무거나)">
+      <button class="ghost" id="btnPick">골라내기</button>
+      <button class="ghost" id="btnAll">전체 보기</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="btnBatch">선택한 상품 한꺼번에 변환</button>
+      <span id="batchMsg" class="msg" style="margin:0"></span>
+    </div>
+    <div id="batchLog" class="msg" style="white-space:pre-line"></div>
     <div style="overflow-x:auto;margin-top:12px"><table id="tbl">
-      <thead><tr><th>상품번호</th><th>상품명</th><th class="num">이미지</th><th class="num">캡션</th>
+      <thead><tr><th><input type="checkbox" id="chkAll"></th><th>상품번호</th><th>상품명</th>
+      <th class="num">이미지</th><th class="num">캡션</th>
       <th class="num">옵션</th><th>어댑터</th><th>사전 게이트</th><th></th></tr></thead>
       <tbody></tbody></table></div>
   </section>
@@ -159,7 +170,9 @@ $('#btnXlsx').onclick = async () => {
   d.rows.forEach(row => {
     const tr = document.createElement('tr');
     tr.dataset.ok = row.ok;
-    tr.innerHTML = `<td>${row.code}</td><td>${row.name}</td><td class="num">${row.images}</td>
+    tr.dataset.code = row.code; tr.dataset.i = row.i;
+    tr.innerHTML = `<td><input type="checkbox" class="pickbox"></td>
+      <td>${row.code}</td><td>${row.name}</td><td class="num">${row.images}</td>
       <td class="num">${row.captions}</td><td class="num">${row.options}</td><td>${row.adapter}</td>
       <td><span class="pill ${row.ok?'ok':'no'}">${row.ok?'통과':(row.reason||'보류')}</span></td>
       <td><button class="ghost" data-i="${row.i}">변환</button></td>`;
@@ -167,6 +180,66 @@ $('#btnXlsx').onclick = async () => {
     tb.appendChild(tr);
   });
   $('#listCard').classList.remove('hide');
+};
+
+const rows = () => [...document.querySelectorAll('#tbl tbody tr')];
+
+// 관리자 페이지가 카테고리 전체(800개)만 내려준다. 고르는 일은 이쪽에서 한다.
+$('#btnPick').onclick = () => {
+  const want = new Set(($('#pick').value.match(/\d{4,}/g) || []));
+  if (!want.size) { $('#batchMsg').className='msg err'; $('#batchMsg').textContent='상품번호를 넣으세요.'; return; }
+  let hit = 0;
+  rows().forEach(tr => {
+    const on = want.has(tr.dataset.code);
+    tr.style.display = on ? '' : 'none';
+    tr.querySelector('.pickbox').checked = on;
+    if (on) hit++;
+  });
+  const miss = [...want].filter(c => !rows().some(tr => tr.dataset.code === c));
+  $('#batchMsg').className = 'msg';
+  $('#batchMsg').textContent = `${hit}개 골랐습니다.` + (miss.length ? ` 엑셀에 없는 번호: ${miss.join(', ')}` : '');
+};
+
+$('#btnAll').onclick = () => { rows().forEach(tr => tr.style.display = ''); };
+$('#chkAll').onchange = e => rows().forEach(tr => {
+  if (tr.style.display !== 'none') tr.querySelector('.pickbox').checked = e.target.checked;
+});
+
+$('#btnBatch').onclick = async () => {
+  const picked = rows().filter(tr => tr.querySelector('.pickbox').checked);
+  if (!picked.length) { $('#batchMsg').className='msg err'; $('#batchMsg').textContent='먼저 상품을 고르세요.'; return; }
+  $('#btnBatch').disabled = true;
+  $('#batchLog').textContent = '';
+  const log = s => { $('#batchLog').textContent += s + '\n'; };
+  let done = 0, fail = 0;
+  // 한 번에 하나씩. 동시에 던지면 API 한도에 걸리고 어디서 터졌는지도 알 수 없다.
+  for (const [n, tr] of picked.entries()) {
+    const code = tr.dataset.code;
+    $('#batchMsg').className='msg';
+    $('#batchMsg').textContent = `${n+1}/${picked.length} · ${code} 변환 중…`;
+    try {
+      const d = await post('/api/convert', {sheet:sheetKey, row:Number(tr.dataset.i)});
+      const caps = d.units.map(u => u.caption || '');
+      let kept = '';
+      if (apiKey()) {
+        const a = await post('/api/autofill', {job:d.job, key:apiKey()});
+        (a.captions||[]).forEach((c,k) => { if (c) caps[k] = c; });
+        if (a.kept) kept = ` · 되돌린 칸 ${a.kept}`;
+      }
+      await post('/api/render', {job:d.job, captions:caps, tags:[],
+                                 name:d.meta.name||'', brand:d.meta.brand||d.meta.category||'',
+                                 lead:'', specs:''});
+      const s = await post('/api/save', {job:d.job});
+      done++;
+      log(`  ✓ ${code} · 유닛 ${d.units.length}개${kept} → ${s.code}.html`);
+    } catch (e) {
+      fail++;
+      log(`  ✗ ${code} · ${e.message}`);
+    }
+  }
+  $('#batchMsg').className = fail ? 'msg err' : 'msg';
+  $('#batchMsg').textContent = `끝. 성공 ${done}개${fail ? ` · 실패 ${fail}개` : ''} — work/out 폴더에 상품번호로 저장됐습니다.`;
+  $('#btnBatch').disabled = false;
 };
 
 $('#btnUrl').onclick = () => {
