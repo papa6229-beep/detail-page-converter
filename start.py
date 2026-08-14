@@ -75,12 +75,31 @@ def open_browser_later(url: str) -> None:
     threading.Timer(2.5, lambda: webbrowser.open(url)).start()
 
 
+def auto_update() -> None:
+    """켤 때 알아서 최신으로 당긴다.
+
+    zip 을 매번 다시 받는 것이 가장 불편한 지점이었다. git 으로 받아 두면
+    바뀐 것만 조용히 따라온다. 직접 고친 내용이 있으면 건드리지 않는다.
+    CONVERTER_NO_UPDATE=1 이면 건너뛴다.
+    """
+    if os.environ.get("CONVERTER_NO_UPDATE"):
+        return
+    try:
+        import update
+
+        if update.is_clone() and update.has_git() and update.pull(quiet=True):
+            print()
+    except Exception:
+        pass  # 갱신 실패가 실행을 막지는 않는다
+
+
 def main() -> int:
     _setup_console()
     print()
     print("  상세페이지 변환기")
     print("  " + "-" * 36)
     print()
+    auto_update()
 
     if sys.version_info < (3, 10):
         print(f"  [!] 파이썬 3.10 이상이 필요합니다. 지금은 {sys.version.split()[0]} 입니다.")

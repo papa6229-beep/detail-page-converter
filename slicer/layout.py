@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .background import DEFAULT_TOL, bg_mask
-from .geometry import Rect
+from .geometry import Rect, union_all
 
 ROW, COL = 0, 1
 
@@ -57,6 +57,8 @@ class CutConfig:
     min_gutter_frac: float = 0.5
     #: 이보다 납작한 사각형은 글줄로 보고 열을 찾지 않는다.
     max_line_aspect: float = 8.0
+    #: 구획선으로 인정하려면 위나 아래에 이만큼의 여백이 있어야 한다.
+    min_breath: int = 8
     #: 열이 하나뿐인 밴드를 몇 겹까지 더 파고들지.
     max_rounds: int = 2
 
@@ -240,8 +242,14 @@ def trim(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = No
 def split_axis(
     arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, axis: int, scan: Scan | None = None
 ) -> tuple[list[Rect], list[int]]:
-    """rect 를 axis 방향 구분자에서 자른다."""
-    sep, _ = _as_scan(scan, arr, bg, cfg).axis_flags(rect, axis)
+    """rect 를 axis 방향 구분자에서 자른다.
+
+    단색 줄은 **여백 속에 놓였을 때만** 구분자로 센다. 사진 안쪽에도 우연히
+    한 방향으로 균일한 2px 짜리 줄이 생긴다 — 트리니티의 살색 사진이 그래서
+    폭 52px 짜리 조각으로 떨어져 나갔다. 저자가 그은 선이라면 옆에 여백이 있다.
+    """
+    all_sep, rule = _as_scan(scan, arr, bg, cfg).axis_flags(rect, axis)
+    sep = (all_sep & ~rule) | breathing(all_sep, rule, cfg.min_breath)
     parts = runs_of(~sep)
     if not parts:
         return [], []
@@ -304,8 +312,18 @@ def gutter_extents(
         if not candidates:
             continue
         y0, y1 = max(candidates, key=lambda r: r[1] - r[0])
-        if y1 - y0 + 1 >= floor:
-            extents.append((y0, y1))
+        if y1 - y0 + 1 < floor:
+            continue
+        # 고랑은 **양쪽에 칸이 있을 때만** 고랑이다. 그리고 칸이라면 고랑을 따라
+        # 세로로 이어져 있어야 한다. 한쪽에 글자 몇 줄만 떠 있는 자리는 칸 사이가
+        # 아니라 그냥 여백이다 — 그걸 고랑으로 세는 바람에 트리니티 중간의 정면
+        # 사진이 옆 글줄 높이에서 두 동강 났다.
+        need = cfg.min_gutter_frac
+        left = (~free[y0 : y1 + 1, :xa]).any(axis=1).mean() if xa else 0.0
+        right = (~free[y0 : y1 + 1, xb + 1 :]).any(axis=1).mean() if xb + 1 < w else 0.0
+        if left < need or right < need:
+            continue
+        extents.append((y0, y1))
     return extents
 
 
@@ -331,26 +349,84 @@ def bands_from_gutters(
 
 
 def rule_rows(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None) -> np.ndarray:
-    """구간 **전체 폭**을 가로지르는 얇은 괘선의 행 마스크.
-
-    DESIGN.md 3.1 은 라인 검출로 유닛을 판정하지 말라고 한다. 옳다 — 그리고
-    여기서도 그러지 않는다. 이 마스크가 하는 일은 4.4 의 2단계, **칸의 기하**를
-    잡는 것뿐이다. 무엇이 유닛인지는 여전히 캡션과 간격이 정한다.
-
-    폭 전체를 요구하는 것이 핵심이다. 텐가 왼쪽 두 번째 칸 안에는 사진 콜라주를
-    가르는 얇은 선이 있는데, 그건 칸 경계가 아니라 그림의 일부다. 페이지를 가로지르는
-    표 선만이 칸을 가른다. 칸 폭에서 재면 둘이 구별되지 않는다.
-    """
+    """얇은 단색 가로줄의 행 마스크. 여백 여부는 보지 않는다."""
     _, rule = _as_scan(scan, arr, bg, cfg).axis_flags(rect, ROW)
     return rule
 
 
-def rule_gaps(rules: np.ndarray, origin: int, bands: list[Rect]) -> list[bool]:
-    """밴드 사이 여백에 구간 전체 폭의 괘선이 들어 있는지."""
+def breathing(sep: np.ndarray, rule: np.ndarray, min_breath: int) -> np.ndarray:
+    """단색 줄 중 **양옆이 다 여백인 것**만 남긴다.
+
+    구획선은 여백 **속에** 놓인다. 한쪽만 봐서는 안 된다 — 사진의 아랫변도
+    단색이고 그 아래는 여백이라, 한쪽만 보면 통과한다. 텐가 왼쪽 칸의 콜라주가
+    그 한 줄(y=1824) 때문에 위아래로 쪼개졌다. 위가 사진에 딱 붙어 있으면
+    그건 저자가 그은 선이 아니라 그림의 가장자리다.
+    """
+    blank = sep & ~rule  # 배경만 있는 줄
+    out = np.zeros_like(rule)
+    n = len(rule)
+    for s, e in runs_of(rule):
+        # 사각형 가장자리에 닿은 줄은 바깥이 여백인지 알 수 없다. 잘라 봐야
+        # 빈 조각만 나오므로 구획선으로 세지 않는다.
+        if s == 0 or e == n - 1:
+            continue
+        up = 0
+        while s - 1 - up >= 0 and blank[s - 1 - up]:
+            up += 1
+        down = 0
+        while e + 1 + down < n and blank[e + 1 + down]:
+            down += 1
+        if min(up, down) >= min_breath:
+            out[s : e + 1] = True
+    return out
+
+
+def separator_rows(arr: np.ndarray, rect: Rect, bg, cfg: CutConfig, scan: Scan | None = None) -> np.ndarray:
+    """**저자가 그은 구획선**의 행 마스크.
+
+    DESIGN.md 3.1 은 라인 검출로 유닛을 판정하지 말라고 한다. 옳다 — 여기서도
+    그러지 않는다. 이 마스크가 하는 일은 4.4 의 2단계, **칸의 기하**를 잡는 것뿐이다.
+    무엇이 유닛인지는 여전히 캡션과 간격이 정한다.
+
+    처음에는 **구간 전체 폭**을 가로지르는 줄만 인정했다. 텐가 왼쪽 칸 안의 사진
+    콜라주를 가르는 선을 칸 경계로 먹지 않으려던 것이다. 그런데 저자가 본문 단
+    폭에만 선을 긋는 원본이 있다 — 트리니티가 그렇다. 페이지 폭을 요구하니
+    구분선을 하나도 못 보고, 사진 다섯 장과 그 문구가 유닛 하나로 뭉쳤다.
+
+    폭이 아니라 **여백**으로 가른다. 구획선은 여백 속에 놓이고, 그림의 일부인
+    선은 콘텐츠에 딱 붙어 있다. `_ad_blocks` 에서 이미 이 기준으로 텐가 상단을
+    갈랐고, 같은 기준이 칸 안에서도 통한다. 폭보다 이쪽이 본질이다.
+    """
+    sep, rule = _as_scan(scan, arr, bg, cfg).axis_flags(rect, ROW)
+    return breathing(sep, rule, cfg.min_breath)
+
+
+def rule_gaps(arr: np.ndarray, bands: list[Rect], bg, cfg: CutConfig, scan: Scan | None = None) -> list[bool]:
+    """밴드 사이 여백에 **저자가 그은 구획선**이 들어 있는지.
+
+    선의 폭은 그 선이 가르는 **두 밴드의 폭**에서 잰다.
+
+    처음에는 구간 전체 폭을 요구했다. 텐가 왼쪽 칸 안의 콜라주 선을 칸 경계로
+    먹지 않으려던 것이다. 그런데 페이지 어딘가에 본문 단보다 넓은 것이 하나만
+    있어도 본문 폭의 구획선은 전체 폭을 못 채운다 — 트리니티가 그래서 선을
+    하나도 못 보고, 사진 다섯 장과 그 문구가 유닛 하나로 뭉쳤다.
+
+    칸 폭에서 재도 안 된다. 칸 하나에 밴드가 여럿 들어 있으면 칸은 그중 제일
+    넓은 것의 폭이 되어, 다시 같은 문제가 된다.
+
+    가르는 두 조각만큼만 재면 둘 다 풀린다. 그림 속의 선은 여백 판정에서 걸린다.
+    """
+    scan = _as_scan(scan, arr, bg, cfg)
     out: list[bool] = []
     for a, b in zip(bands, bands[1:]):
-        s, e = a.y1 + 1 - origin, b.y0 - 1 - origin
-        out.append(bool(rules[max(s, 0) : e + 1].any()) if e >= s else False)
+        if b.y0 <= a.y1 + 1:
+            out.append(False)
+            continue
+        span = Rect(min(a.x0, b.x0), a.y0, max(a.x1, b.x1), b.y1)
+        sep, rule = scan.axis_flags(span, ROW)
+        mark = breathing(sep, rule, cfg.min_breath)
+        s, e = a.y1 + 1 - span.y0, b.y0 - 1 - span.y0
+        out.append(bool(mark[s : e + 1].any()))
     return out
 
 
@@ -363,6 +439,42 @@ def _has_columns(rect: Rect, cfg: CutConfig) -> bool:
     글자 덩어리로 부서진다.
     """
     return rect.w <= cfg.max_line_aspect * rect.h
+
+
+def _join_short_columns(arr, band: Rect, cols: list[Rect], bg, cfg: CutConfig, scan: Scan) -> list[Rect]:
+    """밴드를 세로로 가로지르지 못하는 칸들은 도로 이어 붙인다.
+
+    글자 사이 여백도 배경이라 세로 구분자로 보인다. 그래서 사진 **옆에** 놓인 문구
+    한 줄이 글자 덩어리 아홉 개로 부서졌다 — 트리니티 중간의 `"모에 구멍 트리니티"
+    정면 사진` 이 그랬다.
+
+    납작함으로는 못 가른다. 글자 덩어리 하나는 16×9 라 납작하지도 않다.
+    가르는 것은 **밴드를 세로로 가로지르는가**다. 텐가 아이콘 열 개는 밴드 높이를
+    꽉 채우니 그대로 남고, 글줄 조각은 밴드 높이의 5% 뿐이라 하나로 붙는다.
+
+    붙이는 것이지 버리는 것이 아니다. 불변식 ①은 그대로다.
+    """
+    if len(cols) <= 1:
+        return cols
+    floor = max(cfg.min_panel, int(cfg.min_gutter_frac * band.h))
+    tall = []
+    for c in cols:
+        t = trim(arr, c, bg, cfg, scan)
+        tall.append(t is not None and t.h >= floor)
+
+    out: list[Rect] = []
+    i = 0
+    while i < len(cols):
+        if tall[i]:
+            out.append(cols[i])
+            i += 1
+            continue
+        j = i
+        while j < len(cols) and not tall[j]:
+            j += 1
+        out.append(union_all(cols[i:j]))
+        i = j
+    return out
 
 
 def build_columns(
@@ -392,39 +504,67 @@ def build_columns(
 
         if _has_columns(band, cfg):
             cols, _ = split_axis(arr, band, bg, cfg, COL, scan)
+            cols = _join_short_columns(arr, band, cols, bg, cfg, scan)
         else:
             cols = [band]
 
         if len(cols) <= 1 and depth < cfg.max_rounds:
             # 열이 하나로 보여도 한 겹 아래에 열이 숨어 있을 수 있다
             # (텐가 상단 광고컷의 3열 그리드가 그렇다).
-            # 다만 **정말 열이 나왔을 때만** 그 분해를 받아들인다. 그러지 않으면
-            # 세로로 [이미지][캡션] 이 쌓인 1열 원본이 밴드마다 따로 놀아
-            # 짝을 지을 기회 자체가 사라진다.
+            #
+            # 예전에는 sub-band 하나에서 열이 나오면 **나머지 전부**를 따로 떼어
+            # 각각 칸으로 만들었다. 그래서 표가 없는 1열 원본에서 칸이 23개까지
+            # 생겼고, 이미지와 그 캡션이 서로 다른 칸으로 갈려 짝을 지을 기회 자체가
+            # 사라졌다. 열이 **정말 나온 자리만** 따로 떼고, 나오지 않은 것들은
+            # 붙여서 한 칸으로 둔다.
             subs, _ = split_axis(arr, band, bg, cfg, ROW, scan)
             if len(subs) > 1:
-                deeper = [c for s in subs for c in build_columns(arr, s, bg, cfg, depth + 1, scan)]
-                if any(c.col_total > 1 for c in deeper):
-                    out.extend(deeper)
+                pieces: list[tuple[str, object]] = []
+                for sub in subs:
+                    deeper = build_columns(arr, sub, bg, cfg, depth + 1, scan)
+                    if any(c.col_total > 1 for c in deeper):
+                        pieces.append(("cells", deeper))
+                    else:
+                        pieces.append(("plain", sub))
+                if any(kind == "cells" for kind, _ in pieces):
+                    i = 0
+                    while i < len(pieces):
+                        if pieces[i][0] == "cells":
+                            out.extend(pieces[i][1])
+                            i += 1
+                            continue
+                        j = i
+                        while j < len(pieces) and pieces[j][0] == "plain":
+                            j += 1
+                        span = union_all([r for _, r in pieces[i:j]])
+                        cell = _make_cell(arr, span, bg, cfg, scan, 0, 1)
+                        if cell is not None:
+                            out.append(cell)
+                        i = j
                     continue
 
         total = len(cols)
         for i, col in enumerate(cols):
-            col = trim(arr, col, bg, cfg, scan)
-            if col is None:
-                continue
-            subs, _ = split_axis(arr, col, bg, cfg, ROW, scan)
-            subs = [t for t in (trim(arr, s, bg, cfg, scan) for s in subs) if t is not None]
-            if not subs:
-                subs = [col]
-            out.append(
-                Node(
-                    rect=col,
-                    kind="column",
-                    axis=ROW if len(subs) > 1 else None,
-                    children=[Node(rect=s, kind="leaf") for s in subs],
-                    col_index=i,
-                    col_total=total,
-                )
-            )
+            cell = _make_cell(arr, col, bg, cfg, scan, i, total)
+            if cell is not None:
+                out.append(cell)
     return out
+
+
+def _make_cell(arr, rect: Rect, bg, cfg: CutConfig, scan: Scan, index: int, total: int) -> Node | None:
+    """칸 하나를 세로 순서의 밴드로 채운다."""
+    rect = trim(arr, rect, bg, cfg, scan)
+    if rect is None:
+        return None
+    subs, _ = split_axis(arr, rect, bg, cfg, ROW, scan)
+    subs = [t for t in (trim(arr, s, bg, cfg, scan) for s in subs) if t is not None]
+    if not subs:
+        subs = [rect]
+    return Node(
+        rect=rect,
+        kind="column",
+        axis=ROW if len(subs) > 1 else None,
+        children=[Node(rect=s, kind="leaf") for s in subs],
+        col_index=index,
+        col_total=total,
+    )

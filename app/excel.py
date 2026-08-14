@@ -38,6 +38,8 @@ def norm(s) -> str:
 class Option:
     name: str
     values: list[str] = field(default_factory=list)
+    #: 원본에 붙어 있던 번호(`01`). 없으면 빈 칸. values 와 길이가 같다.
+    numbers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -60,11 +62,65 @@ class Row:
     def option_values(self) -> list[str]:
         return [v for o in self.options for v in o.values]
 
+    @property
+    def option_numbers(self) -> list[str]:
+        """option_values 와 같은 자리의 원본 번호. 없던 자리는 빈 칸."""
+        return [n for o in self.options for n in o.numbers]
+
+
+#: 코드 한 도막 — 영대문자·숫자·하이픈·밑줄만. 한글이나 소문자가 섞이면 이름이다.
+_TOKEN = r"[A-Z0-9][A-Z0-9_\-]*"
+_GROUP = rf"{_TOKEN}(?:\s*/\s*{_TOKEN})*"
+#: 괄호 코드 `(EGG-013)` `(4582236080170)` `(OH-3584/4580664902224)` `(DJ)`.
+#: 끝이 아니라 **어디 있든** 뗀다 — `유니 다이아몬드 (UNI-002) (화이트)` 처럼
+#: 뒤에 이름 괄호가 한 번 더 붙는 경우가 있다.
+_PAREN_CODE = re.compile(rf"\s*\(\s*{_GROUP}\s*\)")
+#: 하이픈 꼬리 `- OH-3650/4570099420325` `- 4526374570674`
+_DASH_TAIL = re.compile(rf"\s*[-–]\s*({_GROUP})\s*$")
+#: `- solvemen029/4580490010322` — 코드 쪽에 소문자가 섞여도 뒤가 바코드면 코드다.
+_SLASH_BARCODE = re.compile(r"\s*[-–]\s*\S+\s*/\s*\d{8,14}\s*$")
+
+
+def _strip_tail(value: str) -> str:
+    """물류용 꼬리를 뗀다. 이름이면 안 뗀다."""
+    out = _PAREN_CODE.sub("", value).strip() or value.strip()
+    for _ in range(3):
+        m = _SLASH_BARCODE.search(out) or None
+        if m and out[: m.start()].strip():
+            out = out[: m.start()].strip()
+            continue
+        m = _DASH_TAIL.search(out)
+        # 하이픈 뒤는 숫자가 있어야 코드로 본다. `블랙 - XL` 의 XL 을 지우지 않기 위해서다.
+        if m and any(c.isdigit() for c in m.group(1)) and out[: m.start()].strip():
+            out = out[: m.start()].strip()
+            continue
+        break
+    return out
+
+
+def strip_codes(values: list[str]) -> list[str]:
+    """옵션값에서 모델코드·바코드를 뗀다 — **한 축을 통째로 보고 정한다.**
+
+    엑셀 옵션값의 60%(892개 중 532개)에 `- OH-3650/4570099420325` 같은 꼬리가 붙어
+    있다. 그래서 상세페이지 말머리 `[부부장 유아]` 와 글자로 대조하면 **하나도 안 맞는다** —
+    실물 49개에서 옵션 상품 17개가 전부 사진 없는 빈 카드로 나왔다.
+
+    떼고 나서 **빈 값이 되거나 서로 겹치면 아예 안 뗀다.** `블랙(L)` / `블랙(XL)` 처럼
+    꼬리가 옵션을 가르는 유일한 표시일 수 있기 때문이다. 그런 자리는 겹침으로 드러나므로
+    따로 판정할 것이 없다 — 892개 실측에서는 빈 값도 겹침도 0이었다.
+    """
+    out = [_strip_tail(v) for v in values]
+    if any(not v for v in out) or len(set(out)) != len(set(values)):
+        return list(values)
+    return out
+
 
 def parse_option(cell: str) -> Option | None:
     """`옵션명=값,값,값` 형식을 푼다 (2.1).
 
-    7장 — 원본 접두 번호(`01. `)는 벗긴다. 그대로 두면 출력 쪽 번호와 겹친다.
+    7장 — 원본 접두 번호(`01. `)는 값에서 벗기되 **버리지는 않는다.**
+    그대로 두면 대조가 안 되고(캡션 쪽도 벗겨서 맞춘다), 버리면 손님이 주문할 때
+    몇 번 옵션인지 알 수 없다. 값과 번호를 나란히 들고 간다.
     """
     text = str(cell or "").strip()
     if not text:
@@ -72,14 +128,16 @@ def parse_option(cell: str) -> Option | None:
     name, sep, rest = text.partition("=")
     if not sep:
         name, rest = "", text
-    values = []
+    values, numbers = [], []
     for v in rest.split(","):
-        v = re.sub(r"^\s*\d+\s*[.)]\s*", "", v.strip())
-        if v:
-            values.append(v)
+        m = re.match(r"^\s*(\d+)\s*[.)]\s*", v.strip())
+        text = v.strip()[m.end():].strip() if m else v.strip()
+        if text:
+            values.append(text)
+            numbers.append(m.group(1) if m else "")
     if not values:
         return None
-    return Option(name=name.strip(), values=values)
+    return Option(name=name.strip(), values=strip_codes(values), numbers=numbers)
 
 
 def _header_map(header: list) -> dict[str, int]:

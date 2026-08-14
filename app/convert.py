@@ -23,11 +23,12 @@ import numpy as np
 from PIL import Image
 
 from slicer import slice_image
-from slicer.geometry import Rect
+from slicer.gaps import split_gaps
+from slicer.geometry import Rect, union_all
 from slicer.layout import ROW, CutConfig, Scan, runs_of, trim
 
 from . import gate, source
-from .product import Meta, Product, Unit, apply_tags
+from .product import Lead, Meta, Product, Unit, apply_tags
 
 UA = "Mozilla/5.0 (compatible; detail-page-converter/1.0)"
 
@@ -43,17 +44,31 @@ class Work:
     notes: list[str] = field(default_factory=list)
 
 
-def fetch(url: str, cache: Path) -> bytes:
-    """이미지를 받는다. 같은 URL은 다시 받지 않는다."""
+def fetch(url: str, cache: Path, tries: int = 3) -> bytes:
+    """이미지를 받는다. 같은 URL은 다시 받지 않는다.
+
+    한 번 튕겼다고 포기하지 않는다. 49개를 돌리다 세 장을 못 받은 적이 있는데,
+    곧바로 다시 받으니 전부 성공했다 — 잠깐 튕긴 것뿐이었다. 800개를 돌리면
+    그런 일이 반드시 생긴다.
+    """
+    import time
+
     cache.mkdir(parents=True, exist_ok=True)
     key = cache / (hashlib.sha1(url.encode()).hexdigest() + Path(url).suffix[:5])
     if key.exists():
         return key.read_bytes()
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = r.read()
-    key.write_bytes(data)
-    return data
+    for n in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            key.write_bytes(data)
+            return data
+        except Exception:
+            if n == tries - 1:
+                raise
+            time.sleep(1.5 * (n + 1))
+    raise RuntimeError(url)  # 닿지 않는다
 
 
 def _save(im: Image.Image, out: Path, name: str, quality: int = 90) -> str:
@@ -110,6 +125,13 @@ def _ad_blocks(arr: np.ndarray, im: Image.Image, y_end: int, bg, cfg, out: Path)
     return names
 
 
+def _distance(a: Rect, b: Rect) -> int:
+    """두 사각형 사이의 거리. 겹치면 0."""
+    dx = max(a.x0 - b.x1, b.x0 - a.x1, 0)
+    dy = max(a.y0 - b.y1, b.y0 - a.y1, 0)
+    return dx + dy
+
+
 def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], list[str], float, list]:
     """통이미지형 — 분할기로 유닛 배열을 얻는다."""
     arr = np.asarray(im.convert("RGB"))
@@ -117,40 +139,166 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     cfg = CutConfig()
     bg = result.sections[0].bg if result.sections else (255, 255, 255)
 
-    def split_parts(u):
-        """유닛을 그림 부분과 캡션 글줄로 가른다.
+    def _thin(parts) -> int:
+        """그 유닛 안에서 '글줄'이라 부를 높이.
 
-        기준은 **그 유닛 자신의 그림 높이**다. 페이지 전체의 높이 분포로 임계값을
-        잡으려다 실패했다 — 광고 구간에 1~2px 잔여 조각이 섞여 있어 분포의 가장 큰
-        틈이 엉뚱한 바닥에 생겼다. 유닛 안에서 재면 그런 잡음이 끼지 않는다.
-
-        뒤에 붙은 것만 캡션으로 본다. 텐가 오른쪽 첫 칸의 `약 40g` 주석은
-        그림 **앞**에 있어 그림의 일부로 남는다.
+        페이지 전체의 높이 분포로 임계값을 잡으려다 실패했다 — 광고 구간에
+        1~2px 잔여 조각이 섞여 있어 분포의 가장 큰 틈이 엉뚱한 바닥에 생겼다.
+        유닛 안에서 재면 그런 잡음이 끼지 않는다.
         """
-        parts = sorted(u.parts, key=lambda p: p.y0)
-        thin = max(2, int(0.3 * max(p.h for p in parts)))
-        caps: list = []
-        while len(parts) > 1 and parts[-1].h <= thin:
-            caps.insert(0, parts.pop())
-        return parts, caps
+        return max(2, int(0.3 * max(p.h for p in parts)))
+
+    def _tail(parts):
+        out = []
+        rest = list(parts)
+        while len(rest) > 1 and rest[-1].h <= _thin(parts):
+            out.insert(0, rest.pop())
+        return rest, out
+
+    def _head(parts):
+        out = []
+        rest = list(parts)
+        # 2px 짜리 잔여 조각은 글줄이 아니다. 위쪽을 볼 때는 특히 조심해야 한다 —
+        # 광고컷 맨 위에 낀 얇은 띠를 캡션으로 오해하면 광고 구간 전체가 사라진다.
+        while len(rest) > 1 and 6 <= rest[0].h <= _thin(parts):
+            out.append(rest.pop(0))
+        return rest, out
+
+    # 캡션이 그림 위인지 아래인지는 **페이지마다 하나로 정해져 있다** (4.3).
+    # 유닛마다 따로 판단하면 광고컷 조각 하나에 끌려 전체가 뒤집힌다. 실제로 그랬다 —
+    # 텐가에서 2px 조각 하나를 캡션으로 읽어 광고 구간이 통째로 날아갔다.
+    # 그러니 페이지 전체를 한 번 보고 어느 쪽인지 정한 다음, 그 쪽으로만 가른다.
+    below = sum(1 for u in result.units if _tail(sorted(u.parts, key=lambda p: p.y0))[1])
+    above = sum(1 for u in result.units if _head(sorted(u.parts, key=lambda p: p.y0))[1])
+    caption_side = _tail if below or not above else _head
+
+    def _strip_headings(rest):
+        """캡션 **반대쪽** 끝에 붙은 납작한 글줄은 그림이 아니다.
+
+        캡션은 페이지가 정한 한쪽에서만 나온다. 그러면 반대쪽에 붙은 글줄은
+        갈 곳이 없어 그림에 그대로 구워진다 — 트리니티의 사진마다 위에 얹힌
+        `모에 구멍 트리니티` 라벨과 그 밑줄이 그랬다.
+
+        높이만 보면 안 된다. 텐가 첫 칸 위의 `SILKY Ⅱ [シルキー2]` 라벨은
+        252×48 이라 얇지만 납작하지 않고, 잘라내면 광고 구간의 라벨 줄이 사라진다.
+        **글줄은 납작하다** — 이미 열을 찾을 때 쓰는 바로 그 잣대다.
+        """
+        thin = _thin(rest)
+        take = (lambda xs: xs[0]) if caption_side is _tail else (lambda xs: xs[-1])
+        while len(rest) > 1:
+            edge = take(rest)
+            if not (6 <= edge.h <= thin and edge.w > CutConfig().max_line_aspect * edge.h):
+                break
+            rest = rest[1:] if caption_side is _tail else rest[:-1]
+        return rest
+
+    def split_parts(u):
+        rest, caps = caption_side(sorted(u.parts, key=lambda p: p.y0))
+        return _strip_headings(rest), caps
 
     # 첫 캡션이 나오는 지점부터 설명 구간, 그 위가 상단 광고 구간 (3.1)
     prepared = [(u, *split_parts(u)) for u in result.units]
     with_cap = [(u, p, c) for u, p, c in prepared if c]
     first = with_cap[0][0].rect.y0 if with_cap else arr.shape[0]
+
+    def _whole():
+        """쪼개지 않는다. 원본 한 장을 저자가 그은 괘선에서만 끊어 그대로 싣는다."""
+        return [], _ad_blocks(arr, im, arr.shape[0], bg, cfg, out), result.ink_coverage, result.gap_stats
+
+    # 광고 구간 아래는 **캡션이 있든 없든 전부 유닛이다.**
+    # 예전에는 캡션이 붙은 것만 내보냈다. 텐가는 열두 개가 모두 캡션을 가져서
+    # 티가 안 났지만, 트리니티에서는 1777px 짜리 사진을 비롯해 큰 그림들이
+    # 통째로 사라졌다. 없는 것은 유닛이 아니라 캡션이다 (3.1).
+    main = [t for t in prepared if t[0].rect.y0 >= first]
+    if not main:
+        return _whole()
+
+    # 페이지 안에서 '그림'이라 부를 크기. 정하는 것이 아니라 세는 것이다 —
+    # 높이 분포가 두 무리로 갈리면 그 사이가 경계고, 안 갈리면 전부 그림이다.
+    scale = split_gaps([t[0].rect.h for t in main])
+    floor = scale.threshold if scale.separated else 0
+    solid = [t for t in main if t[0].rect.h > floor]
+    scraps = [t for t in main if t[0].rect.h <= floor]
+    if not solid:
+        solid, scraps = main, []
+
+    #: 유닛마다 {빨아들일 사각형들, 캡션이 될 사각형들}
+    absorbed: dict[int, list[Rect]] = {i: [] for i in range(len(solid))}
+    extra_caps: dict[int, list[Rect]] = {i: [] for i in range(len(solid))}
+    # 유닛의 '그림'은 가장 넓은 조각이다. 붙일 곳을 고를 때는 유닛 사각형이 아니라
+    # 이 그림과 **같은 줄에 놓였는지**로 본다. 사각형으로 보면 위 구간의 라벨 줄까지
+    # 끌어와 그림 폭이 두 배가 된다 — 텐가 첫 유닛이 그렇게 망가졌다.
+    arts = [max(p, key=lambda r: r.area) for _u, p, _c in solid]
+    for su, _p, _c in scraps:
+        beside = [k for k, a in enumerate(arts) if su.rect.y0 <= a.y1 and a.y0 <= su.rect.y1]
+        if not beside:
+            continue  # 어느 그림과도 줄이 겹치지 않으면 붙일 곳이 없다
+        j = min(beside, key=lambda k: _distance(arts[k], su.rect))
+        art = arts[j]
+        # 그림 옆에 **멀찍이** 떨어져 있으면 그건 캡션이다(트리니티 중간의
+        # `"모에 구멍 트리니티" 정면 사진`). 딱 붙어 있으면 그림의 일부다
+        # (치수선의 `72mm` 처럼). 거리는 그 조각의 키로 잰다 — px 를 못박지 않는다.
+        gap = max(art.x0 - su.rect.x1, su.rect.x0 - art.x1, 0)
+        (extra_caps if gap > su.rect.h else absorbed)[j].append(su.rect)
+
+    # 한 줄에 나란히 놓인, 캡션 없는 것들은 **원본에서 한 줄이었다.**
+    # 따로 떼면 아이콘 네 개가 페이지 폭짜리 그림 네 장이 된다. 붙여 두면
+    # 저자가 늘어놓은 그대로 한 줄로 실린다. 캡션이 붙은 것은 건드리지 않는다 —
+    # 텐가의 2열 그리드는 좌우가 각각 제 캡션을 가진 별개의 유닛이다.
+    # 위아래는 **남은 조각**이 정한다. 유닛 사각형으로 잡으면 떼어낸 라벨 줄이
+    # 그림에 그대로 남는다. 좌우는 유닛 폭을 살린다.
+    boxes = [union_all([Rect(u.rect.x0, p[0].y0, u.rect.x1, p[-1].y1)] + absorbed[i])
+             for i, (u, p, _c) in enumerate(solid)]
+    rows: list[list[int]] = []
+    for i, (_u, _p, caps) in enumerate(solid):
+        prev = rows[-1][-1] if rows else None
+        same_row = (
+            prev is not None
+            and not caps and not extra_caps[i]
+            and not solid[prev][2] and not extra_caps[prev]
+            and boxes[i].y0 <= boxes[prev].y1 and boxes[prev].y0 <= boxes[i].y1
+        )
+        rows[-1].append(i) if same_row else rows.append([i])
+
+    merged = []
+    for row in rows:
+        head = row[0]
+        u, parts, caps = solid[head]
+        merged.append((u, parts, caps, union_all([boxes[i] for i in row]),
+                       [b for i in row for b in extra_caps[i]]))
+
+    # 여기서 쪼갤지 말지가 갈린다. **짝이 대부분인가** (4.6).
+    #
+    # `이미지+설명` 으로 만든 페이지는 저자가 짝을 지어 놨으므로 조각마다 글이 붙는다.
+    # 제조사 아트워크 한 장은 글이 그림 안에 박혀 있어 어쩌다 하나만 걸린다. 실측:
+    #
+    #     텐가 12/12 · 버진루프 7/7 · 트리니티 11/16   ← 쪼개는 것이 맞다
+    #     팬미팅 3/8 · 모찌푸요루 1/3 · 밤쉘걸 1/13     ← 통으로 써야 한다
+    #
+    # 절반은 찍은 숫자가 아니라 **"대부분인가 어쩌다 하나인가"** 의 뜻이다. 33% 와
+    # 69% 사이라 어디에 그어도 답이 같고, 그러라고 고른 것이 아니라 세어 보니 그랬다.
+    #
+    # 자리가 중요하다. 자르기 직전의 조각으로 세면 트리니티가 48% 라 아슬아슬하다.
+    # **우리가 실제로 만들어 낸 유닛**으로 세야 69% 가 되어 멀찍이 떨어진다.
+    #
+    # 조각형에는 쓰지 않는다 — 캡션이 HTML 글자로 오지 조각으로 오지 않아 늘 0 이다.
+    if sum(1 for _u, _p, caps, _box, side in merged if caps or side) * 2 < len(merged):
+        return _whole()
+
     ad = _ad_blocks(arr, im, first, bg, cfg, out)
-
     units: list[Unit] = []
-    for i, (u, parts, caps) in enumerate(with_cap):
-        art_y1 = parts[-1].y1
-
-        art = im.crop((u.rect.x0, u.rect.y0, u.rect.x1 + 1, art_y1 + 1))
+    for i, (u, parts, caps, art_box, side_caps) in enumerate(merged):
+        art = im.crop((art_box.x0, art_box.y0, art_box.x1 + 1, art_box.y1 + 1))
         name = _save(art, out, f"unit_{i:02d}.jpg")
 
         crop_name = ""
-        if caps:
-            top, bot = caps[0].y0, caps[-1].y1
-            strip = im.crop((u.rect.x0, top, u.rect.x1 + 1, bot + 1))
+        cap_boxes = list(caps) + side_caps
+        if cap_boxes:
+            box = union_all(cap_boxes)
+            # 캡션이 유닛 폭 안에 있으면 폭을 그대로 살린다 — 글줄 앞뒤 여백이
+            # 있어야 사람도 모델도 읽기 좋다.
+            x0, x1 = (u.rect.x0, u.rect.x1) if box.x0 >= u.rect.x0 and box.x1 <= u.rect.x1 else (box.x0, box.x1)
+            strip = im.crop((x0, box.y0, x1 + 1, box.y1 + 1))
             strip = strip.resize((strip.width * 3, strip.height * 3), Image.LANCZOS)
             crop_name = f"cap_{i:02d}.png"
             strip.save(out / crop_name)
@@ -160,15 +308,21 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     return units, ad, result.ink_coverage, result.gap_stats
 
 
-def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], list[str]]:
-    """조각형 — HTML이 이미 답을 갖고 있다. 픽셀을 보지 않는다 (3.1)."""
-    units, ad = [], []
+def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], list[str], list[str]]:
+    """조각형 — HTML이 이미 답을 갖고 있다. 픽셀을 보지 않는다 (3.1).
+
+    못 받은 그림은 **세어서 돌려준다.** 예전에는 조용히 건너뛰었는데, 그러면
+    유닛과 설명이 통째로 사라진 채로 페이지가 완성돼 나온다. 사후 게이트도 못 잡는다 —
+    살아남은 것만 보기 때문이다. 800개를 돌리면 아무도 모르게 짧아진 페이지가 섞인다.
+    """
+    units, ad, missed = [], [], []
     lead_run = True
     for i, piece in enumerate(body.pieces):
         try:
             data = fetch(piece.url, cache)
             im = Image.open(io.BytesIO(data)).convert("RGB")
-        except Exception:
+        except Exception as e:
+            missed.append(f"{piece.url.rsplit('/', 1)[-1]} ({type(e).__name__})")
             continue
         if piece.caption:
             lead_run = False
@@ -177,7 +331,7 @@ def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], 
             continue
         name = _save(im, out, f"unit_{i:02d}.jpg")
         units.append(Unit(image=name, caption=piece.caption, width=im.width, height=im.height))
-    return units, ad
+    return units, ad, missed
 
 
 def convert(row, workdir: Path, cache: Path) -> Work:
@@ -194,19 +348,22 @@ def convert(row, workdir: Path, cache: Path) -> Work:
     product = Product(
         meta=Meta(
             code=row.code, name=row.name, brand=row.brand, category=row.category,
-            price=row.price, options=opts,
+            price=row.price, options=opts, option_numbers=row.option_numbers,
+            options_known=True,
         ),
         lead=body.lead,
+        intro=[Lead(text=b.text, strong=b.strong) for b in body.lead_blocks],
     )
     if not verdict.ok and gate.NO_BODY_IMAGE in verdict.reasons:
         return Work(product=product, verdict=verdict)
 
     ink = None
     gaps = []
+    missed: list[str] = []
     # 어댑터 선택은 세기로 (3.2)
     if len(body.images) >= 2:
         product.adapter = "조각형"
-        product.units, product.ad = from_pieces(body, cache, out)
+        product.units, product.ad, missed = from_pieces(body, cache, out)
     else:
         product.adapter = "통이미지형"
         url = body.images[0]
@@ -215,6 +372,9 @@ def convert(row, workdir: Path, cache: Path) -> Work:
 
     apply_tags(product.units, opts)
     post = gate.post_check(product, ink_coverage=ink, gap_stats=gaps)
+    # 못 받은 그림은 조용히 넘어가지 않는다. 그만큼 페이지가 짧아진 것이다.
+    if missed:
+        post.fail(gate.IMAGE_MISSING, f"{len(missed)}장: " + " · ".join(missed[:3]))
     for r in verdict.reasons:
         post.fail(r)
     post.notes = verdict.notes + post.notes
@@ -228,5 +388,7 @@ def convert_url(url: str, workdir: Path, cache: Path, meta: Meta | None = None) 
     im = Image.open(io.BytesIO(fetch(url, cache))).convert("RGB")
     product = Product(meta=meta or Meta(), adapter="통이미지형")
     product.units, product.ad, ink, gaps = from_whole_image(url, im, out)
-    apply_tags(product.units, product.meta.options)
+    # 엑셀 없이 URL 하나로 돌리는 입구다. 옵션이 없다는 것이 아니라 **모르는 것**이므로
+    # 말머리를 그대로 믿는다. 빈 리스트를 넘기면 "없다"는 뜻이 되어 태그가 다 죽는다.
+    apply_tags(product.units, product.meta.options or None)
     return Work(product=product, verdict=gate.post_check(product, ink, gaps), ink_coverage=ink)
