@@ -200,7 +200,10 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     prepared = [(u, *split_parts(u)) for u in result.units]
     with_cap = [(u, p, c) for u, p, c in prepared if c]
     first = with_cap[0][0].rect.y0 if with_cap else arr.shape[0]
-    ad = _ad_blocks(arr, im, first, bg, cfg, out)
+
+    def _whole():
+        """쪼개지 않는다. 원본 한 장을 저자가 그은 괘선에서만 끊어 그대로 싣는다."""
+        return [], _ad_blocks(arr, im, arr.shape[0], bg, cfg, out), result.ink_coverage, result.gap_stats
 
     # 광고 구간 아래는 **캡션이 있든 없든 전부 유닛이다.**
     # 예전에는 캡션이 붙은 것만 내보냈다. 텐가는 열두 개가 모두 캡션을 가져서
@@ -208,7 +211,7 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     # 통째로 사라졌다. 없는 것은 유닛이 아니라 캡션이다 (3.1).
     main = [t for t in prepared if t[0].rect.y0 >= first]
     if not main:
-        return [], ad, result.ink_coverage, result.gap_stats
+        return _whole()
 
     # 페이지 안에서 '그림'이라 부를 크기. 정하는 것이 아니라 세는 것이다 —
     # 높이 분포가 두 무리로 갈리면 그 사이가 경계고, 안 갈리면 전부 그림이다.
@@ -264,6 +267,25 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
         merged.append((u, parts, caps, union_all([boxes[i] for i in row]),
                        [b for i in row for b in extra_caps[i]]))
 
+    # 여기서 쪼갤지 말지가 갈린다. **짝이 대부분인가** (4.6).
+    #
+    # `이미지+설명` 으로 만든 페이지는 저자가 짝을 지어 놨으므로 조각마다 글이 붙는다.
+    # 제조사 아트워크 한 장은 글이 그림 안에 박혀 있어 어쩌다 하나만 걸린다. 실측:
+    #
+    #     텐가 12/12 · 버진루프 7/7 · 트리니티 11/16   ← 쪼개는 것이 맞다
+    #     팬미팅 3/8 · 모찌푸요루 1/3 · 밤쉘걸 1/13     ← 통으로 써야 한다
+    #
+    # 절반은 찍은 숫자가 아니라 **"대부분인가 어쩌다 하나인가"** 의 뜻이다. 33% 와
+    # 69% 사이라 어디에 그어도 답이 같고, 그러라고 고른 것이 아니라 세어 보니 그랬다.
+    #
+    # 자리가 중요하다. 자르기 직전의 조각으로 세면 트리니티가 48% 라 아슬아슬하다.
+    # **우리가 실제로 만들어 낸 유닛**으로 세야 69% 가 되어 멀찍이 떨어진다.
+    #
+    # 조각형에는 쓰지 않는다 — 캡션이 HTML 글자로 오지 조각으로 오지 않아 늘 0 이다.
+    if sum(1 for _u, _p, caps, _box, side in merged if caps or side) * 2 < len(merged):
+        return _whole()
+
+    ad = _ad_blocks(arr, im, first, bg, cfg, out)
     units: list[Unit] = []
     for i, (u, parts, caps, art_box, side_caps) in enumerate(merged):
         art = im.crop((art_box.x0, art_box.y0, art_box.x1 + 1, art_box.y1 + 1))

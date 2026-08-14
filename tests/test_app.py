@@ -369,22 +369,54 @@ def test_캡션이_없다고_유닛을_버리지_않는다(tmp_path: Path):
     """캡션 붙은 유닛만 내보냈더니 트리니티에서 큰 그림들이 통째로 사라졌다.
 
     3.1 — 없는 것은 유닛이 아니라 캡션이다.
+
+    짝이 **대부분**인 페이지다(3/5). 그런 페이지에서 캡션 없는 그림은 캡션이
+    없을 뿐 유닛이다. 짝이 어쩌다 하나인 페이지는 다음 시험이 본다.
     """
     import numpy as np
     from PIL import Image
 
     from app.convert import from_whole_image
 
-    img = np.full((1200, 560, 3), 255, np.uint8)
+    img = np.full((1800, 560, 3), 255, np.uint8)
     img[40:240, 30:530] = 150            # 광고컷
-    img[300:500, 30:530] = 150           # 그림 + 캡션
-    img[520:530, 30:400] = 110
+    for top in (300, 900, 1500):         # 그림 + 캡션
+        img[top:top + 200, 30:530] = 150
+        img[top + 220:top + 230, 30:400] = 110
     img[600:800, 30:530] = 150           # 캡션 없는 그림
-    img[900:1100, 30:530] = 150          # 캡션 없는 그림
+    img[1200:1400, 30:530] = 150         # 캡션 없는 그림
     units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
-    assert len(units) == 3, f"캡션 없는 그림이 사라졌다: {len(units)}개"
-    assert sum(1 for u in units if u.caption_crop) == 1
+    assert len(units) == 5, f"캡션 없는 그림이 사라졌다: {len(units)}개"
+    assert sum(1 for u in units if u.caption_crop) == 3
     assert ad, "광고 구간이 사라졌다"
+
+
+def test_짝이_대부분이_아니면_쪼개지_않고_통으로_싣는다(tmp_path: Path):
+    """제조사 아트워크 한 장은 글이 그림 안에 박혀 있다. 자를 자리가 없다.
+
+    사장님 말: "이 팬미팅 이런건 쪼개지 말고 그냥 통으로 붙이라니까."
+
+    실측한 것은 **짝의 비율**이다 —
+
+        텐가 12/12 · 버진루프 7/7 · 트리니티 11/16   쪼개는 것이 맞다
+        팬미팅 3/8 · 모찌푸요루 1/3 · 밤쉘걸 1/13     통으로 써야 한다
+
+    33% 와 69% 사이가 비어 있어 절반에 그으면 여섯 개가 다 맞는다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.convert import from_whole_image
+
+    img = np.full((1800, 560, 3), 255, np.uint8)
+    img[40:240, 30:530] = 150            # 광고컷
+    img[300:500, 30:530] = 150           # 딱 하나만 글이 붙었다
+    img[520:530, 30:400] = 110
+    for top in (600, 900, 1200, 1500):   # 나머지는 그냥 그림
+        img[top:top + 200, 30:530] = 150
+    units, ad, _ink, _gaps = from_whole_image("x", Image.fromarray(img), tmp_path)
+    assert units == [], f"짝이 하나뿐인데 쪼갰다: {len(units)}개"
+    assert ad, "통으로 실을 그림마저 사라졌다"
 
 
 def test_그림_옆_글줄은_캡션이고_딱_붙은_글자는_그림이다(tmp_path: Path):
