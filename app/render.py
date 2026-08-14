@@ -146,129 +146,139 @@ def _is_light(hexcolor: str) -> bool:
     return (r * 299 + g * 587 + b * 114) / 1000 > 170
 
 
+#: 이 CSS 는 **남의 페이지 안에서 산다.**
+#:
+#: 고도몰 상세설명 칸에 통째로 들어가 쇼핑몰의 머리글·바닥글과 한 페이지를 이룬다.
+#: 그러니 선택자가 `.page` 밖으로 한 발짝이라도 나가면 그건 우리 상세페이지가 아니라
+#: **쇼핑몰을 고치는 것**이다. 실제로 그랬다 — 2496310 을 올려놓고 재보니:
+#:
+#:     img{width:100%}         쇼핑몰 로고가 1200px 로 늘어남
+#:     body{font-family:...}   쇼핑몰 글꼴이 맑은 고딕 → Pretendard
+#:     @media dark             손님 폰이 다크모드면 쇼핑몰 전체 배경이 #121010
+#:
+#: 그래서 규칙은 하나다 — **모든 선택자는 `.page` 로 시작한다.** 변수도 `:root` 가
+#: 아니라 `.page` 에 둔다. 물려받아야 할 것은 우리 안쪽뿐이다.
+#: (`tests` 가 이 불변식을 지킨다: `test_CSS_는_페이지_밖으로_안_나간다`)
+#:
+#: 다크모드는 뺐다. 쇼핑몰은 한 가지 모습으로 서 있는데 그 안에서 우리 칸만 검게
+#: 뒤집히면 손님 눈에는 고장으로 보인다.
 CSS = """
-:root{--ground:#FFFFFF;--ink:#16110F;--muted:#78706C;--rule:#E8E2DF;--accent:#D0020F;
- --plate:#F4F0EE;--plate-soft:#FBF9F8;--band:#0C0A09;--band-ink:#F3EFED;--band-muted:#9A918D}
-@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
- --ground:#121010;--ink:#F2EDEB;--muted:#9C938F;--rule:#2E2A28;--accent:#FF4757;
- --plate:#EFEBE9;--plate-soft:#171414;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}}
-:root[data-theme="dark"]{--ground:#121010;--ink:#F2EDEB;--muted:#9C938F;--rule:#2E2A28;
- --accent:#FF4757;--plate:#EFEBE9;--plate-soft:#171414;--band:#000000;--band-ink:#F3EFED;--band-muted:#8E8481}
-*{box-sizing:border-box}
-body{margin:0;background:var(--ground);color:var(--ink);
+.page{--ground:#FFFFFF;--ink:#16110F;--muted:#78706C;--rule:#E8E2DF;--accent:#D0020F;
+ --plate:#F4F0EE;--plate-soft:#FBF9F8;--band:#0C0A09;--band-ink:#F3EFED;--band-muted:#9A918D;
+ width:800px;max-width:100%;margin:0 auto;
+ background:var(--ground);color:var(--ink);
  font-family:"Pretendard","Pretendard Variable",-apple-system,BlinkMacSystemFont,
  "Apple SD Gothic Neo","Malgun Gothic","Noto Sans KR",system-ui,sans-serif;
  -webkit-font-smoothing:antialiased;
  word-break:keep-all;overflow-wrap:break-word}
+.page,.page *{box-sizing:border-box}
 /* 줄맞춤은 브라우저가 한다. 모델에게 시킬 일이 아니다 — 모델은 최종 폭도 글꼴도
    모른다. 우리가 할 일은 **의미 단위가 쪼개지지 않게 막는 것**뿐이다.
      keep-all   어절 안에서 안 끊는다 (한글 기본값은 아무 데서나 끊는다)
      balance    제목은 줄 길이를 고르게 — 두 줄이 5:1 로 갈리는 것을 막는다
      pretty     본문은 마지막 줄에 한 어절만 남기지 않는다 */
-p,li,figcaption{text-wrap:pretty}
-img{display:block;width:100%;height:auto}
-p{margin:0}
-.page{width:800px;max-width:100%;margin:0 auto}
-.label{font-size:13px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
-.em{color:var(--accent);font-weight:800}
-.band .em{color:#FF6B76}
-.hero{padding:72px 40px 32px;border-bottom:1px solid var(--rule)}
-.hero__brand{color:var(--accent)}
-.hero__tags{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px}
-.hero__tag{font-size:12.5px;font-weight:700;letter-spacing:-.01em;padding:5px 10px;
+.page p,.page li,.page figcaption{text-wrap:pretty}
+.page img{display:block;width:100%;height:auto}
+.page p{margin:0}
+.page .label{font-size:13px;font-weight:700;letter-spacing:.16em;text-transform:uppercase;color:var(--accent);margin:0}
+.page .em{color:var(--accent);font-weight:800}
+.page .band .em{color:#FF6B76}
+.page .hero{padding:72px 40px 32px;border-bottom:1px solid var(--rule)}
+.page .hero__brand{color:var(--accent)}
+.page .hero__tags{margin-top:14px;display:flex;flex-wrap:wrap;gap:6px}
+.page .hero__tag{font-size:12.5px;font-weight:700;letter-spacing:-.01em;padding:5px 10px;
  border:1px solid var(--rule);border-radius:999px;color:var(--muted);white-space:nowrap}
-.hero__title{margin:14px 0 0;font-size:48px;line-height:1.06;font-weight:800;letter-spacing:-.035em;text-wrap:balance}
-.hero__alt{display:block;margin-top:10px;font-size:.42em;font-weight:700;line-height:1.4;
+.page .hero__title{margin:14px 0 0;font-size:48px;line-height:1.06;font-weight:800;letter-spacing:-.035em;text-wrap:balance}
+.page .hero__alt{display:block;margin-top:10px;font-size:.42em;font-weight:700;line-height:1.4;
  color:var(--muted);letter-spacing:-.01em}
-.hero__title em{font-style:normal;display:block;color:var(--muted);font-weight:700;font-size:.28em;
+.page .hero__title em{font-style:normal;display:block;color:var(--muted);font-weight:700;font-size:.28em;
  margin-top:14px;letter-spacing:.04em}
-.hero__lead{margin-top:20px;max-width:34em;font-size:16px;line-height:1.8;color:var(--muted)}
-.hero__shot{margin:36px 0 0;background:var(--plate)}
-.specs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-bottom:1px solid var(--rule)}
-.spec{padding:28px 0 30px 24px;border-left:1px solid var(--rule)}
-.spec:first-child{border-left:0;padding-left:40px}
-.spec__k{font-size:13px;font-weight:700;letter-spacing:.1em;color:var(--muted)}
-.spec__v{margin-top:10px;font-size:38px;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
-.spec__u{font-size:16px;font-weight:700;color:var(--muted);margin-left:4px}
-.intro{padding:52px 40px 8px}
-.intro__tag{margin-top:6px;font-size:31px;line-height:1.35;font-weight:800;letter-spacing:-.03em;text-wrap:balance}
-.intro__p{margin-top:16px;font-size:17px;line-height:1.9;color:var(--muted);max-width:38em}
-.lead{padding:44px 40px 56px}
-.lead__text{font-size:20px;line-height:1.78;font-weight:500;max-width:31em;text-wrap:pretty}
-.band{background:var(--band);color:var(--band-ink);padding:64px 40px 68px}
-.band .label{color:var(--band-muted)}
-.band__title{margin:16px 0 0;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
-.band__note{margin-top:14px;font-size:16px;line-height:1.7;color:var(--band-muted);max-width:36em}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:36px 22px;margin-top:44px}
-.grid--wide{grid-template-columns:repeat(2,1fr)}
+.page .hero__lead{margin-top:20px;max-width:34em;font-size:16px;line-height:1.8;color:var(--muted)}
+.page .hero__shot{margin:36px 0 0;background:var(--plate)}
+.page .specs{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-bottom:1px solid var(--rule)}
+.page .spec{padding:28px 0 30px 24px;border-left:1px solid var(--rule)}
+.page .spec:first-child{border-left:0;padding-left:40px}
+.page .spec__k{font-size:13px;font-weight:700;letter-spacing:.1em;color:var(--muted)}
+.page .spec__v{margin-top:10px;font-size:38px;font-weight:800;letter-spacing:-.03em;font-variant-numeric:tabular-nums;line-height:1}
+.page .spec__u{font-size:16px;font-weight:700;color:var(--muted);margin-left:4px}
+.page .intro{padding:52px 40px 8px}
+.page .intro__tag{margin-top:6px;font-size:31px;line-height:1.35;font-weight:800;letter-spacing:-.03em;text-wrap:balance}
+.page .intro__p{margin-top:16px;font-size:17px;line-height:1.9;color:var(--muted);max-width:38em}
+.page .lead{padding:44px 40px 56px}
+.page .lead__text{font-size:20px;line-height:1.78;font-weight:500;max-width:31em;text-wrap:pretty}
+.page .band{background:var(--band);color:var(--band-ink);padding:64px 40px 68px}
+.page .band .label{color:var(--band-muted)}
+.page .band__title{margin:16px 0 0;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
+.page .band__note{margin-top:14px;font-size:16px;line-height:1.7;color:var(--band-muted);max-width:36em}
+.page .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:36px 22px;margin-top:44px}
+.page .grid--wide{grid-template-columns:repeat(2,1fr)}
 /* 칸은 제 몫보다 좁아질 수 있어야 한다. 격자 칸의 기본값(min-width:auto)은 안에 든
    글자보다 작아지기를 거부해서, `GODSR-012/4582588350631` 같은 옵션명 하나가
    세 칸을 통째로 밖으로 밀어낸다 — 2496310 에서 3번 카드가 검은 띠를 탈출했다. */
-.grid>*{min-width:0}
-.variant__fig{margin:0;background:#000}
-.variant__fig--card{padding:16px;border-radius:3px}
-.variant__name{margin-top:16px;font-size:21px;font-weight:800;letter-spacing:-.02em;
+.page .grid>*{min-width:0}
+.page .variant__fig{margin:0;background:#000}
+.page .variant__fig--card{padding:16px;border-radius:3px}
+.page .variant__name{margin-top:16px;font-size:21px;font-weight:800;letter-spacing:-.02em;
  display:flex;flex-wrap:wrap;align-items:center;gap:9px;line-height:1.25;
  min-width:0;overflow-wrap:anywhere}
-.variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
+.page .variant__chip{width:11px;height:11px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
-.variant__no{color:var(--band-muted);font-variant-numeric:tabular-nums;flex:none}
-.optset__no{color:var(--muted);font-variant-numeric:tabular-nums}
-.variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
-.variant--bare{display:flex;align-items:center;min-height:74px;padding:18px 18px;
+.page .variant__no{color:var(--band-muted);font-variant-numeric:tabular-nums;flex:none}
+.page .optset__no{color:var(--muted);font-variant-numeric:tabular-nums}
+.page .variant__body{margin-top:12px;font-size:14px;line-height:1.75;color:var(--band-muted)}
+.page .variant--bare{display:flex;align-items:center;min-height:74px;padding:18px 18px;
  border:1px solid color-mix(in srgb,var(--band-ink) 22%,transparent);border-radius:2px}
-.variant--bare .variant__name{margin-top:0}
-.optset{padding:8px 0 40px;border-top:1px solid var(--rule)}
-.optset:first-of-type{border-top:0}
-.optset__name{margin:24px 0 20px;font-size:28px;font-weight:800;letter-spacing:-.025em;
+.page .variant--bare .variant__name{margin-top:0}
+.page .optset{padding:8px 0 40px;border-top:1px solid var(--rule)}
+.page .optset:first-of-type{border-top:0}
+.page .optset__name{margin:24px 0 20px;font-size:28px;font-weight:800;letter-spacing:-.025em;
  overflow-wrap:anywhere;
  display:flex;align-items:center;gap:12px}
-.optset__chip{width:13px;height:13px;border-radius:50%;background:var(--chip);flex:none;
+.page .optset__chip{width:13px;height:13px;border-radius:50%;background:var(--chip);flex:none;
  box-shadow:0 0 0 3px color-mix(in srgb,var(--chip) 22%,transparent)}
 /* 열 수는 **사진 장수에서 정한다.** 예전에는 "210px 이상 들어가는 만큼" 이라
    장수를 안 봤다. 그래서 2장이면 3열 중 둘만 채워 오른쪽 246px(34%)가 비고 사진이
    227px 로 작았고, 4장이면 3+1 로 마지막 줄에 하나만 남았다. 49개 중 17묶음이 그랬다.
    규칙은 하나다 — **마지막 줄에 하나만 남기지 않는다.** 2장·4장은 2열, 나머지는 3열. */
-.optset__grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px 20px}
-.optset__grid--2{grid-template-columns:repeat(2,1fr)}
-.optset__grid--1{grid-template-columns:1fr}
-.optset__item{margin:0}
-.optset__item img{background:var(--plate);border-radius:2px}
-.optset__item figcaption{margin-top:10px;font-size:13.5px;line-height:1.7;color:var(--muted)}
-.showcase{padding:60px 40px 0}
-.showcase__shot{margin:24px 0 0;background:var(--plate)}
-.features{padding:56px 40px 72px}
-.features__title{margin:16px 0 40px;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
-.feature__solo{margin:0 0 24px;background:var(--plate)}
-.feature{display:grid;grid-template-columns:320px 1fr;gap:36px;align-items:center;
+.page .optset__grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px 20px}
+.page .optset__grid--2{grid-template-columns:repeat(2,1fr)}
+.page .optset__grid--1{grid-template-columns:1fr}
+.page .optset__item{margin:0}
+.page .optset__item img{background:var(--plate);border-radius:2px}
+.page .optset__item figcaption{margin-top:10px;font-size:13.5px;line-height:1.7;color:var(--muted)}
+.page .showcase{padding:60px 40px 0}
+.page .showcase__shot{margin:24px 0 0;background:var(--plate)}
+.page .features{padding:56px 40px 72px}
+.page .features__title{margin:16px 0 40px;font-size:44px;font-weight:800;letter-spacing:-.035em;line-height:1.1}
+.page .feature__solo{margin:0 0 24px;background:var(--plate)}
+.page .feature{display:grid;grid-template-columns:320px 1fr;gap:36px;align-items:center;
  padding:34px 0;border-top:1px solid var(--rule)}
-.feature--flip{grid-template-columns:1fr 320px}
-.feature--flip .feature__fig{order:2}
-.feature__fig{margin:0;background:var(--plate)}
-.feature__head{margin:0;font-size:22px;line-height:1.35;font-weight:800;letter-spacing:-.02em;text-wrap:balance}
-.feature__body{margin-top:14px;font-size:16px;line-height:1.85;color:var(--muted)}
-.feature__body--solo{margin-top:0;font-size:17px;color:var(--ink);font-weight:500}
-.foot{border-top:1px solid var(--rule);padding:56px 40px 64px;background:var(--plate-soft)}
-.foot__row{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin-top:28px}
-.foot__h{font-size:16px;font-weight:800;letter-spacing:-.01em}
-.foot__p{margin-top:10px;font-size:14px;line-height:1.8;color:var(--muted)}
+.page .feature--flip{grid-template-columns:1fr 320px}
+.page .feature--flip .feature__fig{order:2}
+.page .feature__fig{margin:0;background:var(--plate)}
+.page .feature__head{margin:0;font-size:22px;line-height:1.35;font-weight:800;letter-spacing:-.02em;text-wrap:balance}
+.page .feature__body{margin-top:14px;font-size:16px;line-height:1.85;color:var(--muted)}
+.page .feature__body--solo{margin-top:0;font-size:17px;color:var(--ink);font-weight:500}
+.page .foot{border-top:1px solid var(--rule);padding:56px 40px 64px;background:var(--plate-soft)}
+.page .foot__row{display:grid;grid-template-columns:repeat(3,1fr);gap:30px;margin-top:28px}
+.page .foot__h{font-size:16px;font-weight:800;letter-spacing:-.01em}
+.page .foot__p{margin-top:10px;font-size:14px;line-height:1.8;color:var(--muted)}
 @media (max-width:800px){
  .page{width:100%}
- .hero{padding:52px 22px 26px}.hero__title{font-size:34px}
- .spec,.spec:first-child{padding-left:22px}
- .intro,.lead,.band,.showcase,.features,.foot{padding-inline:22px}
- .intro__tag{font-size:23px}
- .band__title,.features__title,.compare__title{font-size:31px}
- .spec__v{font-size:30px}
- .grid,.grid--wide{grid-template-columns:repeat(2,1fr)}
- .feature,.feature--flip{grid-template-columns:1fr;gap:18px}
- .feature--flip .feature__fig{order:0}
+ .page .hero{padding:52px 22px 26px}.page .hero__title{font-size:34px}
+ .page .spec,.page .spec:first-child{padding-left:22px}
+ .page .intro,.page .lead,.page .band,.page .showcase,.page .features,.page .foot{padding-inline:22px}
+ .page .intro__tag{font-size:23px}
+ .page .band__title,.page .features__title,.page .compare__title{font-size:31px}
+ .page .spec__v{font-size:30px}
+ .page .grid,.page .grid--wide{grid-template-columns:repeat(2,1fr)}
+ .page .feature,.page .feature--flip{grid-template-columns:1fr;gap:18px}
+ .page .feature--flip .feature__fig{order:0}
  /* 열 수를 고정으로 바꿨으므로 좁은 화면 규칙을 직접 적는다.
     예전에는 auto-fill 이 알아서 내려 줬다 — 700px 에서 2열, 430px 에서 1열. */
- .optset__grid{grid-template-columns:repeat(2,1fr)}
- .foot__row{grid-template-columns:1fr}}
-@media (max-width:520px){.optset__grid{grid-template-columns:1fr}}
-"""
+ .page .optset__grid{grid-template-columns:repeat(2,1fr)}
+ .page .foot__row{grid-template-columns:1fr}}
+@media (max-width:520px){.page .optset__grid{grid-template-columns:1fr}}"""
 
 #: 공통 푸터 (6.1 ⑦). **상품마다 달라지는 말을 여기 두면 안 된다.**
 #: 처음엔 "겉면 절취선을 따라 필름을 제거한 뒤"라고 적어 뒀는데, 그건 텐가에만
