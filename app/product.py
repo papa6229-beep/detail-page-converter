@@ -36,17 +36,40 @@ class Unit:
     def has_caption(self) -> bool:
         return bool(self.caption.strip())
 
+    def _split_head(self) -> tuple[str, str]:
+        """캡션을 소제목 + 본문으로 가른다 (6.2 다섯째 레버).
+
+        두 가지를 조심한다.
+
+        **대괄호 말머리 안의 마침표는 문장 끝이 아니다.** `[01. 츤데레 바니· 03. 덜렁이
+        바니] 두 모델은…` 이 `03.` 에서 두 동강 나서 소제목이 `[01. 츤데레 바니· 03`,
+        본문이 `덜렁이 바니] 두 모델은…` 으로 나왔다.
+
+        **별표는 화면에 안 나오는 표시다. 길이를 잴 때 세지 않는다.** 6~60자라는
+        한도를 별표까지 세어 재는 바람에, 모델이 어디를 강조했느냐에 따라 소제목이
+        생겼다 없어졌다 했다 — 2497526 에서 1번 옵션만 굵게 나온 것이 그 때문이다.
+        """
+        text = self.caption.strip()
+        m = TAG_RE.match(text) or re.match(r"^\s*[\[(][^\])]{0,60}[\])]\s*", text)
+        start = m.end() if m else 0
+        for hit in re.finditer(r"[.。](\s|$)", text[start:]):
+            seg = text[: start + hit.start()]
+            n = len(seg) - 2 * seg.count("**")  # 별표를 뺀 눈에 보이는 길이
+            if n < 6:
+                continue
+            if n > 60:
+                break
+            head = seg.strip()
+            return head, text[start + hit.start() + 1 :].strip()
+        return "", text
+
     @property
     def head(self) -> str:
-        """캡션 첫 문장 — 소제목으로 승격한다 (6.2 다섯째 레버)."""
-        text = self.caption.strip()
-        m = re.search(r"^(.{6,60}?)[.。](\s|$)", text)
-        return m.group(1).strip() if m else ""
+        return self._split_head()[0]
 
     @property
     def body(self) -> str:
-        head = self.head
-        return self.caption.strip()[len(head) + 1 :].strip() if head else self.caption.strip()
+        return self._split_head()[1]
 
 
 @dataclass
