@@ -41,7 +41,20 @@ td.num{text-align:right;font-variant-numeric:tabular-nums}
 tr[data-ok="false"]{opacity:.6}
 .pill{display:inline-block;font-size:11px;font-weight:700;padding:3px 8px;border-radius:99px;
   border:1px solid currentColor}
-.pill.ok{color:var(--ok)}.pill.no{color:var(--warn)}
+.pill.ok{color:var(--ok)}.pill.no{color:var(--warn)}.pill.bad{color:var(--accent)}
+.work{display:flex;gap:18px;align-items:flex-start;margin-top:12px}
+.done{flex:none;width:330px;border:1px solid var(--rule);border-radius:9px;padding:14px;
+  position:sticky;top:16px;max-height:82vh;overflow:auto}
+.made{display:flex;gap:9px;align-items:flex-start;padding:10px 0;border-top:1px solid var(--rule)}
+.made:first-of-type{border-top:0}
+.made .dot{width:9px;height:9px;border-radius:50%;flex:none;margin-top:6px;background:currentColor}
+.made .who{flex:1;min-width:0}
+.made .code{font-weight:700;font-size:13.5px;font-variant-numeric:tabular-nums}
+.made .nm{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.made .why{font-size:12px;line-height:1.6;margin-top:3px}
+.made .go{display:flex;gap:6px;margin-top:6px}
+.made .go button{padding:5px 10px;font-size:12px}
+@media(max-width:1000px){.work{flex-wrap:wrap}.done{width:100%;position:static;max-height:none}}
 .units{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:18px;margin-top:18px}
 .unit{border:1px solid var(--rule);border-radius:9px;padding:14px;background:var(--panel)}
 .unit img.art{width:100%;border-radius:5px;background:#EFEBE9}
@@ -93,12 +106,23 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       <button id="btnBatch">선택한 상품 한꺼번에 변환</button>
       <span id="batchMsg" class="msg" style="margin:0"></span>
     </div>
+    <div class="work">
+      <div style="overflow-x:auto;min-width:0"><table id="tbl">
+        <thead><tr><th><input type="checkbox" id="chkAll"></th><th>상품번호</th><th>상품명</th>
+        <th class="num">이미지</th><th class="num">캡션</th>
+        <th class="num">옵션</th><th>어댑터</th><th>사전 게이트</th><th></th></tr></thead>
+        <tbody></tbody></table></div>
+      <aside class="done hide" id="doneCard">
+        <p class="label">만든 것</p>
+        <div id="doneList"></div>
+        <div class="row" style="margin-top:12px">
+          <button class="ghost" id="btnZip">전부 zip 으로 내려받기</button>
+        </div>
+        <p class="msg" style="margin-top:10px">● 초록 그대로 써도 됩니다 · ● 노랑 한 번 보세요 ·
+          ● 빨강 사람 손이 필요합니다</p>
+      </aside>
+    </div>
     <div id="batchLog" class="msg" style="white-space:pre-line"></div>
-    <div style="overflow-x:auto;margin-top:12px"><table id="tbl">
-      <thead><tr><th><input type="checkbox" id="chkAll"></th><th>상품번호</th><th>상품명</th>
-      <th class="num">이미지</th><th class="num">캡션</th>
-      <th class="num">옵션</th><th>어댑터</th><th>사전 게이트</th><th></th></tr></thead>
-      <tbody></tbody></table></div>
   </section>
 
   <section class="card hide" id="editCard">
@@ -205,11 +229,41 @@ $('#chkAll').onchange = e => rows().forEach(tr => {
   if (tr.style.display !== 'none') tr.querySelector('.pickbox').checked = e.target.checked;
 });
 
+// 깨질 만한 곳은 이미 세어 두었다 — 사후 게이트가 변환할 때마다 돌고 있고,
+// 그 결과가 여기까지 그대로 넘어온다. 검증을 새로 붙이는 것이 아니라 버리던 것을 쓴다.
+function risk(d, caps) {
+  const why = [];
+  if (!d.ok) why.push(d.reason_text || '사후 점검 보류');
+  const empty = caps.filter(c => !c.trim()).length;
+  if (empty) why.push(`문구 빈 칸 ${empty}개`);
+  if (d.units.length <= 1) why.push('유닛이 1개뿐 — 안 쪼개졌을 수 있음');
+  if (d.ink != null && d.ink < 0.9) why.push(`잉크 보존 ${(d.ink*100).toFixed(1)}%`);
+  return {level: !d.ok ? 'bad' : (why.length ? 'no' : 'ok'), why};
+}
+
+function addMade(code, name, job, d, caps) {
+  const {level, why} = risk(d, caps);
+  const el = document.createElement('div');
+  el.className = 'made';
+  el.innerHTML = `<span class="dot pill ${level}" style="border:0"></span>
+    <div class="who">
+      <p class="code">${code} <span style="font-weight:400;color:var(--muted)">유닛 ${d.units.length}</span></p>
+      <p class="nm" title="${name.replace(/"/g,'&quot;')}">${name}</p>
+      ${why.length ? `<p class="why pill ${level}" style="border:0;padding:0">${why.join(' · ')}</p>` : ''}
+      <div class="go"><button class="ghost">미리보기</button><button class="ghost">내려받기</button></div>
+    </div>`;
+  const [see, get] = el.querySelectorAll('button');
+  see.onclick = () => window.open('/preview/' + job, '_blank');
+  get.onclick = () => { location.href = '/download/' + job; };
+  $('#doneList').appendChild(el);
+  $('#doneCard').classList.remove('hide');
+}
+
 $('#btnBatch').onclick = async () => {
   const picked = rows().filter(tr => tr.querySelector('.pickbox').checked);
   if (!picked.length) { $('#batchMsg').className='msg err'; $('#batchMsg').textContent='먼저 상품을 고르세요.'; return; }
   $('#btnBatch').disabled = true;
-  $('#batchLog').textContent = '';
+  $('#batchLog').textContent = ''; $('#doneList').innerHTML = '';
   const log = s => { $('#batchLog').textContent += s + '\n'; };
   let done = 0, fail = 0;
   const made = [];
@@ -232,6 +286,7 @@ $('#btnBatch').onclick = async () => {
                                  lead:'', specs:''});
       const s = await post('/api/save', {job:d.job});
       done++; made.push(s.code);
+      addMade(code, tr.cells[2].textContent, d.job, d, caps);
       log(`  ✓ ${code} · 유닛 ${d.units.length}개${kept} → ${s.code}.html`);
     } catch (e) {
       fail++;
@@ -241,11 +296,15 @@ $('#btnBatch').onclick = async () => {
   $('#batchMsg').className = fail ? 'msg err' : 'msg';
   $('#batchMsg').textContent = `끝. 성공 ${done}개${fail ? ` · 실패 ${fail}개` : ''} — work/out 폴더에 상품번호로 저장됐습니다.`;
   $('#btnBatch').disabled = false;
-  // 사람이 마지막에 한 번 더 눌러야 하는 단추를 남기지 않는다. 다 됐으면 받아 놓는다.
-  if (done) {
-    log(`\n  ${done}개를 zip 으로 내려받습니다.`);
-    location.href = '/download/batch/all?codes=' + encodeURIComponent(made.join(','));
-  }
+  // zip 은 사람이 훑어본 뒤에 받는다. 만드는 일은 끝났고, 받을지 말지는 눈으로 보고 정한다.
+  $('#btnZip').disabled = !done;
+  $('#btnZip').dataset.codes = made.join(',');
+  $('#btnZip').textContent = done ? `${done}개 zip 으로 내려받기` : '전부 zip 으로 내려받기';
+};
+
+$('#btnZip').onclick = () => {
+  const c = $('#btnZip').dataset.codes || '';
+  location.href = '/download/batch/all' + (c ? '?codes=' + encodeURIComponent(c) : '');
 };
 
 $('#btnUrl').onclick = () => {
