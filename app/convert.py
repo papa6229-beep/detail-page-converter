@@ -44,17 +44,31 @@ class Work:
     notes: list[str] = field(default_factory=list)
 
 
-def fetch(url: str, cache: Path) -> bytes:
-    """이미지를 받는다. 같은 URL은 다시 받지 않는다."""
+def fetch(url: str, cache: Path, tries: int = 3) -> bytes:
+    """이미지를 받는다. 같은 URL은 다시 받지 않는다.
+
+    한 번 튕겼다고 포기하지 않는다. 49개를 돌리다 세 장을 못 받은 적이 있는데,
+    곧바로 다시 받으니 전부 성공했다 — 잠깐 튕긴 것뿐이었다. 800개를 돌리면
+    그런 일이 반드시 생긴다.
+    """
+    import time
+
     cache.mkdir(parents=True, exist_ok=True)
     key = cache / (hashlib.sha1(url.encode()).hexdigest() + Path(url).suffix[:5])
     if key.exists():
         return key.read_bytes()
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=30) as r:
-        data = r.read()
-    key.write_bytes(data)
-    return data
+    for n in range(tries):
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                data = r.read()
+            key.write_bytes(data)
+            return data
+        except Exception:
+            if n == tries - 1:
+                raise
+            time.sleep(1.5 * (n + 1))
+    raise RuntimeError(url)  # 닿지 않는다
 
 
 def _save(im: Image.Image, out: Path, name: str, quality: int = 90) -> str:
@@ -272,15 +286,21 @@ def from_whole_image(url: str, im: Image.Image, out: Path) -> tuple[list[Unit], 
     return units, ad, result.ink_coverage, result.gap_stats
 
 
-def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], list[str]]:
-    """조각형 — HTML이 이미 답을 갖고 있다. 픽셀을 보지 않는다 (3.1)."""
-    units, ad = [], []
+def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], list[str], list[str]]:
+    """조각형 — HTML이 이미 답을 갖고 있다. 픽셀을 보지 않는다 (3.1).
+
+    못 받은 그림은 **세어서 돌려준다.** 예전에는 조용히 건너뛰었는데, 그러면
+    유닛과 설명이 통째로 사라진 채로 페이지가 완성돼 나온다. 사후 게이트도 못 잡는다 —
+    살아남은 것만 보기 때문이다. 800개를 돌리면 아무도 모르게 짧아진 페이지가 섞인다.
+    """
+    units, ad, missed = [], [], []
     lead_run = True
     for i, piece in enumerate(body.pieces):
         try:
             data = fetch(piece.url, cache)
             im = Image.open(io.BytesIO(data)).convert("RGB")
-        except Exception:
+        except Exception as e:
+            missed.append(f"{piece.url.rsplit('/', 1)[-1]} ({type(e).__name__})")
             continue
         if piece.caption:
             lead_run = False
@@ -289,7 +309,7 @@ def from_pieces(body: source.Body, cache: Path, out: Path) -> tuple[list[Unit], 
             continue
         name = _save(im, out, f"unit_{i:02d}.jpg")
         units.append(Unit(image=name, caption=piece.caption, width=im.width, height=im.height))
-    return units, ad
+    return units, ad, missed
 
 
 def convert(row, workdir: Path, cache: Path) -> Work:
@@ -316,10 +336,11 @@ def convert(row, workdir: Path, cache: Path) -> Work:
 
     ink = None
     gaps = []
+    missed: list[str] = []
     # 어댑터 선택은 세기로 (3.2)
     if len(body.images) >= 2:
         product.adapter = "조각형"
-        product.units, product.ad = from_pieces(body, cache, out)
+        product.units, product.ad, missed = from_pieces(body, cache, out)
     else:
         product.adapter = "통이미지형"
         url = body.images[0]
@@ -328,6 +349,9 @@ def convert(row, workdir: Path, cache: Path) -> Work:
 
     apply_tags(product.units, opts)
     post = gate.post_check(product, ink_coverage=ink, gap_stats=gaps)
+    # 못 받은 그림은 조용히 넘어가지 않는다. 그만큼 페이지가 짧아진 것이다.
+    if missed:
+        post.fail(gate.IMAGE_MISSING, f"{len(missed)}장: " + " · ".join(missed[:3]))
     for r in verdict.reasons:
         post.fail(r)
     post.notes = verdict.notes + post.notes

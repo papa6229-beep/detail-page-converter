@@ -94,6 +94,29 @@ def test_사전_게이트는_SI_X_같은_경우를_거른다():
     assert gate.OPTION_UNMAPPABLE in v.reasons
 
 
+def test_문장이_안_끊겼는데_보류시키지_않는다():
+    """실물 49개에서 이 규칙은 다섯 상품을 보류시켰고 다섯 다 오경보였다.
+
+    보류는 **사람이 손봐야 한다**는 뜻이어야 한다. 우리 규칙이 예민해서 켜지는
+    빨간불이 섞이면 빨간불 전체를 아무도 안 믿게 된다.
+    """
+    def 판정(caption):
+        p = Product(units=[Unit(image="x.jpg", caption=caption, width=400, height=400)])
+        return gate.post_check(p, ink_coverage=1.0)
+
+    # 곧은 따옴표로 끝나도 문장은 끝난 것이다 (2494955)
+    v = 판정('바디는 슬림하여 딱 맞는 착용감의 비관통 오나홀, "나의 생 삽입 아이돌"')
+    assert v.ok and not v.notes, "곧은 따옴표를 문장 끝으로 못 봤다"
+
+    # 마침표 없이 끝나는 것은 한국어 상품 문구에서 흔하다 (2495652·3·4 · 2495671)
+    for text in ("리드미컬한 주름이 닿아 밀려오는 자극의 파도를 가져온다",
+                 "[01. 순종적인 미니멈 메이드] 단면도를 보시면 알 수 있습니다요"):
+        v = 판정(text)
+        assert v.ok, f"멀쩡한 문구를 보류시켰다: {text}"
+        assert v.notes, "적어는 둬야 한다"
+        assert gate.CAPTION_TRUNCATED not in v.reasons
+
+
 def test_스펙은_캡션에_적힌_숫자만_쓴다():
     p = Product(units=[Unit(caption="무게는 약 40 g이라 가볍고 크기는 약 6cm입니다.")])
     assert render.guess_specs(p) == [("무게", "40", "g"), ("크기", "6", "cm")]

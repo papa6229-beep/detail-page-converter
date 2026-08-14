@@ -35,7 +35,9 @@ TAG_RE = re.compile(r"<[^>]+>")
 
 
 def unwrap(s: str) -> str:
-    return html.unescape(TAG_RE.sub("", s)).strip()
+    # `\r` 는 내용이 아니다. 윈도우에서 저장한 회차와 리눅스에서 저장한 회차를
+    # 견주면 이것 때문에 전부 "달라짐" 으로 뜬다.
+    return html.unescape(TAG_RE.sub("", s)).replace("\r", "").strip()
 
 
 def load(where: str) -> dict[str, dict]:

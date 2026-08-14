@@ -176,7 +176,9 @@ def api_render(req: RenderReq):
     p.meta.specs = typed or render.guess_specs(p)
 
     html = render.render(p, job.dir)
-    (job.dir / "detail.html").write_text(html, encoding="utf-8")
+    # 줄바꿈을 OS 에 맡기지 않는다. 윈도우에서 만든 것과 리눅스에서 만든 것이
+    # 내용은 같은데 바이트가 달라지면 회차 비교가 통째로 흔들린다.
+    (job.dir / "detail.html").write_text(html, encoding="utf-8", newline="\n")
     return {"ok": True, "bytes": len(html.encode()), "url": f"/preview/{job.id}"}
 
 

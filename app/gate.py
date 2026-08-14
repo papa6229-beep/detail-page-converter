@@ -16,6 +16,7 @@ CAPTION_TRUNCATED = "CAPTION_TRUNCATED"
 PANEL_GEOMETRY = "PANEL_GEOMETRY"
 PROXIMITY_INVERTED = "PROXIMITY_INVERTED"
 OPTION_UNMAPPABLE = "OPTION_UNMAPPABLE"
+IMAGE_MISSING = "IMAGE_MISSING"
 
 REASON_TEXT = {
     NO_BODY_IMAGE: "본문 이미지 없음",
@@ -25,7 +26,13 @@ REASON_TEXT = {
     PANEL_GEOMETRY: "조각 기하 이상",
     PROXIMITY_INVERTED: "유닛 안 간격이 유닛 사이보다 큼",
     OPTION_UNMAPPABLE: "옵션을 유닛에 배분 불가",
+    IMAGE_MISSING: "원본 이미지를 못 받음",
 }
+
+
+#: 문장을 맺는 글자. 곧은 따옴표를 큰따옴표 문자열 안에 쓰려다 리터럴이 거기서
+#: 끊겨 `"` 와 `'` 가 조용히 빠져 있었다. 목록으로 적으면 그런 일이 안 생긴다.
+SENTENCE_END = frozenset('.。!?…"\'’”)]』」》')
 
 
 @dataclass
@@ -40,6 +47,15 @@ class Verdict:
             self.reasons.append(code)
         if note:
             self.notes.append(f"{code}: {note}")
+
+    def note(self, code: str, text: str = "") -> None:
+        """보류시키지 않고 적어만 둔다.
+
+        보류는 **사람이 손봐야 한다**는 뜻이어야 한다. 우리 규칙이 예민해서 켜지는
+        빨간불이 섞이면 빨간불 전체를 아무도 안 믿게 되고, 진짜 깨진 상품이
+        그 틈으로 지나간다.
+        """
+        self.notes.append(f"{code}: {text}" if text else code)
 
     @property
     def text(self) -> str:
@@ -72,11 +88,18 @@ def post_check(product, ink_coverage: float | None = None, gap_stats=None) -> Ve
     if ink_coverage is not None and ink_coverage < 0.97:
         v.fail(AREA_LOSS, f"잉크 보존율 {ink_coverage:.3f}")
 
-    # ③ 캡션이 문장 중간에 끊기지 않음
+    # ③ 캡션이 문장 중간에 끊기지 않음 — **적어만 두고 보류시키지 않는다**
+    #
+    #    실물 49개에서 이 규칙은 다섯 상품을 보류시켰고 **다섯 다 오경보**였다.
+    #      2494955  …"나의 생 삽입 아이돌"   곧은 따옴표가 아래 목록에서 먹혀 있었다
+    #      2495652/3/4  …자극의 파도를 가져온다   마침표 없이 끝나는 원본 문체
+    #      2495671  …미니멈 메이드] 단면도    라벨이지 문장이 아니다
+    #    잡으려던 것은 분할 실패인데 실제로 잡는 것은 원본 저자의 문체와 라벨이다.
+    #    한국어 상품 문구는 마침표 없이 끝나는 일이 흔하다.
     for u in product.captioned:
         text = u.caption.strip()
-        if text and text[-1] not in ".。!?"'’”)]' and len(text) > 20:
-            v.fail(CAPTION_TRUNCATED, f"…{text[-14:]}")
+        if text and text[-1] not in SENTENCE_END and len(text) > 20:
+            v.note(CAPTION_TRUNCATED, f"…{text[-14:]}")
             break
 
     # ④ 조각의 종횡비·최소 크기

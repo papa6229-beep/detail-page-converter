@@ -248,8 +248,16 @@ $('#chkAll').onchange = e => rows().forEach(tr => {
 function risk(d, caps) {
   const why = [];
   if (!d.ok) why.push(d.reason_text || '사후 점검 보류');
-  const empty = caps.filter(c => !c.trim()).length;
-  if (empty) why.push(`문구 빈 칸 ${empty}개`);
+  // 빈 칸은 **원본에 글이 있었는데 우리가 못 채운 것**만 센다. 원본에 글이 없던
+  // 그림을 크게 싣는 것은 정상 동작인데(3.1), 그걸 세는 바람에 밤쉘걸(2496667)이
+  // 멀쩡한 채로 노랑이 됐다. 원본에 글이 있었다는 증거는 잘라둔 캡션 조각이다.
+  const empty = d.units.filter((u,i) => u.caption_crop && !(caps[i]||'').trim()).length;
+  if (empty) why.push(`읽어야 할 문구 빈 칸 ${empty}개`);
+  // 엑셀이 옵션이 있다고 했는데 사진이 한 장도 안 붙었으면 옵션 대조가 실패한 것이다.
+  // 손님이 고를 때 볼 것이 이름뿐이 된다. 기준선 49개 중 17개가 이 상태였다.
+  const opts = (d.meta && d.meta.options || []).length;
+  const withPhoto = new Set(d.units.filter(u => u.option_tag).map(u => u.option_tag)).size;
+  if (opts && !withPhoto) why.push(`옵션 ${opts}종에 사진이 하나도 안 붙음`);
   if (d.units.length <= 1) why.push('유닛이 1개뿐 — 안 쪼개졌을 수 있음');
   if (d.ink != null && d.ink < 0.9) why.push(`잉크 보존 ${(d.ink*100).toFixed(1)}%`);
   return {level: !d.ok ? 'bad' : (why.length ? 'no' : 'ok'), why};
