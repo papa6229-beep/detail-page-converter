@@ -69,7 +69,9 @@ def shape(doc: str) -> dict:
     heads = re.findall(r'class="feature__head">(.*?)</h3>', body, re.S)
     return {
         "섹션": " ".join(re.findall(r'<(?:section|header|footer)[^>]*class="([a-z]+)', body)),
-        "그림": dict(Counter(re.findall(r'<figure class="([a-z_-]+)"', body))),
+        # 클래스가 둘 붙는 경우가 있다 — `variant__fig variant__fig--card`.
+        # `[a-z_-]+"` 로 잡으면 그런 그림이 통째로 안 세어진다. 첫 낱말만 쓴다.
+        "그림": dict(Counter(m.split()[0] for m in re.findall(r'<figure class="([^"]+)"', body))),
         "옵션카드": [unwrap(m) for m in re.findall(r'<p class="variant__name">(.*?)</p>', body, re.S)],
         "옵션묶음": [unwrap(m) for m in re.findall(r'<h3 class="optset__name">(.*?)</h3>', body, re.S)],
         # JSON 을 거쳐도 같아야 하므로 튜플이 아니라 리스트로 담는다.
