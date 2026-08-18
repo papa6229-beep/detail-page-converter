@@ -512,7 +512,8 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 **보내는 것**
 
     상품명 · 브랜드 · 원본에 직접 타이핑돼 있던 글 전문
-    번호가 붙은 그림 조각들. 첫 조각은 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다.
+    번호가 붙은 밴드 그림들. 번호 옆 괄호가 그 밴드의 종류다.
+    첫 밴드들이 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다.
 
 **할 일 넷**
 
@@ -537,6 +538,18 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
    촉감 이야기면 표면이 보이는 컷. 아무 컷이나 순서대로 붙이지 마라.
    설명은 원본 글에 적힌 사실로만 쓴다.
 
+**밴드 종류와 쓰는 법**
+
+    (PHOTO)    제품컷. 그림 자리에 먼저 쓴다
+    (MIXED)    제품에 주석이 붙은 것. 차선으로 쓴다
+    (UNKNOWN)  애매한 것. 다른 후보가 없을 때만 쓴다
+    (TEXT)     글만 박힌 것. **읽는 근거로만** 쓰고 그림 자리에는 절대 넣지 마라.
+               넣으면 같은 문장이 설명으로도 나오고 그림으로도 나와 두 번 실린다.
+    (PROMO)    쇼핑몰 홍보 움짤. 아무 자리에도 넣지 말고 근거로도 쓰지 마라.
+
+  Point 블록의 번호는 **그 설명이 가리키는 실제 제품 밴드**여야 한다.
+  설명 원문이 박힌 (TEXT) 밴드가 아니다.
+
 **지킬 것**
 
   · 그림 번호는 **한 번씩만** 쓴다. 같은 컷을 두 자리에 넣지 마라.
@@ -559,15 +572,20 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 
 
 def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
-              blocked: set[int] | None = None) -> list[tuple[str, str]]:
-    """모델에 보낼 것을 순서대로 쌓는다 — 글 먼저, 그다음 번호와 그림이 짝지어.
+              kinds: list[str]) -> list[tuple[str, str]]:
+    """모델에 보낼 것을 순서대로 쌓는다 — 글 먼저, 그다음 번호·종류·그림.
 
-    **번호마다 쓸 수 있는지를 함께 적는다.** 이걸 빼먹었더니 모델이 보이는 대로
-    고르고 우리가 조용히 다 거부해서, 글은 멀쩡한데 그림이 대표컷 하나만 남았다.
-    거를 것을 정해 놓고 그 말을 안 해 준 셈이다.
+    **차단이 아니라 순위다.** 처음에는 쓸 만한 것만 골라 보냈는데, 밴드 21개 중
+    3개만 남아서 그림 자리가 거의 비었다. 저쪽 방식은 전부 보내고 종류만 붙인다 —
 
-    첫 조각은 늘 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다. 그걸 알려 주면
-    모델이 요약정보를 어디서 읽어야 하는지 찾아 헤매지 않는다.
+        (PHOTO)    제품컷. 먼저 쓴다
+        (MIXED)    제품에 주석이 붙은 것. 차선
+        (UNKNOWN)  애매한 것. 다른 후보가 없을 때만
+        (TEXT)     글만 박힌 것. **읽는 근거로만** 쓰고 그림 자리에는 못 넣는다
+        (PROMO)    바나나몰 홍보 움짤. 아무 데도 못 넣고 근거로도 안 쓴다
+
+    제품컷을 TEXT 로 오판하지 않는 것이 최우선이라 애매하면 MIXED·UNKNOWN 으로
+    남는다. 그러면 모델이 보고 판단할 기회가 있다.
     """
     import base64
     import io
@@ -575,15 +593,10 @@ def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
     from PIL import Image
 
     head = [("text", PROMPT), ("text", f"상품명: {name}\n브랜드: {brand}\n\n원본에 타이핑돼 있던 글:\n{typed}")]
-    blocked = blocked or set()
-    usable = [i for i in range(len(cuts)) if i not in blocked]
-    head.append(("text",
-                 f"그림 자리에 **쓸 수 있는 번호는 {usable} 뿐이다.** 나머지는 원본 디자인 글이\n"
-                 f"박혀 있어 못 쓴다 — 읽는 근거로만 봐라. 쓸 수 없는 번호를 고르면 그 자리는 빈다."))
+    head.append(("text", f"밴드 {len(cuts)}장을 위에서 아래 순서로 봅니다. 괄호 안이 그 밴드의 종류입니다."))
     for i, p in enumerate(cuts):
-        mark = "사진 — 써도 된다" if i not in blocked else "글·디자인 — 읽기만"
-        top = " · 원본 맨 위 (대표컷·요약정보·3줄설명·패키지)" if i == 0 else ""
-        head.append(("text", f"[{i}] ({mark}){top}"))
+        kind = kinds[i] if i < len(kinds) else UNKNOWN_KIND
+        head.append(("text", f"[{i}]({kind})" + (" · 원본 맨 위" if i == 0 else "")))
         # 보내기 전에 줄인다. 토큰도 아끼고 전송도 안정된다 — 읽을 글자는 살아 있다.
         with Image.open(p) as im:
             im = im.convert("RGB")
@@ -591,27 +604,34 @@ def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
                 s = SEND_PX / max(im.size)
                 im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
             buf = io.BytesIO()
-            im.save(buf, "PNG", optimize=True)
+            im.save(buf, "JPEG", quality=85)
         head.append(("image", base64.b64encode(buf.getvalue()).decode()))
     return head
 
 
+#: 라벨을 못 받았을 때의 기본값. 차단하지 않는다.
+UNKNOWN_KIND = "UNKNOWN"
 #: 모델에 보낼 때 긴 변을 이만큼으로 줄인다.
 SEND_PX = 900
 
 
-def take(reply: str, cuts: list[Path], blocked: set[int]) -> tuple[Page, list[str]]:
-    """모델이 돌려준 것을 받는다. **그대로 믿지 않는다.**
+def take(reply: str, cuts: list[Path], kinds: list[str],
+         hashes: list[int] | None = None) -> tuple[Page, list[str]]:
+    """모델이 돌려준 것을 받는다. **그대로 믿지 않는다** (저쪽의 Layer C).
 
-    받은 뒤에 잰다(단순형의 `guard` 와 같은 자리). 여기서 막는 것은 둘이다 —
+    막는 것은 셋뿐이다 —
 
-        번호가 없거나 우리가 이미 버린 조각을 골랐다   → 그 자리를 비운다
-        같은 조각을 두 자리에 넣었다                 → 뒤엣것을 비운다
+        TEXT · PROMO 밴드를 그림 자리에 넣었다   → 그 자리를 비운다
+        같은 밴드를 두 자리에 넣었다             → 뒤엣것을 비운다
+        같은 사진이 다른 밴드로 또 들어왔다        → dHash 로 알아보고 비운다
 
     **잘못된 사진보다 빈 칸이 안전하다.** 손님은 이 그림을 보고 주문한다.
+    다만 **캡션은 그림과 따로 산다** — 그림이 비어도 설명은 그대로 남긴다.
     """
     import json
     import re
+
+    from .bands import DUP_HAMMING, hamming
 
     m = re.search(r"\{[\s\S]*\}", reply or "")
     if not m:
@@ -622,44 +642,75 @@ def take(reply: str, cuts: list[Path], blocked: set[int]) -> tuple[Page, list[st
         return Page(), [f"JSON 을 못 읽었다: {e}"]
 
     notes = [str(x) for x in got.get("notes") or []]
-    used: set[int] = set()
+    hashes = hashes or []
+    used: list[int] = []
 
     def cut(v, why: str) -> Path | None:
-        """번호 하나를 그림 파일로. 못 쓰면 비우고 이유를 적는다."""
         if not isinstance(v, int) or not (0 <= v < len(cuts)):
             return None
-        if v in blocked:
-            notes.append(f"{why}: [{v}] 는 글 구간이거나 원본 디자인이라 안 씀")
+        kind = kinds[v] if v < len(kinds) else UNKNOWN_KIND
+        if kind in ("TEXT", "PROMO"):
+            notes.append(f"{why}: [{v}] 는 {kind} 라 그림으로 못 씀")
             return None
         if v in used:
             notes.append(f"{why}: [{v}] 는 이미 다른 자리에 썼다")
             return None
-        used.add(v)
+        h = hashes[v] if v < len(hashes) else 0
+        for u in used:
+            if hamming(h, hashes[u] if u < len(hashes) else 0) <= DUP_HAMMING:
+                notes.append(f"{why}: [{v}] 는 [{u}] 와 같은 사진이다")
+                return None
+        used.append(v)
         return cuts[v]
 
-    spec = {k: str(v).strip() for k, v in (got.get("spec") or {}).items() if str(v).strip()}
+    spec = {k: str(v).strip() for k, v in (got.get("spec") or got.get("summary") or {}).items() if str(v).strip()}
     spec["치수"] = SIZE_FIXED
     keys = [
-        (str(k.get("t", "")).strip(), str(k.get("d", "")).strip())
-        for k in (got.get("keys") or [])
-        if isinstance(k, dict) and str(k.get("t", "")).strip()
+        (str(k.get("t") or k.get("title") or "").strip(), str(k.get("d") or k.get("desc") or "").strip())
+        for k in (got.get("keys") or got.get("keyFeatures") or [])
+        if isinstance(k, dict) and str(k.get("t") or k.get("title") or "").strip()
     ][:3]
 
     page = Page(spec=spec, keys=keys)
-    page.main = cut(got.get("main"), "대표컷")
+    # 자리 순서가 곧 우선권이다. 특징·사이즈·패키지를 먼저 잡고 대표컷이 그 나머지에서
+    # 고르게 한다 — 저쪽도 같은 순서다(feature → size → package → main).
     page.feature = cut(got.get("feature"), "특징컷")
-    page.package = cut(got.get("package"), "패키지")
     page.size = cut(got.get("size"), "사이즈")
+    page.package = cut(got.get("package"), "패키지")
+    page.main = cut(got.get("main"), "대표컷")
 
-    for slot, key in (("point1", "point1"), ("point2", "point2")):
-        p = got.get(key) or {}
+    # 대표컷이 비면 페이지가 통째로 무너진다. 모델 픽이 거부되면 **남은 것 중에서
+    # 다시 고른다** — 저쪽도 후보풀에서 최고점을 다시 뽑는다(`selectHeroIndex`).
+    if page.main is None:
+        quiet: list[str] = []          # 후보를 훑는 동안의 메모는 남기지 않는다
+        for want in ("PHOTO", "MIXED", "UNKNOWN"):
+            for i, kind in enumerate(kinds):
+                if kind != want:
+                    continue
+                keep, notes = notes, quiet
+                spare = cut(i, "대표컷 대신")
+                notes = keep
+                if spare is not None:
+                    page.main = spare
+                    notes.append(f"모델이 고른 대표컷을 못 써서 [{i}] 로 대신했다")
+                    break
+            if page.main is not None:
+                break
+        if page.main is None:
+            notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
+
+    for slot in ("point1", "point2"):
+        p = got.get(slot) or {}
         blocks = []
         for b in (p.get("blocks") or [])[:3]:
             if not isinstance(b, dict):
                 continue
-            blocks.append((str(b.get("d", "")).strip(), cut(b.get("i"), f"{key} 그림")))
+            # 캡션은 그림과 따로 산다. 그림을 못 써도 설명은 남긴다.
+            blocks.append((str(b.get("d") or b.get("caption") or "").strip(),
+                           cut(b.get("i") if "i" in b else b.get("index"), f"{slot} 그림")))
         setattr(page, slot, (str(p.get("title", "")).strip(), blocks))
     return page, notes
+
 
 
 def is_promo(arr: np.ndarray, url: str = "") -> bool:
