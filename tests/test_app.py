@@ -1088,3 +1088,43 @@ def test_원본의_색_글씨가_박힌_조각은_안_쓴다():
     )
     골른것 = pick_photos(got)
     assert 깨끗[0] in 골른것 and 디자인[0] not in 골른것
+
+
+def test_길이_있어야_할_주소가_다_붙어_있다():
+    """`/api/basic` 을 `if __name__ == "__main__": main()` **뒤에** 붙였다가
+    화면에서 `Not Found` 를 맞았다.
+
+    그렇게 실행하면 `main()` 이 서버를 띄우고 멈춰서 그 아래 줄은 영영 안 돈다.
+    라우트가 등록될 기회가 없다. 파일이 길어지면 눈으로는 못 지킨다.
+    """
+    from app.server import app
+
+    붙은것 = {r.path for r in app.routes}
+    for 길 in ("/api/excel", "/api/convert", "/api/render", "/api/autofill",
+              "/api/basic", "/api/save", "/api/made", "/out/{code}"):
+        assert 길 in 붙은것, f"{길} 가 안 붙었다 — main() 뒤에 쓴 것은 아닌가"
+
+
+def test_홍보_GIF_는_네_변_테두리로_가른다():
+    """사장님 말: "파란색 외곽테두리에 들어가있는 움짤은 다 사용하지 않을 예정."
+
+    색을 못박지 않고 네 변에 같은 띠가 둘러져 있는가로 센다. 실측 —
+    홍보 GIF 는 네 변 파랑 80~86%, 상품 이미지는 네 변 모두 0%.
+    """
+    import numpy as np
+
+    from app.basic import is_promo
+
+    홍보 = np.full((450, 800, 3), 255, np.uint8)
+    홍보[:, :] = (255, 255, 255)
+    홍보[:14] = 홍보[-14:] = (30, 90, 220)
+    홍보[:, :14] = 홍보[:, -14:] = (30, 90, 220)
+    assert is_promo(홍보, "x.gif")
+    assert not is_promo(홍보, "x.jpg"), "gif 가 아니면 홍보 움짤이 아니다"
+
+    상품 = np.full((450, 800, 3), 255, np.uint8)
+    assert not is_promo(상품, "x.gif")
+
+    세로 = np.full((800, 450, 3), 255, np.uint8)
+    세로[:12] = 세로[-12:] = 세로[:, :12] = 세로[:, -12:] = (30, 90, 220)
+    assert not is_promo(세로, "x.gif"), "홍보 움짤은 가로형이다"
