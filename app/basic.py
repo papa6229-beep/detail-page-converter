@@ -498,3 +498,177 @@ def pick_photos(cands: list[Shot]) -> list[Shot]:
         for c in cands
         if c.design < DESIGN_INK and c.letters < TEXT_BAND and 0.03 <= c.ink <= 0.75
     ]
+
+
+#: 모델에게 주는 지시. **자르기는 수학, 이해는 AI** — 조각은 우리가 냈고,
+#: 어느 조각이 어느 자리에 어울리는지는 모델이 정한다.
+#:
+#: 사장님 말: *"각 설명에 어울리는 이미지를 골라서 쓰라는거야... 융통성이라고."*
+PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. 원본에서 **재료만** 가져온다.
+
+원본은 이미 완성된 디자인이라 그대로 옮기면 남의 쇼핑몰이 따라온다.
+그림은 골라서 쓰고, 글은 원본이 적어 둔 사실에서만 가져온다.
+
+**보내는 것**
+
+    상품명 · 브랜드 · 원본에 직접 타이핑돼 있던 글 전문
+    번호가 붙은 그림 조각들. 첫 조각은 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다.
+
+**할 일 넷**
+
+1. **요약정보** — 원본 맨 위 표에 적힌 그대로 옮긴다.
+   `타입` `재질` `무게` `전원` 넷만. 없으면 빈 칸으로 둔다.
+   **치수는 옮기지 마라** — 옵션마다 달라 따로 처리한다.
+
+2. **핵심특징 3개** — 원본의 3줄 설명을 바탕으로 짧은 제목과 한 줄 설명을 짓는다.
+   3줄이 모자라면 요약정보나 설명 글에서 보탠다. **없는 사실을 지어내지 마라.**
+   제목은 한눈에 읽히게 짧게, 설명은 한 줄로.
+
+3. **그림 고르기** — 자리마다 **가장 어울리는 것**을 고른다. 이것이 가장 중요하다.
+
+    main      대표컷. 배경색이 깔린 컷보다 **깨끗한 제품 단독컷**이 어울린다.
+              깨끗한 컷이 없으면 그때는 차선을 고르고 `notes` 에 적어라.
+    feature   핵심특징 옆에 놓일 컷. 대표컷과 다른 것으로.
+    package   패키지 상자가 찍힌 컷. 없으면 비워라.
+    size      치수선·수치가 그려진 도해. 없으면 비워라.
+
+4. **Point 01 · 02** — 설명과 그림을 짝지어 최대 3덩어리씩.
+   **설명에 어울리는 그림을 붙여라.** 전원 이야기면 케이블이 보이는 컷,
+   촉감 이야기면 표면이 보이는 컷. 아무 컷이나 순서대로 붙이지 마라.
+   설명은 원본 글에 적힌 사실로만 쓴다.
+
+**지킬 것**
+
+  · 그림 번호는 **한 번씩만** 쓴다. 같은 컷을 두 자리에 넣지 마라.
+  · 쓸 그림이 모자라면 덩어리 수를 줄여라. 억지로 채우지 마라.
+  · 원본과 **같은 순서로 늘어놓지 않으면 좋다.** 다만 이건 바람일 뿐이다 —
+    어울리는 그림을 고르는 것이 순서보다 앞선다. 쓸 컷이 적으면 원본 순서라도 괜찮다.
+  · 가장 중요한 대목 한 군데를 `**이렇게**` 감싼다. 두 낱말 이상, 뜻이 되는 덩어리로.
+
+**돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
+
+```json
+{"spec":{"타입":"","재질":"","무게":"","전원":""},
+ "keys":[{"t":"제목","d":"한 줄 설명"},{"t":"","d":""},{"t":"","d":""}],
+ "main":0,"feature":1,"package":null,"size":null,
+ "point1":{"title":"","blocks":[{"i":2,"d":"설명"}]},
+ "point2":{"title":"","blocks":[]},
+ "notes":["깨끗한 누끼컷이 없어 차선을 썼다"]}
+```
+"""
+
+
+def parts_for(name: str, brand: str, typed: str, cuts: list[Path]) -> list[tuple[str, str]]:
+    """모델에 보낼 것을 순서대로 쌓는다 — 글 먼저, 그다음 번호와 그림이 짝지어.
+
+    첫 조각은 늘 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다. 그걸 알려 주면
+    모델이 요약정보를 어디서 읽어야 하는지 찾아 헤매지 않는다.
+    """
+    import base64
+    import io
+
+    from PIL import Image
+
+    head = [("text", PROMPT), ("text", f"상품명: {name}\n브랜드: {brand}\n\n원본에 타이핑돼 있던 글:\n{typed}")]
+    for i, p in enumerate(cuts):
+        head.append(("text", f"[{i}]" + (" 원본 맨 위 (대표컷·요약정보·3줄설명·패키지)" if i == 0 else "")))
+        # 보내기 전에 줄인다. 토큰도 아끼고 전송도 안정된다 — 읽을 글자는 살아 있다.
+        with Image.open(p) as im:
+            im = im.convert("RGB")
+            if max(im.size) > SEND_PX:
+                s = SEND_PX / max(im.size)
+                im = im.resize((max(1, int(im.width * s)), max(1, int(im.height * s))), Image.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, "PNG", optimize=True)
+        head.append(("image", base64.b64encode(buf.getvalue()).decode()))
+    return head
+
+
+#: 모델에 보낼 때 긴 변을 이만큼으로 줄인다.
+SEND_PX = 900
+
+
+def take(reply: str, cuts: list[Path], blocked: set[int]) -> tuple[Page, list[str]]:
+    """모델이 돌려준 것을 받는다. **그대로 믿지 않는다.**
+
+    받은 뒤에 잰다(단순형의 `guard` 와 같은 자리). 여기서 막는 것은 둘이다 —
+
+        번호가 없거나 우리가 이미 버린 조각을 골랐다   → 그 자리를 비운다
+        같은 조각을 두 자리에 넣었다                 → 뒤엣것을 비운다
+
+    **잘못된 사진보다 빈 칸이 안전하다.** 손님은 이 그림을 보고 주문한다.
+    """
+    import json
+    import re
+
+    m = re.search(r"\{[\s\S]*\}", reply or "")
+    if not m:
+        return Page(), ["모델이 JSON 을 안 돌려줬다"]
+    try:
+        got = json.loads(m.group(0))
+    except json.JSONDecodeError as e:
+        return Page(), [f"JSON 을 못 읽었다: {e}"]
+
+    notes = [str(x) for x in got.get("notes") or []]
+    used: set[int] = set()
+
+    def cut(v, why: str) -> Path | None:
+        """번호 하나를 그림 파일로. 못 쓰면 비우고 이유를 적는다."""
+        if not isinstance(v, int) or not (0 <= v < len(cuts)):
+            return None
+        if v in blocked:
+            notes.append(f"{why}: [{v}] 는 글 구간이거나 원본 디자인이라 안 씀")
+            return None
+        if v in used:
+            notes.append(f"{why}: [{v}] 는 이미 다른 자리에 썼다")
+            return None
+        used.add(v)
+        return cuts[v]
+
+    spec = {k: str(v).strip() for k, v in (got.get("spec") or {}).items() if str(v).strip()}
+    spec["치수"] = SIZE_FIXED
+    keys = [
+        (str(k.get("t", "")).strip(), str(k.get("d", "")).strip())
+        for k in (got.get("keys") or [])
+        if isinstance(k, dict) and str(k.get("t", "")).strip()
+    ][:3]
+
+    page = Page(spec=spec, keys=keys)
+    page.main = cut(got.get("main"), "대표컷")
+    page.feature = cut(got.get("feature"), "특징컷")
+    page.package = cut(got.get("package"), "패키지")
+    page.size = cut(got.get("size"), "사이즈")
+
+    for slot, key in (("point1", "point1"), ("point2", "point2")):
+        p = got.get(key) or {}
+        blocks = []
+        for b in (p.get("blocks") or [])[:3]:
+            if not isinstance(b, dict):
+                continue
+            blocks.append((str(b.get("d", "")).strip(), cut(b.get("i"), f"{key} 그림")))
+        setattr(page, slot, (str(p.get("title", "")).strip(), blocks))
+    return page, notes
+
+
+def is_promo(arr: np.ndarray, url: str = "") -> bool:
+    """바나나몰이 직접 찍어 붙인 홍보 움짤인가.
+
+    사장님 말: *"파란색 외곽테두리에 들어가있는 움짤은 다 사용하지 않을 예정"* —
+    파란 테두리에 바나나몰이라고 써 있기 때문이다.
+
+    색을 못박지 않고 **네 변에 같은 띠가 둘러져 있는가**로 센다. 실측 —
+    홍보 GIF 는 네 변 파랑 80~86%, 상품 이미지는 네 변 모두 0%.
+    """
+    if not url.lower().endswith(".gif"):
+        return False
+    h, w, _ = arr.shape
+    if w / max(1, h) < 1.2:  # 홍보 움짤은 가로형이다
+        return False
+    t = max(4, int(min(h, w) * 0.015))
+    a = arr.astype(np.int32)
+
+    def blue(x: np.ndarray) -> float:
+        r, g, b = x[..., 0], x[..., 1], x[..., 2]
+        return float(((b > 120) & (b > r + 35) & (b > g + 25)).mean())
+
+    return min(blue(a[:t]), blue(a[-t:]), blue(a[:, :t]), blue(a[:, -t:])) >= 0.5

@@ -547,3 +547,83 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+class BasicReq(BaseModel):
+    """기본형 한 상품. 엑셀 행 하나를 통째로 넘긴다."""
+
+    sheet: str | None = None
+    row: int | None = None
+    key: str | None = None
+
+
+@app.post("/api/basic")
+def api_basic(req: BasicReq):
+    """기본형 변환 — **자르기는 수학, 이해는 AI.**
+
+    조각은 우리가 픽셀로 내고, 어느 조각이 어느 자리에 어울리는지는 모델이 정한다.
+    모델을 부르기 **전에** 명백히 못 쓸 것(홍보 GIF·순수 글 구간·원본 디자인 색)을
+    걷어내므로, 모델은 쓸 만한 것들 중에서만 고른다. 호출은 상품당 한 번이다.
+    """
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    from . import basic
+
+    sheet = SHEETS.get(req.sheet or "")
+    if sheet is None or req.row is None or req.row >= len(sheet.rows):
+        raise HTTPException(400, "먼저 엑셀을 올려야 한다")
+    key = (req.key or "").strip() or llm.key_from_env()
+    if not key:
+        raise HTTPException(400, "API 키가 필요합니다")
+
+    row = sheet.rows[req.row]
+    job = _job()
+    body = source.parse(row.body)
+    urls = [u for u in body.images if source.classify(u) != "drop"]
+    if not urls:
+        raise HTTPException(400, "상품 이미지가 없다")
+
+    cuts: list[Path] = []
+    blocked: set[int] = set()
+    for url in urls:
+        raw = convert.fetch(url, CACHE)
+        im = Image.open(io.BytesIO(raw))
+        arr = np.asarray(im.convert("RGB"))
+        if basic.is_promo(arr, url):
+            continue  # 바나나몰 홍보 GIF — 네 변이 파란 테두리다
+        # **한 번만 잰다.** 두 번 부르면 다른 객체가 나와서 서로 못 알아본다.
+        found = basic.shots(arr)
+        keep = {id(s) for s in basic.pick_photos(found)}
+        for s in found:
+            n = len(cuts)
+            p = job.dir / f"cut_{n:02d}.jpg"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            Image.fromarray(arr[s.rect.y0 : s.rect.y1 + 1, s.rect.x0 : s.rect.x1 + 1]).save(p, quality=92)
+            cuts.append(p)
+            # 못 쓸 조각도 **보내기는 한다** — 요약정보와 3줄 설명이 거기 적혀 있다.
+            # 다만 그림 자리에는 못 들어가게 표시해 둔다.
+            if id(s) not in keep:
+                blocked.add(n)
+
+    tags, name_kr, alt = render.split_name(row.name)
+    typed = "\n".join(b.text for b in body.lead_blocks)
+    parts = basic.parts_for(name_kr, row.brand, typed, cuts)
+    print(f"[기본형] {llm.label(key)} · 조각 {len(cuts)}개 (쓸 만한 것 {len(cuts) - len(blocked)}개)…")
+    reply, stop = llm.extract(key, _ask(key, parts))
+    page, notes = basic.take(reply, cuts, blocked)
+    if llm.truncated(key, stop):
+        notes.append("길이 제한에 걸려 답이 잘렸습니다")
+
+    page.name_kr = name_kr
+    page.name_en = (alt or "").strip("()")
+    page.maker = row.brand or page.spec.get("메이커", "")
+    html = basic.render_page(page)
+    out = WORK / "out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / f"{row.code}.html").write_text(html, encoding="utf-8", newline="\n")
+    return {"code": row.code, "name": name_kr, "cuts": len(cuts),
+            "blocked": sorted(blocked), "notes": notes,
+            "spec": page.spec, "keys": page.keys}
