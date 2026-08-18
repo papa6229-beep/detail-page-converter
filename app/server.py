@@ -535,20 +535,6 @@ def reset():
     return JSONResponse({"ok": True})
 
 
-def main() -> None:
-    import uvicorn
-
-    WORK.mkdir(parents=True, exist_ok=True)
-    host = os.environ.get("CONVERTER_HOST", "127.0.0.1")
-    port = int(os.environ.get("CONVERTER_PORT", "8000"))
-    print(f"\n  상세페이지 변환기 → http://{host}:{port}\n")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
-
-
-if __name__ == "__main__":
-    main()
-
-
 class BasicReq(BaseModel):
     """기본형 한 상품. 엑셀 행 하나를 통째로 넘긴다."""
 
@@ -627,3 +613,17 @@ def api_basic(req: BasicReq):
     return {"code": row.code, "name": name_kr, "cuts": len(cuts),
             "blocked": sorted(blocked), "notes": notes,
             "spec": page.spec, "keys": page.keys}
+
+
+def main() -> None:
+    import uvicorn
+
+    WORK.mkdir(parents=True, exist_ok=True)
+    host = os.environ.get("CONVERTER_HOST", "127.0.0.1")
+    port = int(os.environ.get("CONVERTER_PORT", "8000"))
+    print(f"\n  상세페이지 변환기 → http://{host}:{port}\n")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
+if __name__ == "__main__":
+    main()
