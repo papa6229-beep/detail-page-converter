@@ -1152,28 +1152,61 @@ def test_안_불러온_이름을_쓰고_있지_않다():
     assert got.returncode == 0, got.stdout or got.stderr
 
 
-def test_모델에게_쓸_수_있는_번호를_알려준다():
-    """알려주지 않았더니 글은 멀쩡한데 그림이 대표컷 하나만 남았다.
+def test_밴드마다_종류를_붙여_보낸다():
+    """처음에는 쓸 만한 것만 골라 보냈다. 밴드 21개 중 3개만 남아 그림 자리가
+    거의 비었다 — 거를 것을 정해 놓고 모델에게는 말을 안 한 셈이었다.
 
-    조각 14개 중 3개만 쓸 수 있다고 정해 놓고 모델에게는 말을 안 했다.
-    모델은 보이는 대로 골랐고 우리가 조용히 다 거부했다.
+    **차단이 아니라 순위다.** 전부 보내고 종류만 붙인다.
     """
-    from app.basic import parts_for
-
-    cuts = [Path(f"cut_{i}.jpg") for i in range(4)]
-    글 = [v for k, v in parts_for("가", "나", "다", [], blocked={1, 2}) if k == "text"]
-    assert any("[]" in x for x in 글), "조각이 없어도 목록은 적어야 한다"
-
     import unittest.mock as mock
+
     from PIL import Image
 
+    from app.basic import parts_for
+
+    cuts = [Path(f"b{i}.jpg") for i in range(4)]
+    kinds = ["TEXT", "PHOTO", "MIXED", "PROMO"]
     with mock.patch("PIL.Image.open") as op:
         op.return_value.__enter__.return_value = Image.new("RGB", (10, 10))
-        parts = parts_for("가", "나", "다", cuts, blocked={1, 2})
+        parts = parts_for("가", "나", "다", cuts, kinds)
+
     글 = [v for k, v in parts if k == "text"]
-    assert any("[0, 3]" in x for x in 글), f"쓸 수 있는 번호를 안 알렸다: {글[:4]}"
-    assert sum(1 for x in 글 if "글·디자인" in x) == 2
-    assert sum(1 for x in 글 if "써도 된다" in x) == 2
+    for i, kind in enumerate(kinds):
+        assert any(f"[{i}]({kind})" in x for x in 글), f"[{i}]({kind}) 를 안 알렸다"
+    assert sum(1 for k, _ in parts if k == "image") == 4, "네 장을 다 보내야 한다"
+
+
+def test_받은_뒤에_잰다_TEXT_와_중복은_막는다():
+    """저쪽의 Layer C. 잘못된 사진보다 빈 칸이 안전하다.
+
+    다만 **캡션은 그림과 따로 산다** — 그림이 거부돼도 설명은 남긴다.
+    """
+    import json
+
+    from app.basic import take
+
+    cuts = [Path(f"b{i}.jpg") for i in range(6)]
+    kinds = ["TEXT", "PHOTO", "PHOTO", "PROMO", "PHOTO", "PHOTO"]
+    같음 = 0x0F0F_0F0F_0F0F_0F0F
+    hashes = [1, 같음, 같음, 2, 0xF0F0_F0F0_F0F0_F0F0, 0xFFFF_0000_FFFF_0000]
+    답 = json.dumps({
+        "spec": {"타입": "진동", "치수": "길이 15cm"},
+        "keys": [{"t": "가", "d": "나"}],
+        "main": 1, "feature": 0, "package": 2, "size": 4,
+        "point1": {"title": "특징", "blocks": [{"i": 3, "d": "설명은 남아야 한다"}]},
+    })
+    page, notes = take(답, cuts, kinds, hashes)
+
+    assert page.feature is None, "TEXT 를 그림 자리에 넣었다"
+    assert page.size == cuts[4]
+    assert page.package == cuts[2]
+    # main([1]) 은 package([2]) 와 같은 사진이라 거부되고, 남은 것에서 다시 고른다.
+    # 대표컷이 비면 페이지가 통째로 무너지므로 비워 두지 않는다.
+    assert page.main == cuts[5], "남은 것에서 다시 고르지 않았다"
+    assert page.point1[1][0][0] == "설명은 남아야 한다", "그림이 거부됐다고 설명까지 버렸다"
+    assert page.point1[1][0][1] is None
+    assert page.spec["치수"] == "상세페이지 참조", "치수는 모델 답을 안 쓴다"
+    assert len(notes) >= 3, notes
 
 
 def test_대표컷은_기둥도_배너도_아니게_다시_앉힌다(tmp_path: Path):
@@ -1199,3 +1232,55 @@ def test_대표컷은_기둥도_배너도_아니게_다시_앉힌다(tmp_path: P
     assert 앉히기(697, 200) >= HERO_MIN - 0.01, "너무 납작하다 — 배너로 보인다"
     보통 = 앉히기(700, 500)
     assert abs(보통 - 500 / 700) < 0.05, "멀쩡한 비율을 건드렸다"
+
+
+def test_기본형_밴드는_고도몰_생성기와_같게_갈린다():
+    """저쪽 임계값은 **저쪽 밴드 위에서만** 뜻이 있다.
+
+    같은 원본을 우리 분할기는 14조각으로, 저쪽은 21밴드로 가른다. 그래서
+    `largestCC 0.08` 같은 값을 우리 조각에 갖다 대면 아무 뜻이 없었다.
+    조각 내는 방식부터 옮긴 이유다.
+
+    실물 대조는 `docs/ISSUES.md` 에 적었다 — 핑거위글 800×12272 에서 밴드 21개,
+    band11 큰덩어리 0.128(보고서 0.127) · band13 0.150(보고서 0.150).
+    여기서는 규칙 자체가 살아 있는지만 본다.
+    """
+    import numpy as np
+
+    from app.bands import MIN_GAP, MIN_SEG, PHOTO, TEXT, read, split_bands
+
+    img = np.full((1400, 800, 3), 255, np.uint8)
+    img[100:400, 100:700] = 40                      # 제품컷 — 큰 덩어리 하나
+    # 글 구간 — 이어진 한 줄(제목) + 낱글자 여럿. **낱글자만 두면 안 된다** —
+    # `smallCC` 는 그 밴드의 가장 큰 덩어리에 견주어 세므로, 크기가 다 같으면
+    # 기준이 낱글자 자신이 되어 하나도 안 세어진다(저쪽 규칙 그대로다).
+    img[700:716, 120:420] = 30
+    for r in range(744, 880, 28):
+        for c in range(120, 640, 38):
+            img[r : r + 13, c : c + 15] = 30
+    img[1000:1300, 100:700] = 40                    # 제품컷
+
+    조각 = split_bands(img)
+    assert len(조각) == 3, f"여백 {MIN_GAP}px 마다 갈려야 한다: {조각}"
+    assert all(h >= MIN_SEG for _, h in 조각)
+
+    잰것 = read(img)
+    assert [b.kind for b in 잰것] == [PHOTO, TEXT, PHOTO], [(b.kind, b.why) for b in 잰것]
+
+
+def test_같은_사진은_dHash_로_알아본다():
+    """같은 컷이 두 자리에 들어가는 것을 막는 장치. 실측 — 같은 사진 0~3 ↔ 다른 사진 27+."""
+    import numpy as np
+
+    from app.bands import DUP_HAMMING, _dhash, hamming
+
+    a = np.full((300, 400, 3), 255, np.uint8)
+    a[50:250, 80:320] = 40
+    b = a.copy()
+    b[52:248, 82:318] = 45  # 같은 사진을 조금 다르게 눌러 담은 것
+    c = np.full((300, 400, 3), 255, np.uint8)
+    c[20:120, 20:380] = 30
+
+    assert hamming(_dhash(a), _dhash(b)) <= DUP_HAMMING
+    assert hamming(_dhash(a), _dhash(c)) > DUP_HAMMING
+    assert hamming(0, _dhash(a)) == 64, "못 잰 것은 '다름'으로 본다"

@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import basic, convert, excel, llm, render, source
+from . import bands, basic, convert, excel, llm, render, source
 from .product import Meta, apply_tags
 
 ROOT = Path(__file__).resolve().parent
@@ -570,34 +570,33 @@ def api_basic(req: BasicReq):
     if not urls:
         raise HTTPException(400, "상품 이미지가 없다")
 
+    # ① 픽셀 계층 — 저쪽 방식 그대로. 자르고, 재고, 종류만 붙인다. AI 0콜.
     cuts: list[Path] = []
-    blocked: set[int] = set()
+    kinds: list[str] = []
+    hashes: list[int] = []
+    promo: set[int] = set()
     for url in urls:
         raw = convert.fetch(url, CACHE)
-        im = Image.open(io.BytesIO(raw))
-        arr = np.asarray(im.convert("RGB"))
-        if basic.is_promo(arr, url):
-            continue  # 바나나몰 홍보 GIF — 네 변이 파란 테두리다
-        # **한 번만 잰다.** 두 번 부르면 다른 객체가 나와서 서로 못 알아본다.
-        found = basic.shots(arr)
-        keep = {id(s) for s in basic.pick_photos(found)}
-        for s in found:
+        arr = np.asarray(Image.open(io.BytesIO(raw)).convert("RGB"))
+        gif = basic.is_promo(arr, url)
+        for b in bands.read(arr):
             n = len(cuts)
-            p = job.dir / f"cut_{n:02d}.jpg"
+            p = job.dir / f"band_{n:02d}.jpg"
             p.parent.mkdir(parents=True, exist_ok=True)
-            Image.fromarray(arr[s.rect.y0 : s.rect.y1 + 1, s.rect.x0 : s.rect.x1 + 1]).save(p, quality=92)
+            Image.fromarray(arr[b.y : b.y + b.height]).save(p, quality=92)
             cuts.append(p)
-            # 못 쓸 조각도 **보내기는 한다** — 요약정보와 3줄 설명이 거기 적혀 있다.
-            # 다만 그림 자리에는 못 들어가게 표시해 둔다.
-            if id(s) not in keep:
-                blocked.add(n)
+            kinds.append("PROMO" if gif else b.kind)
+            hashes.append(b.dhash)
+            if gif:
+                promo.add(n)
 
     tags, name_kr, alt = render.split_name(row.name)
     typed = "\n".join(b.text for b in body.lead_blocks)
-    parts = basic.parts_for(name_kr, row.brand, typed, cuts, blocked)
-    print(f"[기본형] {llm.label(key)} · 조각 {len(cuts)}개 (쓸 만한 것 {len(cuts) - len(blocked)}개)…")
-    reply, stop = llm.extract(key, _ask(key, parts))
-    page, notes = basic.take(reply, cuts, blocked)
+    parts = basic.parts_for(name_kr, row.brand, typed, cuts, kinds)
+    tally = {k: kinds.count(k) for k in ("PHOTO", "MIXED", "UNKNOWN", "TEXT", "PROMO") if kinds.count(k)}
+    print(f"[기본형] {llm.label(key)} · 밴드 {len(cuts)}개 " + " · ".join(f"{k} {v}" for k, v in tally.items()))
+    reply, stop = llm.extract(key, _ask(key, parts, max_tokens=12000))
+    page, notes = basic.take(reply, cuts, kinds, hashes)
     if llm.truncated(key, stop):
         notes.append("길이 제한에 걸려 답이 잘렸습니다")
 
@@ -612,9 +611,9 @@ def api_basic(req: BasicReq):
     out = WORK / "out"
     out.mkdir(parents=True, exist_ok=True)
     (out / f"{row.code}.html").write_text(html, encoding="utf-8", newline="\n")
-    return {"code": row.code, "name": name_kr, "cuts": len(cuts),
-            "blocked": sorted(blocked), "notes": notes,
-            "spec": page.spec, "keys": page.keys}
+    return {"code": row.code, "name": name_kr, "cuts": len(cuts), "kinds": tally,
+            "blocked": sorted(i for i, k in enumerate(kinds) if k in ("TEXT", "PROMO")),
+            "notes": notes, "spec": page.spec, "keys": page.keys}
 
 
 def main() -> None:
