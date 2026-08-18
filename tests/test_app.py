@@ -1128,3 +1128,25 @@ def test_홍보_GIF_는_네_변_테두리로_가른다():
     세로 = np.full((800, 450, 3), 255, np.uint8)
     세로[:12] = 세로[-12:] = 세로[:, :12] = 세로[:, -12:] = (30, 90, 220)
     assert not is_promo(세로, "x.gif"), "홍보 움짤은 가로형이다"
+
+
+def test_안_불러온_이름을_쓰고_있지_않다():
+    """`/api/basic` 이 `Internal Server Error` 를 냈다. 원인은 한 줄이었다 —
+    `source` 를 안 불러왔는데 쓰고 있었다(`NameError`).
+
+    이런 것은 눈으로 못 지키고 시험으로도 잘 안 걸린다. 그 줄이 실제로 돌아야
+    터지는데, 모델을 부르는 길이라 시험에서는 안 돈다.
+
+    **도구가 이미 잡을 수 있는 것이었다.** ruff 를 검사에 넣어 둔다.
+    """
+    import shutil
+    import subprocess
+
+    ruff = shutil.which("ruff")
+    if not ruff:
+        import pytest
+
+        pytest.skip("ruff 가 없다")
+    got = subprocess.run([ruff, "check", "app", "slicer", "tests"],
+                         capture_output=True, text=True, cwd=Path(__file__).resolve().parent.parent)
+    assert got.returncode == 0, got.stdout or got.stderr

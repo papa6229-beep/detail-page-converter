@@ -206,7 +206,9 @@ def apply_tags(units: list[Unit], option_values: list[str] | None = None) -> Non
     if option_values is not None and not option_values:
         return  # 엑셀이 옵션이 없다고 했다 — 말머리는 세트 구성품 이름이다
 
-    flat = lambda s: re.sub(r"\s+", "", s).lower()
+    def flat(s: str) -> str:
+        return re.sub(r"\s+", "", s).lower()
+
     known = {flat(v): v for v in (option_values or [])}
     for u in units:
         tag, rest = split_tag(u.caption)
