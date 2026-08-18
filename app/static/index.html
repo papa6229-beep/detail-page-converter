@@ -118,6 +118,7 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
     </div>
     <div class="row" style="margin-top:10px">
       <button id="btnBatch">선택한 상품 한꺼번에 변환</button>
+      <button id="btnBasic" class="ghost">기본형으로 변환 (시험)</button>
       <label class="chk"><input type="checkbox" id="noFill">문구는 원본 그대로 (기준선용)</label>
       <span id="batchMsg" class="msg" style="margin:0"></span>
     </div>
@@ -332,6 +333,46 @@ fetch('/api/made').then(r => r.json()).then(d => {
   };
   $('#btnPastZip').onclick = () => { location.href = '/download/batch/all'; };
 });
+
+// 기본형 시험 단추. 아직 갈래가 자동이 아니라 사람이 눌러서 확인하는 자리다.
+// 모델이 그림을 고르고 문구를 짓는다 — 상품당 한 번 부른다.
+$('#btnBasic').onclick = async () => {
+  const picked = rows().filter(tr => tr.querySelector('.pickbox').checked);
+  if (!picked.length) { $('#batchMsg').className='msg err'; $('#batchMsg').textContent='먼저 상품을 고르세요.'; return; }
+  if (!apiKey()) { $('#batchMsg').className='msg err'; $('#batchMsg').textContent='기본형은 API 키가 있어야 합니다.'; return; }
+  $('#btnBasic').disabled = true;
+  $('#batchLog').textContent = '';
+  const log = s => { $('#batchLog').textContent += s + '\n'; };
+  let done = 0, fail = 0;
+  for (const [n, tr] of picked.entries()) {
+    const code = tr.dataset.code;
+    $('#batchMsg').className='msg';
+    $('#batchMsg').textContent = `${n+1}/${picked.length} · ${code} 기본형 변환 중…`;
+    try {
+      const d = await post('/api/basic', {sheet:sheetKey, row:Number(tr.dataset.i), key:apiKey()});
+      done++;
+      log(`  ✓ ${code} · 조각 ${d.cuts}개 중 쓸 만한 것 ${d.cuts - d.blocked.length}개`);
+      const el = document.createElement('div');
+      el.className = 'made';
+      el.innerHTML = `<span class="dot pill ${(d.notes||[]).length ? 'no' : 'ok'}" style="border:0"></span>
+        <div class="who"><p class="code">${d.code} <span style="font-weight:400;color:var(--muted)">기본형</span></p>
+        <p class="nm">${d.name || ''}</p>
+        <div class="go"><button class="ghost">미리보기</button><button class="ghost">내려받기</button></div></div>`;
+      const [see, get] = el.querySelectorAll('button');
+      see.onclick = () => window.open('/out/' + d.code, '_blank');
+      get.onclick = () => { location.href = '/out/' + d.code + '/file'; };
+      $('#doneList').appendChild(el);
+      $('#doneCard').classList.remove('hide');
+      const spec = Object.entries(d.spec||{}).map(([k,v]) => `${k} ${v}`).join(' · ');
+      if (spec) log(`      요약정보  ${spec}`);
+      (d.keys||[]).forEach(([t,dd]) => log(`      핵심특징  ${t} — ${dd}`));
+      (d.notes||[]).forEach(x => log(`      · ${x}`));
+    } catch (e) { fail++; log(`  ✗ ${code} · ${e.message}`); }
+  }
+  $('#batchMsg').className = fail ? 'msg err' : 'msg';
+  $('#batchMsg').textContent = `기본형 끝. 성공 ${done}개${fail ? ` · 실패 ${fail}개` : ''} — 만든 것 칸에서 미리보기 하세요.`;
+  $('#btnBasic').disabled = false;
+};
 
 $('#btnBatch').onclick = async () => {
   const picked = rows().filter(tr => tr.querySelector('.pickbox').checked);
