@@ -558,8 +558,13 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 """
 
 
-def parts_for(name: str, brand: str, typed: str, cuts: list[Path]) -> list[tuple[str, str]]:
+def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
+              blocked: set[int] | None = None) -> list[tuple[str, str]]:
     """모델에 보낼 것을 순서대로 쌓는다 — 글 먼저, 그다음 번호와 그림이 짝지어.
+
+    **번호마다 쓸 수 있는지를 함께 적는다.** 이걸 빼먹었더니 모델이 보이는 대로
+    고르고 우리가 조용히 다 거부해서, 글은 멀쩡한데 그림이 대표컷 하나만 남았다.
+    거를 것을 정해 놓고 그 말을 안 해 준 셈이다.
 
     첫 조각은 늘 원본 맨 위(대표컷·요약정보·3줄설명·패키지)다. 그걸 알려 주면
     모델이 요약정보를 어디서 읽어야 하는지 찾아 헤매지 않는다.
@@ -570,8 +575,15 @@ def parts_for(name: str, brand: str, typed: str, cuts: list[Path]) -> list[tuple
     from PIL import Image
 
     head = [("text", PROMPT), ("text", f"상품명: {name}\n브랜드: {brand}\n\n원본에 타이핑돼 있던 글:\n{typed}")]
+    blocked = blocked or set()
+    usable = [i for i in range(len(cuts)) if i not in blocked]
+    head.append(("text",
+                 f"그림 자리에 **쓸 수 있는 번호는 {usable} 뿐이다.** 나머지는 원본 디자인 글이\n"
+                 f"박혀 있어 못 쓴다 — 읽는 근거로만 봐라. 쓸 수 없는 번호를 고르면 그 자리는 빈다."))
     for i, p in enumerate(cuts):
-        head.append(("text", f"[{i}]" + (" 원본 맨 위 (대표컷·요약정보·3줄설명·패키지)" if i == 0 else "")))
+        mark = "사진 — 써도 된다" if i not in blocked else "글·디자인 — 읽기만"
+        top = " · 원본 맨 위 (대표컷·요약정보·3줄설명·패키지)" if i == 0 else ""
+        head.append(("text", f"[{i}] ({mark}){top}"))
         # 보내기 전에 줄인다. 토큰도 아끼고 전송도 안정된다 — 읽을 글자는 살아 있다.
         with Image.open(p) as im:
             im = im.convert("RGB")
@@ -672,3 +684,54 @@ def is_promo(arr: np.ndarray, url: str = "") -> bool:
         return float(((b > 120) & (b > r + 35) & (b > g + 25)).mean())
 
     return min(blue(a[:t]), blue(a[-t:]), blue(a[:, :t]), blue(a[:, -t:])) >= 0.5
+
+
+#: HERO 자리는 폭 700 한 칸이다. 세로로 긴 컷을 그대로 넣으면 화면을 다 잡아먹고,
+#: 가로로 넓은 컷을 넣으면 배너처럼 납작해진다. 그래서 **다시 앉힌다.**
+#: 값은 고도몰 생성기(`basicAssetNormalize.ts`)에 박힌 것을 그대로 옮겼다.
+HERO_W = 1000          #: 다시 앉힐 캔버스의 폭
+HERO_FILL = 0.86       #: 제품이 캔버스에서 차지할 몫
+HERO_MAX = 1.25        #: 세로가 가로의 이만큼을 넘으면 거기서 멈춘다 (4:5)
+HERO_MIN = 0.45        #: 너무 납작하면 배너로 보인다. 여기까지만 눕힌다
+
+
+def reframe(src: Path, out: Path, bg: tuple[int, int, int] = (255, 255, 255)) -> Path:
+    """대표컷을 HERO 자리에 맞게 다시 앉힌다.
+
+    분할기는 내용에 딱 맞게 자르므로 조각의 비율이 제각각이다. 559×866 짜리
+    세로 컷을 폭 700 자리에 그대로 넣으면 1085px 짜리 기둥이 된다.
+
+    **원본 이미지를 고치는 것이 아니다** — 잘라 둔 조각을 우리 자리에 앉히는 것이다.
+    제품은 그대로 두고 둘레의 여백만 새로 잡는다.
+    """
+    from PIL import Image
+
+    with Image.open(src) as im:
+        im = im.convert("RGB")
+        arr = np.asarray(im)
+
+    # 제품이 실제로 놓인 자리부터 찾는다. 조각에 남은 바깥 여백은 버린다.
+    a = arr.astype(np.int32)  # uint8 로 곱하면 넘친다
+    lum = (a[..., 0] * 299 + a[..., 1] * 587 + a[..., 2] * 114) // 1000
+    solid = lum < 232
+    ys, xs = np.where(solid.any(1)), np.where(solid.any(0))
+    if not len(ys[0]) or not len(xs[0]):
+        return src
+    y0, y1 = int(ys[0][0]), int(ys[0][-1])
+    x0, x1 = int(xs[0][0]), int(xs[0][-1])
+    body = Image.fromarray(arr[y0 : y1 + 1, x0 : x1 + 1])
+
+    # 캔버스 비율 — **제품 비율을 그대로 두되 양 끝만 막는다.**
+    # 정사각으로 강요하면 가로로 넓은 제품이 흰 여백에 파묻혀 작아진다.
+    # 고치려는 것은 그게 아니라 세로로 긴 컷이 기둥이 되는 것이다 —
+    # 글랜스 559×866 을 폭 700 에 그대로 넣으면 1085px 짜리 기둥이 됐다.
+    ratio = body.height / max(1, body.width)
+    hw = min(max(ratio, HERO_MIN), HERO_MAX)
+    canvas = Image.new("RGB", (HERO_W, int(HERO_W * hw)), bg)
+
+    room = (int(canvas.width * HERO_FILL), int(canvas.height * HERO_FILL))
+    s = min(room[0] / body.width, room[1] / body.height)
+    body = body.resize((max(1, int(body.width * s)), max(1, int(body.height * s))), Image.LANCZOS)
+    canvas.paste(body, ((canvas.width - body.width) // 2, (canvas.height - body.height) // 2))
+    canvas.save(out, quality=92)
+    return out

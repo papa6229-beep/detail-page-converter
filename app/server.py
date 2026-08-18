@@ -594,13 +594,17 @@ def api_basic(req: BasicReq):
 
     tags, name_kr, alt = render.split_name(row.name)
     typed = "\n".join(b.text for b in body.lead_blocks)
-    parts = basic.parts_for(name_kr, row.brand, typed, cuts)
+    parts = basic.parts_for(name_kr, row.brand, typed, cuts, blocked)
     print(f"[기본형] {llm.label(key)} · 조각 {len(cuts)}개 (쓸 만한 것 {len(cuts) - len(blocked)}개)…")
     reply, stop = llm.extract(key, _ask(key, parts))
     page, notes = basic.take(reply, cuts, blocked)
     if llm.truncated(key, stop):
         notes.append("길이 제한에 걸려 답이 잘렸습니다")
 
+    # 대표컷은 HERO 자리(폭 700)에 맞게 다시 앉힌다. 잘라 둔 조각은 비율이
+    # 제각각이라 그대로 넣으면 기둥이 되거나 배너가 된다.
+    if page.main:
+        page.main = basic.reframe(page.main, job.dir / "hero.jpg")
     page.name_kr = name_kr
     page.name_en = (alt or "").strip("()")
     page.maker = row.brand or page.spec.get("메이커", "")

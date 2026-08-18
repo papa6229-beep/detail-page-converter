@@ -1150,3 +1150,52 @@ def test_안_불러온_이름을_쓰고_있지_않다():
     got = subprocess.run([ruff, "check", "app", "slicer", "tests"],
                          capture_output=True, text=True, cwd=Path(__file__).resolve().parent.parent)
     assert got.returncode == 0, got.stdout or got.stderr
+
+
+def test_모델에게_쓸_수_있는_번호를_알려준다():
+    """알려주지 않았더니 글은 멀쩡한데 그림이 대표컷 하나만 남았다.
+
+    조각 14개 중 3개만 쓸 수 있다고 정해 놓고 모델에게는 말을 안 했다.
+    모델은 보이는 대로 골랐고 우리가 조용히 다 거부했다.
+    """
+    from app.basic import parts_for
+
+    cuts = [Path(f"cut_{i}.jpg") for i in range(4)]
+    글 = [v for k, v in parts_for("가", "나", "다", [], blocked={1, 2}) if k == "text"]
+    assert any("[]" in x for x in 글), "조각이 없어도 목록은 적어야 한다"
+
+    import unittest.mock as mock
+    from PIL import Image
+
+    with mock.patch("PIL.Image.open") as op:
+        op.return_value.__enter__.return_value = Image.new("RGB", (10, 10))
+        parts = parts_for("가", "나", "다", cuts, blocked={1, 2})
+    글 = [v for k, v in parts if k == "text"]
+    assert any("[0, 3]" in x for x in 글), f"쓸 수 있는 번호를 안 알렸다: {글[:4]}"
+    assert sum(1 for x in 글 if "글·디자인" in x) == 2
+    assert sum(1 for x in 글 if "써도 된다" in x) == 2
+
+
+def test_대표컷은_기둥도_배너도_아니게_다시_앉힌다(tmp_path: Path):
+    """글랜스 559×866 을 폭 700 자리에 그대로 넣으면 1085px 짜리 기둥이 됐다.
+
+    **정사각으로 강요하지는 않는다** — 그러면 가로로 넓은 제품이 흰 여백에
+    파묻혀 작아진다. 양 끝만 막는다.
+    """
+    import numpy as np
+    from PIL import Image
+
+    from app.basic import HERO_MAX, HERO_MIN, reframe
+
+    def 앉히기(w, h):
+        a = np.full((h, w, 3), 255, np.uint8)
+        a[h // 8 : h - h // 8, w // 8 : w - w // 8] = 40
+        src = tmp_path / f"s{w}x{h}.png"
+        Image.fromarray(a).save(src)
+        with Image.open(reframe(src, tmp_path / f"o{w}x{h}.jpg")) as im:
+            return im.height / im.width
+
+    assert 앉히기(559, 866) <= HERO_MAX + 0.01, "세로로 긴 컷이 안 눌렸다"
+    assert 앉히기(697, 200) >= HERO_MIN - 0.01, "너무 납작하다 — 배너로 보인다"
+    보통 = 앉히기(700, 500)
+    assert abs(보통 - 500 / 700) < 0.05, "멀쩡한 비율을 건드렸다"
