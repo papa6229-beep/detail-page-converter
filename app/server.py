@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import convert, excel, llm, render
+from . import basic, convert, excel, llm, render, source
 from .product import Meta, apply_tags
 
 ROOT = Path(__file__).resolve().parent
@@ -555,8 +555,6 @@ def api_basic(req: BasicReq):
 
     import numpy as np
     from PIL import Image
-
-    from . import basic
 
     sheet = SHEETS.get(req.sheet or "")
     if sheet is None or req.row is None or req.row >= len(sheet.rows):
