@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import base64
 import difflib
 import json
 import os
@@ -18,11 +19,11 @@ import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, UploadFile
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import convert, excel, llm, render
+from . import convert, excel, jp, llm, render
 from .product import Meta, apply_tags
 
 ROOT = Path(__file__).resolve().parent
@@ -329,7 +330,8 @@ JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라. 
 예: ["양방향으로 당기면 **쭈욱 늘어났다가** 다시 제자리로 돌아옵니다.", "..."]"""
 
 
-def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000) -> dict:
+def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
+         model: str = "") -> dict:
     """모델에 한 번 물어본다. 회사 차이는 llm 이 다 흡수한다.
 
     길이 상한의 이름만 예외다. OpenAI 쪽에서 `max_completion_tokens` 로 바뀌었는데
@@ -340,7 +342,8 @@ def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000) -> dict
     import urllib.request
 
     for legacy in (False, True):
-        url, headers, body = llm.build(key, parts, max_tokens, legacy_cap=legacy)
+        url, headers, body = llm.build(key, parts, max_tokens, legacy_cap=legacy,
+                                       model=model)
         try:
             with urllib.request.urlopen(
                 urllib.request.Request(url, data=body, headers=headers), timeout=180
@@ -533,6 +536,88 @@ def reset():
     JOBS.clear()
     SHEETS.clear()
     return JSONResponse({"ok": True})
+
+
+@app.post("/api/translate")
+async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("utf-8")):
+    """일본어 스크립트 txt → 한국어 txt. **변환기와 코드가 안 섞인다** (`jp.py` 머리말).
+
+    모양을 지키는 일은 전부 `jp.py` 가 하고, 모델에게는 번역할 글자만 간다.
+    묶음 하나가 실패하면 **그 묶음만 원문 그대로** 남기고 계속한다 — 한 군데
+    때문에 파일 전체를 못 쓰게 만들지 않는다.
+    """
+    api = (key or "").strip() or llm.key_from_env()
+    if not api:
+        raise HTTPException(400, "API 키가 필요합니다")
+    if enc not in jp.ENCODINGS:
+        raise HTTPException(400, f"모르는 인코딩입니다: {enc}")
+
+    raw = await file.read()
+    if not raw.strip():
+        raise HTTPException(400, "빈 파일입니다")
+    text, enc_in = jp.decode(raw)
+    lines = jp.parse(text)
+    todo = [i for i, ln in enumerate(lines) if ln.target]
+    if not todo:
+        raise HTTPException(400, "일본어가 한 글자도 없습니다")
+
+    model = jp.model_for(api)
+    done: dict[int, str] = {}
+    실패 = 0
+
+    # ① 화자 이름을 먼저 정한다. 같은 이름이 파일 안에서 매번 달리 나오면 안 된다.
+    표: dict[str, str] = {}
+    이름 = jp.names(lines)
+    if 이름:
+        got = jp.take(
+            llm.extract(api, _ask(api, jp.name_parts(이름), max_tokens=1000, model=model))[0],
+            len(이름),
+        )
+        if got:
+            표 = dict(zip(이름, got))
+    print(f"[번역] {file.filename} · {enc_in} · {len(lines)}줄 중 {len(todo)}줄 "
+          f"· 이름 {len(표)}개 · {model or llm.label(api)}")
+
+    # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
+    for a in range(0, len(todo), jp.CHUNK):
+        묶음 = todo[a : a + jp.CHUNK]
+        원문 = [lines[i].body for i in 묶음]
+        try:
+            reply, _stop = llm.extract(
+                api, _ask(api, jp.line_parts(원문, 표), max_tokens=8000, model=model)
+            )
+        except HTTPException as e:
+            print(f"[번역] {a}~ 묶음 실패 — {e.detail}")
+            실패 += len(묶음)
+            continue
+        got = jp.take(reply, len(묶음))
+        if got is None:
+            # 개수가 안 맞으면 줄이 밀린다. 밀린 것보다 원문이 낫다.
+            print(f"[번역] {a}~ 묶음 개수 불일치 — 원문 유지")
+            실패 += len(묶음)
+            continue
+        done.update(dict(zip(묶음, got)))
+
+    out = jp.build(lines, done)
+    name = Path(file.filename or "script.txt").stem
+    # **바이트는 여기서 굽는다.** 브라우저의 `Blob` 은 무슨 charset 을 적어 줘도
+    # UTF-8 로만 쓴다 — `cp949` 를 고르면 조용히 UTF-8 이 나갔을 것이다.
+    데이터, 못쓴글자 = jp.encode(out, enc)
+    print(f"[번역] {name} · 옮김 {len(done)}줄 · 원문 유지 {실패}줄"
+          + (f" · {enc} 로 못 적은 글자 {못쓴글자}자" if 못쓴글자 else ""))
+    return {
+        "name": f"{name}_ko.txt",
+        "b64": base64.b64encode(데이터).decode(),
+        "lost": 못쓴글자,
+        "enc": enc,
+        "enc_in": enc_in,
+        "lines": len(lines),
+        "targets": len(todo),
+        "done": len(done),
+        "failed": 실패,
+        "names": 표,
+        "model": model,
+    }
 
 
 def main() -> None:

@@ -51,18 +51,27 @@ def model_for(provider: str) -> str:
     return os.environ.get("CONVERTER_MODEL", "").strip() or DEFAULT_MODEL[provider]
 
 
-def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000, legacy_cap: bool = False):
+def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
+          legacy_cap: bool = False, model: str = ""):
     """(주소, 헤더, 보낼 바이트) 를 만든다.
 
     parts 는 ("text", 글) 과 ("image", base64 PNG) 가 순서대로 섞인 목록이다.
     순서가 곧 뜻이다 — `#1` 다음에 그 그림, `#2` 다음에 그 그림.
+
+    ("system", 글) 이 섞여 있으면 **본문이 아니라 최상위 지시문**으로 간다.
+    Anthropic 은 `system` 필드, OpenAI 는 system 역할 메시지다. 사용자 차례 안에
+    섞어 넣는 것과 모델이 다르게 받아들인다. 안 넣으면 예전과 똑같이 동작한다.
+
+    model 을 주면 그것으로, 안 주면 `model_for` 의 기본 모델로 보낸다.
 
     legacy_cap 은 OpenAI 쪽에서만 쓴다. 길이 상한 이름이 `max_completion_tokens`
     로 바뀌었는데 옛 모델은 그 이름을 모르고, 새 모델은 옛 이름을 거부한다.
     한쪽으로 보내 보고 거부당하면 다른 이름으로 다시 보낸다(server 쪽에서 처리).
     """
     provider = provider_of(key)
-    model = model_for(provider)
+    model = model or model_for(provider)
+    system = "\n".join(v for k, v in parts if k == "system")
+    body_parts = [(k, v) for k, v in parts if k != "system"]
 
     if provider == ANTHROPIC:
         content = [
@@ -70,10 +79,12 @@ def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000, legacy
             if kind == "text"
             else {"type": "image",
                   "source": {"type": "base64", "media_type": "image/png", "data": value}}
-            for kind, value in parts
+            for kind, value in body_parts
         ]
         body = {"model": model, "max_tokens": max_tokens,
                 "messages": [{"role": "user", "content": content}]}
+        if system:
+            body["system"] = system
         return (
             "https://api.anthropic.com/v1/messages",
             {"content-type": "application/json", "x-api-key": key,
@@ -85,9 +96,12 @@ def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000, legacy
         {"type": "text", "text": value}
         if kind == "text"
         else {"type": "image_url", "image_url": {"url": "data:image/png;base64," + value}}
-        for kind, value in parts
+        for kind, value in body_parts
     ]
-    body = {"model": model, "messages": [{"role": "user", "content": content}]}
+    messages = [{"role": "user", "content": content}]
+    if system:
+        messages.insert(0, {"role": "system", "content": system})
+    body = {"model": model, "messages": messages}
     body["max_tokens" if legacy_cap else "max_completion_tokens"] = max_tokens
     return (
         "https://api.openai.com/v1/chat/completions",
