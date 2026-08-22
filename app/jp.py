@@ -150,7 +150,11 @@ def local_models(base: str = "", timeout: float = 4.0) -> list[str]:
             got = _json.loads(resp.read())
     except (urllib.error.URLError, OSError, ValueError):
         return []
-    return [str(x.get("id")) for x in (got.get("data") or []) if x.get("id")]
+    다 = [str(x.get("id")) for x in (got.get("data") or []) if x.get("id")]
+    # 임베딩 모델은 채팅을 못 한다. 자동으로 고를 때 이게 걸리면 번역이 통째로
+    # 실패하므로 **뒤로 민다** — 목록에는 남겨서 사장님이 보실 수 있게 한다.
+    채팅 = [x for x in 다 if not re.search(r"embed", x, re.I)]
+    return 채팅 + [x for x in 다 if x not in 채팅]
 
 
 @dataclass
@@ -265,23 +269,55 @@ def line_parts(items: list[str], table: dict[str, str]) -> list[tuple[str, str]]
     return [("system", LINE_PROMPT), ("text", head)]
 
 
+#: 생각을 먼저 적고 답을 내놓는 모델들이 쓰는 표시. 그 안은 답이 아니다.
+#: (`supergemma4` 처럼 Reasoning 이 붙은 모델이 이렇게 낸다)
+THINK = re.compile(r"<(think|thinking|reasoning)>[\s\S]*?</\1>", re.I)
+
+
 def take(reply: str, n: int) -> list[str] | None:
     """답에서 문자열 배열을 꺼낸다. **개수가 안 맞으면 `None`** — 반만 쓰면 줄이 밀린다.
 
     줄이 밀리면 대사가 다른 화자에게 붙는다. 그건 못 쓰는 결과물이라,
     부르는 쪽이 이것을 받아 그 묶음을 **원문 그대로** 남긴다.
+
+    ⚠️ **내 컴퓨터 모델은 답 앞뒤에 군말을 붙인다.** 회사 API 는 시키면 JSON 만
+    내놓는데, 로컬 모델은 생각을 먼저 적거나(`<think>…</think>`) *"네, 옮겼습니다:"*
+    같은 말을 붙인다. 그래서 —
+
+        ① `<think>` 덩어리를 먼저 걷어낸다
+        ② 코드펜스를 벗긴다
+        ③ **괄호를 세어 가며 진짜 배열을 찾는다.** 예전에는 첫 `[` 부터 마지막
+           `]` 까지를 통째로 집었는데, 군말에 대괄호가 하나라도 있으면 엉뚱한
+           덩어리를 집어 통째로 실패했다.
     """
     import json
 
-    s = re.sub(r"^\s*```(?:json)?", "", reply or "", flags=re.I)
+    s = THINK.sub("", reply or "")
+    s = re.sub(r"^\s*```(?:json)?", "", s, flags=re.I)
     s = re.sub(r"```\s*$", "", s).strip()
-    m = re.search(r"\[[\s\S]*\]", s)
-    if not m:
+
+    후보: list[list] = []
+    for i, ch in enumerate(s):
+        if ch != "[":
+            continue
+        깊이 = 0
+        for j in range(i, len(s)):
+            if s[j] == "[":
+                깊이 += 1
+            elif s[j] == "]":
+                깊이 -= 1
+                if 깊이 == 0:
+                    try:
+                        got = json.loads(s[i : j + 1])
+                    except json.JSONDecodeError:
+                        break
+                    if isinstance(got, list) and len(got) == n:
+                        후보.append(got)
+                    break
+    if not 후보:
         return None
-    try:
-        got = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(got, list) or len(got) != n:
-        return None
-    return [str(x) for x in got]
+    # 개수가 맞는 것이 여럿이면 **글자로 된 것**을 고른다 — 군말 속의 `[1]` 같은
+    # 것이 개수만 우연히 맞는 일이 있다. 그것도 여럿이면 뒤엣것(진짜 답)을 쓴다.
+    글자만 = [x for x in 후보 if all(isinstance(v, str) for v in x)]
+    고름 = (글자만 or 후보)[-1]
+    return [str(x) for x in 고름]

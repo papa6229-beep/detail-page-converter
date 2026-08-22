@@ -306,3 +306,77 @@ def test_LM_스튜디오가_꺼져_있으면_그렇다고_말한다():
         assert "LM Studio" in e.value.detail and "Start Server" in e.value.detail
     finally:
         os.environ.pop("LM_BASE", None)
+
+
+def test_내_컴퓨터_모델의_군말을_걷어내고_배열만_꺼낸다():
+    """⚠️ **회사 API 는 시키면 JSON 만 내놓는데 로컬 모델은 군말을 붙인다.**
+
+    사장님 화면에서 `전체 1줄 중 일본어 1줄, 옮김 0줄 · 원문 유지 1줄` 이 나왔다.
+    파일도 잘 읽었고 지시도 갔는데 **답을 우리가 못 읽은 것**이다.
+
+    `supergemma4` 는 Reasoning 이 붙은 모델이라 생각을 먼저 적는다. 예전 코드는
+    첫 `[` 부터 마지막 `]` 까지를 통째로 집어서, 군말에 대괄호가 하나라도 있으면
+    엉뚱한 덩어리를 집었다.
+    """
+    from app.jp import take
+
+    assert take('네, 옮겼습니다:\n["안녕"]', 1) == ["안녕"]
+    assert take('```json\n["안녕"]\n```', 1) == ["안녕"]
+    assert take("<think>이건 [주의] 대사군</think>\n[\"안녕\"]", 1) == ["안녕"]
+    # 군말 속 `[1]` 이 개수만 우연히 맞는 경우 — **글자로 된 것**을 고른다
+    assert take('참고 [1] 을 보면… 결과: ["안녕"]', 1) == ["안녕"]
+    assert take('["가","나"]', 2) == ["가", "나"]
+
+    # 개수가 다르면 안 쓴다. 줄이 밀리는 것보다 원문이 낫다
+    assert take('["안녕","또"]', 1) is None
+    assert take("죄송합니다 번역할 수 없습니다", 1) is None
+
+
+def test_못_읽은_답을_화면에_보여_준다():
+    """실패했을 때 **모델이 뭐라고 답했는지** 안 보여 주면 원인을 못 짚는다.
+
+    군말을 붙였는지, 개수를 틀렸는지, 아예 거절했는지가 갈리지 않는다.
+    """
+    import asyncio
+    import json
+    import os
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from app.server import api_translate
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            self._send({"data": [{"id": "gemma"}]})
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["content-length"]))
+            self._send({"choices": [{"message": {"content": "죄송합니다, 번역할 수 없습니다."}}]})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["LM_BASE"] = f"http://127.0.0.1:{srv.server_port}/v1"
+    try:
+        class F:
+            filename = "a.txt"
+
+            async def read(self):
+                return "「本当だな？\n".encode()
+
+        d = asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
+        assert (d["done"], d["failed"]) == (0, 1)
+        assert d["sample"] == "죄송합니다, 번역할 수 없습니다.", d["sample"]
+    finally:
+        os.environ.pop("LM_BASE", None)
+        srv.shutdown()

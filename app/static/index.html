@@ -540,7 +540,8 @@ $('#btnJp').onclick = async () => {
       + `옮김 ${d.done}줄` + (d.failed ? ` · 원문 유지 ${d.failed}줄(다시 눌러 보세요)` : '')
       + ` · 원본 인코딩 ${d.enc_in}`
       + (d.lost ? ` · ${d.enc} 로 못 적은 글자 ${d.lost}자` : '')
-      + (이름 ? `\n이름: ${이름}` : '');
+      + (이름 ? `\n이름: ${이름}` : '')
+      + (d.sample ? `\n\n모델이 돌려준 것 ↓\n${d.sample}` : '');
     m.style.whiteSpace = 'pre-line';
     if (d.failed || d.lost) m.className = 'msg err';
   } catch (e) { m.className='msg err'; m.textContent = e.message; }

@@ -584,6 +584,9 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         묶음크기, 시간, 길이 = jp.CHUNK, 180, 8000
     done: dict[int, str] = {}
     실패 = 0
+    #: 못 읽은 답을 하나 남긴다. **안 남기면 왜 실패했는지 알 길이 없다** —
+    #: 모델이 군말을 붙였는지, 개수를 틀렸는지, 아예 거절했는지 갈리지 않는다.
+    본것 = ""
 
     # ① 화자 이름을 먼저 정한다. 같은 이름이 파일 안에서 매번 달리 나오면 안 된다.
     표: dict[str, str] = {}
@@ -616,7 +619,9 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         got = jp.take(reply, len(묶음))
         if got is None:
             # 개수가 안 맞으면 줄이 밀린다. 밀린 것보다 원문이 낫다.
-            print(f"[번역] {a}~ 묶음 개수 불일치 — 원문 유지")
+            print(f"[번역] {a}~ 묶음 {len(묶음)}줄인데 못 읽음 — 원문 유지")
+            print(f"         모델이 돌려준 것 ↓\n{(reply or '(빈 답)')[:600]}")
+            본것 = 본것 or (reply or "(빈 답)")[:600]
             실패 += len(묶음)
             continue
         done.update(dict(zip(묶음, got)))
@@ -641,6 +646,7 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         "names": 표,
         "model": model,
         "where": "내 컴퓨터" if 로컬 else llm.label(api),
+        "sample": 본것,
     }
 
 
