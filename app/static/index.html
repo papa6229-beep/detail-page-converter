@@ -492,7 +492,8 @@ async function jpProbe() {
     const d = await (await fetch('/api/translate/local')).json();
     if (d.ready) {
       el.className = 'msg';
-      el.textContent = `내 컴퓨터 준비됨 — ${d.models.join(' · ')} (${d.base}, ${d.chunk}줄씩)`;
+      el.textContent = `내 컴퓨터 준비됨 — ${d.models.join(' · ')}`
+        + ` (${d.base} · ${d.chunk}줄씩 · 최대 ${d.max_tokens}토큰)`;
     } else {
       el.className = 'msg err';
       el.textContent = `내 컴퓨터 서버(${d.base})가 안 켜져 있습니다. `

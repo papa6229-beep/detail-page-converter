@@ -56,9 +56,25 @@ CHUNK = 60
 #:     JP_CHUNK=40   더 빠르게 (개수 틀릴 위험 커짐)
 CHUNK_LOCAL = 20
 
-#: 내 컴퓨터에서 도는 서버 주소. LM Studio 의 기본값이다.
-#: (LM Studio → Developer → Start Server 를 켜면 여기서 듣는다)
-LOCAL_BASE = "http://localhost:1234/v1"
+#: 내 컴퓨터에서 도는 서버 주소. LM Studio 화면의 `Reachable at` 그대로다.
+#:
+#: ⚠️ **`localhost` 가 아니라 `127.0.0.1` 이라야 한다.** 윈도우는 `localhost` 를
+#: IPv6(`::1`)로 먼저 푸는데 LM Studio 는 IPv4 로만 듣는 일이 있다. 그러면
+#: 서버가 멀쩡히 켜져 있는데 "안 켜져 있습니다" 가 뜬다. LM Studio 자신도
+#: 화면에 `http://127.0.0.1:1234` 라고 적어 준다 — 적힌 대로 쓴다.
+LOCAL_BASE = "http://127.0.0.1:1234/v1"
+
+#: 내 컴퓨터 모델에 한 번에 달라고 할 최대 길이.
+#:
+#: ⚠️ **회사 API 의 8000 을 그대로 쓰면 안 된다.** 내 컴퓨터 서버는 한 요청이
+#: 쓸 수 있는 문맥이 정해져 있다 — 사장님 LM Studio 로그에 `n_ctx_slot = 2048`
+#: 이 찍혀 있었다(슬롯 4개로 쪼개져 하나당 2048). 그보다 큰 값을 달라고 하면
+#: 서버가 거부하거나 답을 잘라 버린다.
+#:
+#: LM Studio 에서 Context Length 를 올리셨으면 이것도 올리시면 된다 —
+#:
+#:     JP_MAX_TOKENS=4000
+LOCAL_MAX_TOKENS = 1600
 
 #: 내려받을 때 고를 수 있는 인코딩. 원본이 무엇이든 한국어가 들어가므로
 #: Shift-JIS 로는 돌려줄 수 없다.
@@ -100,6 +116,14 @@ def local_base() -> str:
     import os
 
     return os.environ.get("LM_BASE", "").strip() or LOCAL_BASE
+
+
+def local_max_tokens() -> int:
+    """내 컴퓨터 모델에 달라고 할 최대 길이. 근거는 `LOCAL_MAX_TOKENS` 위에."""
+    import os
+
+    n = os.environ.get("JP_MAX_TOKENS", "").strip()
+    return int(n) if n.isdigit() and int(n) > 0 else LOCAL_MAX_TOKENS
 
 
 def local_chunk() -> int:

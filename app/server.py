@@ -578,10 +578,10 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
             raise HTTPException(
                 400, f"내 컴퓨터 서버({base}) 에서 모델을 못 찾았습니다.\n"
                      "LM Studio 를 켜고 모델을 올린 뒤 Developer → Start Server 를 눌러 주세요.")
-        묶음크기, 시간 = jp.local_chunk(), 900
+        묶음크기, 시간, 길이 = jp.local_chunk(), 900, jp.local_max_tokens()
     else:
         model = (model or "").strip() or jp.model_for(api)
-        묶음크기, 시간 = jp.CHUNK, 180
+        묶음크기, 시간, 길이 = jp.CHUNK, 180, 8000
     done: dict[int, str] = {}
     실패 = 0
 
@@ -590,7 +590,7 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
     이름 = jp.names(lines)
     if 이름:
         got = jp.take(
-            llm.extract(api, _ask(api, jp.name_parts(이름), max_tokens=1000,
+            llm.extract(api, _ask(api, jp.name_parts(이름), max_tokens=min(1000, 길이),
                                   model=model, base=base, timeout=시간))[0],
             len(이름),
         )
@@ -598,7 +598,7 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
             표 = dict(zip(이름, got))
     print(f"[번역] {file.filename} · {enc_in} · {len(lines)}줄 중 {len(todo)}줄 "
           f"· 이름 {len(표)}개 · {'내 컴퓨터' if 로컬 else llm.label(api)} · {model} "
-          f"· {묶음크기}줄씩")
+          f"· {묶음크기}줄씩 · 최대 {길이}토큰")
 
     # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
     for a in range(0, len(todo), 묶음크기):
@@ -606,7 +606,7 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         원문 = [lines[i].body for i in 묶음]
         try:
             reply, _stop = llm.extract(
-                api, _ask(api, jp.line_parts(원문, 표), max_tokens=8000,
+                api, _ask(api, jp.line_parts(원문, 표), max_tokens=길이,
                           model=model, base=base, timeout=시간)
             )
         except HTTPException as e:
@@ -650,7 +650,7 @@ def translate_local():
     base = jp.local_base()
     models = jp.local_models(base)
     return {"base": base, "models": models, "ready": bool(models),
-            "chunk": jp.local_chunk()}
+            "chunk": jp.local_chunk(), "max_tokens": jp.local_max_tokens()}
 
 
 def main() -> None:
