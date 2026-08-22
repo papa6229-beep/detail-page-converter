@@ -337,44 +337,21 @@ def parse(text: str) -> list[Line]:
     return out or [cut("")]
 
 
-#: 대사의 시작과 끝. **이 사이에 있는 것만 옮긴다.**
-사이 = re.compile(r"「[^「」]*」")
+def targets(lines: list[Line]) -> list[int]:
+    """옮길 토막의 자리 번호 — **일본어가 든 것 전부.**
 
+    사장님 지시 — *"다시 규칙을 바꾸자 일본어부분 전체로"*
 
-def targets(text: str, lines: list[Line]) -> list[int]:
-    """옮길 토막의 자리 번호 — **`「` 와 `」` 사이에 있는 것만.**
+    그래서 대사도 지문도 화자 이름도 다 옮긴다. `「 」` 를 안 따진다.
 
-    사장님 지시 —
+        "<NAME_PLATE>凜子"                    ← 옮김
+        "緊張しているせいか、目の前で…"        ← 옮김
+        "「……ほ、本当だな？"                  ← 옮김
+        "<BGM_PLAY>bgm721,1000"               ← 일본어 없음 · 안 건드림
 
-        *"「  이 기호와  」 이 기호 사이에 있는 일본어만 한국어로 번역해서
-        교체하면 되는것을?"*
-        *"ㄱ. 말씀하신 그대로 — 「 」 사이만. 지문·이름은 일본어로 남습니다
-        이걸로…"*
-
-    그래서 지문과 화자 이름은 **일본어로 남는다.** 그게 지시다.
-
-        "<NAME_PLATE>凜子"                    ← 「 」 밖 · 안 건드림
-        "緊張しているせいか、目の前で…"        ← 「 」 밖 · 안 건드림
-        "「……ほ、本当だな？"                  ← 「 가 열렸다 · 옮김
-        "本当の本当に、こんな……コトでッ！？」" ← 」 로 닫힌다 · 옮김
-
-    ⚠️ **한 짝이 여러 토막에 걸친다.** 위 두 줄은 `「` 와 `」` 가 서로 다른
-    토막에 있다. 그래서 토막 하나만 보고는 못 정하고, **글 전체에서 짝을 먼저
-    찾아 놓고** 각 토막이 그 안에 걸치는지를 본다.
-
-    닫는 `」` 가 없는 `「` 는 짝이 아니다 — 안 옮긴다. 어디서 끝나는지 모르는
-    것을 옮기면 어디까지 망가질지도 모른다.
+    규칙이 한 줄이다 — **일본어가 들었으면 옮기고, 아니면 놔둔다.**
     """
-    구간 = [m.span() for m in 사이.finditer(text)]
-    out: list[int] = []
-    자리 = 0
-    for i, ln in enumerate(lines):
-        시작 = 자리 + len(ln.head)
-        끝 = 시작 + len(ln.body)
-        자리 = 끝 + len(ln.eol)
-        if ln.target and any(a < 끝 and 시작 < b for a, b in 구간):
-            out.append(i)
-    return out
+    return [i for i, ln in enumerate(lines) if ln.target]
 
 
 def names(lines: list[Line]) -> list[str]:

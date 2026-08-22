@@ -67,8 +67,7 @@ def test_태그와_들여쓰기는_건드리지_않는다():
 
 
 def test_일본어가_없는_줄은_번역_대상이_아니다():
-    """`target` 은 **일본어가 들었나**만 본다. 실제로 옮길지는 `targets` 가 정한다
-    (`「 」` 사이만) — 여기서는 앞 단계만 본다."""
+    """`target` 은 **일본어가 들었나**만 본다. 그게 곧 옮길 것이다."""
     쓸것 = [ln.body for ln in jp.parse(샘플) if ln.target]
     assert "bgm721,1000" not in 쓸것, "태그 파라미터를 번역하려 했다"
     assert "black,NONE" not in 쓸것
@@ -97,38 +96,35 @@ def test_옮긴_것을_제자리에_끼운다():
     assert got.count("\r\n") == 샘플.count("\r\n")
 
 
-def test_괄호_사이만_옮긴다():
-    """사장님 지시 — *"「  이 기호와  」 이 기호 사이에 있는 일본어만 한국어로
-    번역해서 교체하면 되는것을?"* · *"ㄱ. 말씀하신 그대로 — 「 」 사이만.
-    지문·이름은 일본어로 남습니다 이걸로…"*
+def test_일본어가_든_것은_전부_옮긴다():
+    """사장님 지시 — *"다시 규칙을 바꾸자 일본어부분 전체로"*
 
-    그래서 지문과 화자 이름은 **일본어로 남는다.** 그게 지시다.
+    대사도 지문도 화자 이름도 다 옮긴다. `「 」` 를 안 따진다.
+    규칙이 한 줄이다 — **일본어가 들었으면 옮기고, 아니면 놔둔다.**
     """
     seg = jp.parse(샘플)
-    옮길것 = jp.targets(샘플, seg)
-    body = [seg[i].body for i in 옮길것]
+    body = [seg[i].body for i in jp.targets(seg)]
 
-    assert body == ["……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？"]
-    # 「 」 밖은 일본어가 있어도 안 옮긴다
-    일본어전부 = [x.body for x in seg if x.target]
-    assert "凜子" in 일본어전부 and "凜子" not in body, "화자 이름을 건드렸다"
-    assert "【対魔忍】秋山凜子　Ｈ１" in 일본어전부, "주석이 목록에서 사라졌다"
-    assert "【対魔忍】秋山凜子　Ｈ１" not in body, "「 」 밖 주석을 건드렸다"
-
-
-def test_짝이_안_맞는_괄호는_안_건드린다():
-    """어디서 끝나는지 모르는 것을 옮기면 어디까지 망가질지도 모른다."""
-    글 = "「열기만 하고 안 닫는다\r\n닫기만 한다」\r\n「제대로 여닫는다本当」\r\n"
-    seg = jp.parse(글)
-    assert [seg[i].body for i in jp.targets(글, seg)] == ["제대로 여닫는다本当"]
+    assert body == [
+        "【対魔忍】秋山凜子\u3000Ｈ１",              # 주석
+        "【黒画面】",                              # 주석
+        "凜子",                                    # 화자 이름
+        "……ほ、本当だな？",                        # 대사
+        "本当の本当に、こんな……コトでッ！？",        # 대사
+        "俺",                                      # 화자 이름
+    ], body
+    # 일본어가 없으면 안 건드린다
+    안건드림 = [x.body for i, x in enumerate(seg) if i not in jp.targets(seg)]
+    assert "bgm721,1000" in 안건드림 and "chr_0001_1_0000_r18" in 안건드림
 
 
-def test_한_짝이_여러_토막에_걸쳐도_찾는다():
-    """`「` 와 `」` 가 서로 다른 토막에 있는 경우. 실제 파일에서 120짝 중 103짝이다."""
-    글 = '["「……ほ、本当だな？","本当の本当に、こんな……コトでッ！？」","<PAUSE>"]'
-    seg = jp.parse(글)
-    assert [seg[i].body for i in jp.targets(글, seg)] == [
-        "……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？"]
+def test_괄호는_모델에게_안_보낸다():
+    """`「 」` 는 안 옮기는 기준이 아니라, **모델이 못 지우게 떼어 두는 것**이다.
+
+    실물에서 모델이 이걸 지웠다 — 옮긴 153군데 중 30군데. 안 보내면 못 지운다.
+    """
+    ln = jp.cut("「本当だな？」")
+    assert (ln.head, ln.body, ln.eol) == ("「", "本当だな？", "」")
 
 
 def test_한_줄짜리_JSON_덩어리도_제자리에_끼운다():
@@ -138,7 +134,9 @@ def test_한_줄짜리_JSON_덩어리도_제자리에_끼운다():
     JSON 으로 읽고 다시 굽지 않는다. **따옴표 사이의 일본어만 바꿔 끼운다.**
     뼈대(`sceneData={` · `,` · `"SCRIPT"`)는 한 글자도 안 움직인다.
     """
-    got = jp.build(jp.parse(샘플_JSON), {22: "린코", 26: "……저, 정말이지?"})
+    seg = jp.parse(샘플_JSON)
+    assert jp.targets(seg) == [22, 26, 30], jp.targets(seg)   # 이름 · 대사 · 대사
+    got = jp.build(seg, {22: "린코", 26: "……저, 정말이지?"})
 
     assert '"<NAME_PLATE>린코"' in got
     assert '"「……저, 정말이지?"' in got
@@ -330,13 +328,13 @@ def test_내_컴퓨터의_LM_스튜디오로_번역한다():
 
         assert d["where"] == "내 컴퓨터" and d["model"] == "gemma-3-12b-it"
         assert d["enc_in"] == "cp932", "Shift-JIS 를 못 읽었다"
-        # **「 」 사이만.** 화자 이름과 주석은 일본어로 남는다 — 사장님 지시다
-        assert (d["targets"], d["done"], d["failed"]) == (2, 2, 0), d
-        assert out == ("<BGM_PLAY>bgm721,1000\r\n"
-                       "<NAME_PLATE>凜子\r\n"          # 「 」 밖 — 안 건드림
-                       "//【対魔忍】\r\n"               # 「 」 밖 — 안 건드림
-                       "「옮김:本当だな？\r\n"           # 「 는 안 보냈다
-                       "　옮김:こんな……」\r\n"          # 」 로 닫힌다
+        # **일본어가 든 것은 전부.** 태그·들여쓰기·줄끝·괄호는 한 글자도 안 바뀐다
+        assert (d["targets"], d["done"], d["failed"]) == (4, 4, 0), d
+        assert out == ("<BGM_PLAY>bgm721,1000\r\n"     # 일본어 없음 — 안 보냄
+                       "<NAME_PLATE>옮김:凜子\r\n"       # 태그는 그대로
+                       "//옮김:【対魔忍】\r\n"            # `//` 는 그대로
+                       "「옮김:本当だな？\r\n"            # 「 는 안 보냈다
+                       "　옮김:こんな……」\r\n"           # 전각 공백 · 」 그대로
                        "<SE_PLAY>se01\r\n"), repr(out)
 
         # ③ 보낸 모양 — 주소·모델·지시문 자리
@@ -626,13 +624,11 @@ def test_기호가_잔뜩인_스크립트를_끝까지_돌려_본다():
 
         d = asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
         out = base64.b64decode(d["b64"]).decode()
-        # 4번째 줄의 `「` 는 짝이 없다(`」` 가 안 나온다) → 안 옮긴다.
-        # 5번째 줄은 `「こんな……」` 로 짝이 맞아 그 토막을 통째로 옮긴다.
-        assert (d["targets"], d["done"], d["failed"]) == (1, 1, 0), d
+        assert (d["targets"], d["done"], d["failed"]) == (4, 4, 0), d
         assert out == ("<BGM_PLAY>bgm721,1000\r\n"          # 일본어 없음 — 안 보냄
-                       "<NAME_PLATE>凜子\r\n"                # 「 」 밖 — 안 건드림
-                       "//【対魔忍】秋山凜子　Ｈ１\r\n"          # 「 」 밖 — 안 건드림
-                       "　「……ほ、本当だな？[r]\r\n"           # 닫는 」 가 없다 — 안 건드림
+                       "<NAME_PLATE>린코\r\n"                # 태그는 그대로
+                       "//【대마인】아키야마 린코　Ｈ１\r\n"      # 【】· 전각공백 그대로
+                       "　「……ほ、정말이야？[r]\r\n"           # 「 · 전각 들여쓰기 · [r] 그대로
                        "\t%name%는「이런……」라고 말했다。\\n\r\n"  # \t · %name% · \n 그대로
                        "@wait time=500\r\n"), repr(out)     # 일본어 없음 — 안 보냄
     finally:
