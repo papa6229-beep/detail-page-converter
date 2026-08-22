@@ -608,8 +608,24 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
           f"· {묶음크기}개씩 · 최대 {길이}토큰")
 
     # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
-    for a in range(0, len(todo), 묶음크기):
-        묶음 = todo[a : a + 묶음크기]
+    #
+    # ⚠️ **실패하면 반으로 쪼개 다시 부른다.** 사장님 파일에서 60개짜리 묶음
+    # 두 개가 통째로 틀려 120군데를 잃었다 — 한 번 틀릴 때마다 60군데였다.
+    # 쪼개면 잃는 것이 1군데까지 줄어든다.
+    #
+    # 부르는 횟수는 `묶음 수 × 6 + 20` 으로 막는다. 모델이 계속 틀리면 무한정
+    # 쪼개며 부르게 되는데, 그건 사장님 돈이다.
+    남은 = [todo[a : a + 묶음크기] for a in range(0, len(todo), 묶음크기)]
+    남은한도 = len(남은) * 6 + 20
+    부른횟수 = 0
+
+    while 남은:
+        묶음 = 남은.pop(0)
+        if 부른횟수 >= 남은한도:
+            print(f"[번역] 부른 횟수 {부른횟수}회 — 여기서 멈춘다. 남은 {len(묶음)}군데 원문 유지")
+            실패 += len(묶음)
+            continue
+        부른횟수 += 1
         # **줄 안쪽 명령·변수를 가려서 보낸다.** `[r]` `%name%` `\n` 같은 것을
         # 모델이 옮기거나 지우면 스크립트가 안 돈다. 부탁 대신 가린다.
         가린것 = [jp.mask(lines[i].body) for i in 묶음]
@@ -620,13 +636,19 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
                           model=model, base=base, timeout=시간)
             )
         except HTTPException as e:
-            print(f"[번역] {a}~ 묶음 실패 — {e.detail}")
+            print(f"[번역] {묶음[0]}~ 묶음 실패 — {e.detail}")
             실패 += len(묶음)
             continue
         got = jp.take(reply, len(묶음))
         if got is None:
             # 개수가 안 맞으면 줄이 밀린다. 밀린 것보다 원문이 낫다.
-            print(f"[번역] {a}~ 묶음 {len(묶음)}줄인데 못 읽음 — 원문 유지")
+            if len(묶음) > 1:
+                반 = len(묶음) // 2
+                print(f"[번역] {묶음[0]}~ {len(묶음)}군데 못 읽음 — {반}·{len(묶음)-반} 로 쪼개 다시")
+                남은[:0] = [묶음[:반], 묶음[반:]]
+                본것 = 본것 or (reply or "(빈 답)")[:600]
+                continue
+            print(f"[번역] {묶음[0]}군데 하나짜리도 못 읽음 — 원문 유지")
             print(f"         모델이 돌려준 것 ↓\n{(reply or '(빈 답)')[:600]}")
             본것 = 본것 or (reply or "(빈 답)")[:600]
             실패 += len(묶음)

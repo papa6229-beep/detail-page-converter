@@ -214,17 +214,39 @@ def encode(text: str, enc: str) -> tuple[bytes, int]:
 
 
 def cut(line: str) -> Line:
-    """한 줄을 가른다. **줄끝을 먼저 떼어 낸다** — 안 그러면 `\\r` 이 번역에 딸려 간다."""
+    """한 줄을 가른다. **줄끝을 먼저 떼어 낸다** — 안 그러면 `\\r` 이 번역에 딸려 간다.
+
+    ⚠️ **`「` 와 `」` 도 몸통에서 떼어 낸다 — 모델에게 안 보낸다.**
+
+    실물에서 모델이 이걸 지웠다. 사장님 파일을 돌려 받은 결과 —
+
+        옮긴 153군데 중 「 」 가 사라진 곳 30군데
+        원본 「120 」120  →  받은 것 「105 」104
+
+        원본: 尻孔で感じられるようになったぞ？」
+        받음: 항문으로 느낄 수 있게 되었다고?      ← 」 가 없어졌다
+
+    *"기호는 그대로 둬라"* 고 **부탁만** 하고 있었다. 부탁은 보장이 아니다.
+    게다가 `「 」` 는 우리가 옮길 곳을 고르는 기준이라(`targets`), 사라지면 다시
+    돌려도 그 줄은 영영 안 잡힌다. 안 보내면 못 지운다.
+    """
     m = re.match(r"^(.*?)(\r\n|\n|\r|)$", line, re.S)
     text, eol = m.group(1), m.group(2)
 
     t = TAG.match(text)
     if t:
-        return Line(t.group(1), t.group(2), eol)
-    if text.startswith("//"):
-        return Line("//", text[2:], eol)
-    ind = INDENT.match(text)
-    return Line(ind.group(1), ind.group(2), eol)
+        head, body = t.group(1), t.group(2)
+    elif text.startswith("//"):
+        head, body = "//", text[2:]
+    else:
+        ind = INDENT.match(text)
+        head, body = ind.group(1), ind.group(2)
+
+    if body.startswith("「"):
+        head, body = head + "「", body[1:]
+    if body.endswith("」"):
+        body, eol = body[:-1], "」" + eol
+    return Line(head, body, eol)
 
 
 #: 줄 **안쪽**에 박혀 있는 명령·변수·이스케이프. 일본어가 한 글자도 없는

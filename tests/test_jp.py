@@ -47,7 +47,9 @@ def test_아무것도_안_옮기면_원문_그대로다():
 def test_줄끝을_먼저_떼어_낸다():
     """`\\r` 이 몸통에 딸려 가면 번역 결과에 섞여 들어가고 파일이 깨진다."""
     ln = jp.cut("「本当だな？\r\n")
-    assert (ln.head, ln.body, ln.eol) == ("", "「本当だな？", "\r\n")
+    # `「` 도 몸통에서 뗀다 — 모델에게 안 보내야 못 지운다
+    assert (ln.head, ln.body, ln.eol) == ("「", "本当だな？", "\r\n")
+    assert jp.cut("「こんな」").eol == "」"
     # 마지막 줄은 줄끝이 없다
     assert jp.cut("끝").eol == ""
     # LF 만 쓰는 파일도 그대로
@@ -85,7 +87,7 @@ def test_화자_이름은_나온_차례대로_한_번씩():
 
 
 def test_옮긴_것을_제자리에_끼운다():
-    got = jp.build(jp.parse(샘플), {10: "린코", 12: "「……저, 정말이지?"})
+    got = jp.build(jp.parse(샘플), {10: "린코", 12: "……저, 정말이지?"})
     assert "<NAME_PLATE>린코\r\n" in got
     assert "「……저, 정말이지?\r\n" in got
     # 손 안 댄 줄은 그대로
@@ -106,7 +108,7 @@ def test_괄호_사이만_옮긴다():
     옮길것 = jp.targets(샘플, seg)
     body = [seg[i].body for i in 옮길것]
 
-    assert body == ["「……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？」"]
+    assert body == ["……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？"]
     # 「 」 밖은 일본어가 있어도 안 옮긴다
     일본어전부 = [x.body for x in seg if x.target]
     assert "凜子" in 일본어전부 and "凜子" not in body, "화자 이름을 건드렸다"
@@ -118,7 +120,7 @@ def test_짝이_안_맞는_괄호는_안_건드린다():
     """어디서 끝나는지 모르는 것을 옮기면 어디까지 망가질지도 모른다."""
     글 = "「열기만 하고 안 닫는다\r\n닫기만 한다」\r\n「제대로 여닫는다本当」\r\n"
     seg = jp.parse(글)
-    assert [seg[i].body for i in jp.targets(글, seg)] == ["「제대로 여닫는다本当」"]
+    assert [seg[i].body for i in jp.targets(글, seg)] == ["제대로 여닫는다本当"]
 
 
 def test_한_짝이_여러_토막에_걸쳐도_찾는다():
@@ -126,7 +128,7 @@ def test_한_짝이_여러_토막에_걸쳐도_찾는다():
     글 = '["「……ほ、本当だな？","本当の本当に、こんな……コトでッ！？」","<PAUSE>"]'
     seg = jp.parse(글)
     assert [seg[i].body for i in jp.targets(글, seg)] == [
-        "「……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？」"]
+        "……ほ、本当だな？", "本当の本当に、こんな……コトでッ！？"]
 
 
 def test_한_줄짜리_JSON_덩어리도_제자리에_끼운다():
@@ -136,7 +138,7 @@ def test_한_줄짜리_JSON_덩어리도_제자리에_끼운다():
     JSON 으로 읽고 다시 굽지 않는다. **따옴표 사이의 일본어만 바꿔 끼운다.**
     뼈대(`sceneData={` · `,` · `"SCRIPT"`)는 한 글자도 안 움직인다.
     """
-    got = jp.build(jp.parse(샘플_JSON), {22: "린코", 26: "「……저, 정말이지?"})
+    got = jp.build(jp.parse(샘플_JSON), {22: "린코", 26: "……저, 정말이지?"})
 
     assert '"<NAME_PLATE>린코"' in got
     assert '"「……저, 정말이지?"' in got
@@ -333,7 +335,7 @@ def test_내_컴퓨터의_LM_스튜디오로_번역한다():
         assert out == ("<BGM_PLAY>bgm721,1000\r\n"
                        "<NAME_PLATE>凜子\r\n"          # 「 」 밖 — 안 건드림
                        "//【対魔忍】\r\n"               # 「 」 밖 — 안 건드림
-                       "옮김:「本当だな？\r\n"           # 「 가 열렸다
+                       "「옮김:本当だな？\r\n"           # 「 는 안 보냈다
                        "　옮김:こんな……」\r\n"          # 」 로 닫힌다
                        "<SE_PLAY>se01\r\n"), repr(out)
 
@@ -397,6 +399,86 @@ def test_내_컴퓨터_모델의_군말을_걷어내고_배열만_꺼낸다():
     # 개수가 다르면 안 쓴다. 줄이 밀리는 것보다 원문이 낫다
     assert take('["안녕","또"]', 1) is None
     assert take("죄송합니다 번역할 수 없습니다", 1) is None
+
+
+def test_묶음이_틀리면_반으로_쪼개_다시_부른다():
+    """사장님 지시 — *"번역 안한부분이 엄청 많아"*
+
+    받으신 파일을 원본과 맞춰 보니 —
+
+        옮길 것 273군데 중 그대로 남은 것 120군데
+        연달아 실패한 덩어리 : [60, 60]   ← 60개짜리 묶음 2개가 통째로
+
+    규칙이 틀린 게 아니라 **한 번 틀릴 때마다 60군데를 잃고 있었다.** 개수가
+    안 맞으면 그 묶음을 통째로 버리게 해 뒀기 때문이다.
+
+    이제 반으로 쪼개 다시 부른다. 1까지 내려가므로 **잃는 것이 1군데까지 준다.**
+    """
+    import asyncio
+    import base64
+    import json
+    import os
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from app.server import api_translate
+
+    크기들: list[int] = []
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _s(self, o):
+            b = json.dumps(o).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            self._s({"data": [{"id": "가짜"}]})
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            본문 = req["messages"][-1]["content"]
+            글 = 본문[0]["text"] if isinstance(본문, list) else 본문
+            줄 = re.findall(r"^\d+\. (.*)$", 글, re.M)
+            if "[옮길 줄" in 글:
+                크기들.append(len(줄))
+                # **3개가 넘으면 개수를 틀린다** — 큰 묶음을 못 세는 모델 흉내
+                if len(줄) > 3:
+                    self._s({"choices": [{"message": {"content": "[]"}}]})
+                    return
+            self._s({"choices": [{"message": {"content":
+                     json.dumps(["옮김:" + x for x in 줄], ensure_ascii=False)}}]})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["LM_BASE"] = f"http://127.0.0.1:{srv.server_port}/v1"
+    os.environ["JP_CHUNK"] = "8"
+    try:
+        원본 = "".join(f"「대사{i}です」\r\n" for i in range(8))
+
+        class F:
+            filename = "a.txt"
+
+            async def read(self):
+                return 원본.encode()
+
+        d = asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
+        out = base64.b64decode(d["b64"]).decode()
+
+        # 8개짜리가 틀렸지만 4·2 로 쪼개져 전부 옮겨졌다 — 잃은 것이 없다
+        assert (d["targets"], d["done"], d["failed"]) == (8, 8, 0), d
+        assert 크기들[0] == 8 and 4 in 크기들 and 2 in 크기들, 크기들
+        assert out == "".join(f"「옮김:대사{i}です」\r\n" for i in range(8)), repr(out)
+    finally:
+        os.environ.pop("LM_BASE", None)
+        os.environ.pop("JP_CHUNK", None)
+        srv.shutdown()
 
 
 def test_못_읽은_답을_화면에_보여_준다():
