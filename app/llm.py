@@ -13,6 +13,10 @@
 보내는 것과 받는 것이 회사마다 다르다. 다른 곳은 여기 네 가지뿐이다.
 
     주소 · 인증 헤더 · 그림을 싣는 모양 · 답을 꺼내는 자리
+
+**내 컴퓨터에서 도는 모델도 여기로 들어온다.** LM Studio 는 OpenAI 와 **똑같은
+모양의 서버**를 열어 준다(`/v1/chat/completions`). 그래서 갈아 끼울 것이 주소
+하나뿐이다 — `build(..., base="http://localhost:1234/v1")`.
 """
 
 from __future__ import annotations
@@ -52,7 +56,7 @@ def model_for(provider: str) -> str:
 
 
 def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
-          legacy_cap: bool = False, model: str = ""):
+          legacy_cap: bool = False, model: str = "", base: str = ""):
     """(주소, 헤더, 보낼 바이트) 를 만든다.
 
     parts 는 ("text", 글) 과 ("image", base64 PNG) 가 순서대로 섞인 목록이다.
@@ -64,11 +68,14 @@ def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
 
     model 을 주면 그것으로, 안 주면 `model_for` 의 기본 모델로 보낸다.
 
+    base 를 주면 **거기로 보낸다** — 내 컴퓨터의 LM Studio 가 그 자리다. 키는
+    안 봐도 되지만 헤더가 비면 거부하는 서버가 있어 `local` 이라고 적어 보낸다.
+
     legacy_cap 은 OpenAI 쪽에서만 쓴다. 길이 상한 이름이 `max_completion_tokens`
     로 바뀌었는데 옛 모델은 그 이름을 모르고, 새 모델은 옛 이름을 거부한다.
     한쪽으로 보내 보고 거부당하면 다른 이름으로 다시 보낸다(server 쪽에서 처리).
     """
-    provider = provider_of(key)
+    provider = OPENAI if base else provider_of(key)
     model = model or model_for(provider)
     system = "\n".join(v for k, v in parts if k == "system")
     body_parts = [(k, v) for k, v in parts if k != "system"]
@@ -102,10 +109,12 @@ def build(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
     if system:
         messages.insert(0, {"role": "system", "content": system})
     body = {"model": model, "messages": messages}
-    body["max_tokens" if legacy_cap else "max_completion_tokens"] = max_tokens
+    # 내 컴퓨터 서버(LM Studio·llama.cpp)는 옛 이름 `max_tokens` 만 안다.
+    body["max_tokens" if (legacy_cap or base) else "max_completion_tokens"] = max_tokens
     return (
-        "https://api.openai.com/v1/chat/completions",
-        {"content-type": "application/json", "authorization": f"Bearer {key}"},
+        (base.rstrip("/") + "/chat/completions") if base
+        else "https://api.openai.com/v1/chat/completions",
+        {"content-type": "application/json", "authorization": f"Bearer {key or 'local'}"},
         json.dumps(body).encode(),
     )
 

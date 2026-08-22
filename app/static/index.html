@@ -177,6 +177,10 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       같은 모양의 txt 로 돌려드립니다. 태그·들여쓰기·줄 수는 한 글자도 안 건드립니다.</p>
     <div class="row" style="margin-top:12px">
       <input type="file" id="jpFile" accept=".txt,.ks,.scn,.dat" class="grow">
+      <select id="jpWhere" style="flex:none">
+        <option value="local">내 컴퓨터 (LM Studio)</option>
+        <option value="api">OpenAI API</option>
+      </select>
       <select id="jpEnc" style="flex:none">
         <option value="utf-8">UTF-8</option>
         <option value="utf-8-sig">UTF-8 (BOM)</option>
@@ -184,6 +188,7 @@ code{background:var(--field);border:1px solid var(--rule);border-radius:4px;padd
       </select>
       <button id="btnJp">번역</button>
     </div>
+    <div id="jpLocal" class="msg"></div>
     <div id="jpMsg" class="msg"></div>
   </section>
 
@@ -479,6 +484,27 @@ $('#btnRender').onclick = async () => {
 fetch('/api/autofill/available').then(r=>r.json()).then(d=>{
   if (d.available) $('#keyMsg').textContent = '서버에 ' + (d.provider || '') + ' 키가 설정돼 있습니다. 변환하면 캡션이 저절로 채워집니다.';
 });
+// 내 컴퓨터 서버가 켜져 있는지, 뭐가 올라와 있는지 한 번 물어본다.
+// **모델 이름을 사람이 적게 하지 않는다** — 적게 하면 반드시 오타가 난다.
+async function jpProbe() {
+  const el = $('#jpLocal');
+  try {
+    const d = await (await fetch('/api/translate/local')).json();
+    if (d.ready) {
+      el.className = 'msg';
+      el.textContent = `내 컴퓨터 준비됨 — ${d.models.join(' · ')} (${d.base}, ${d.chunk}줄씩)`;
+    } else {
+      el.className = 'msg err';
+      el.textContent = `내 컴퓨터 서버(${d.base})가 안 켜져 있습니다. `
+        + 'LM Studio → Developer → Start Server 를 누르고 이 화면을 새로고침하세요.';
+    }
+  } catch (e) { el.className='msg err'; el.textContent = e.message; }
+}
+jpProbe();
+$('#jpWhere').onchange = () => {
+  $('#jpLocal').style.display = $('#jpWhere').value === 'local' ? '' : 'none';
+};
+
 // ── 일본어 스크립트 번역 (상세페이지와 무관) ────────────────────────────────
 $('#btnJp').onclick = async () => {
   const f = $('#jpFile').files[0];
@@ -492,6 +518,7 @@ $('#btnJp').onclick = async () => {
     fd.append('file', f);
     fd.append('key', apiKey());
     fd.append('enc', $('#jpEnc').value);
+    fd.append('where', $('#jpWhere').value);
     const r = await fetch('/api/translate', {method:'POST', body:fd});
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || r.statusText);
@@ -508,7 +535,7 @@ $('#btnJp').onclick = async () => {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 
     const 이름 = Object.entries(d.names || {}).map(([a,b]) => a + '→' + b).join(' · ');
-    m.textContent = `${d.name} 내려받았습니다 · 전체 ${d.lines}줄 중 일본어 ${d.targets}줄, `
+    m.textContent = `${d.name} 내려받았습니다 (${d.where} · ${d.model}) · 전체 ${d.lines}줄 중 일본어 ${d.targets}줄, `
       + `옮김 ${d.done}줄` + (d.failed ? ` · 원문 유지 ${d.failed}줄(다시 눌러 보세요)` : '')
       + ` · 원본 인코딩 ${d.enc_in}`
       + (d.lost ? ` · ${d.enc} 로 못 적은 글자 ${d.lost}자` : '')

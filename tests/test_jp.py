@@ -177,3 +177,132 @@ def test_번역기를_붙여도_단순형_요청은_그대로다():
         assert "system" not in got, key
         assert [m["role"] for m in got["messages"]] == ["user"], key
         assert got["model"] == llm.model_for(llm.provider_of(key))
+
+
+def _가짜_LM_스튜디오():
+    """LM Studio 흉내를 내는 서버. `/v1/models` 와 `/v1/chat/completions` 만 낸다.
+
+    진짜 번역 대신 앞에 표시만 붙여 돌려준다 — 여기서 볼 것은 번역 품질이 아니라
+    **개수와 순서와 모양**이다.
+    """
+    import json
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _send(self, obj):
+            b = json.dumps(obj).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            if self.path.endswith("/models"):
+                self._send({"data": [{"id": "gemma-3-12b-it"}]})
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            H.받은것.append(req)
+            본문 = req["messages"][-1]["content"]
+            글 = 본문[0]["text"] if isinstance(본문, list) else 본문
+            줄 = re.findall(r"^\d+\. (.*)$", 글, re.M)
+            self._send({"choices": [{"message": {"content":
+                        json.dumps(["옮김:" + x for x in 줄], ensure_ascii=False)}}]})
+
+    H.받은것 = []
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, H.받은것
+
+
+def test_내_컴퓨터의_LM_스튜디오로_번역한다():
+    """사장님 지시 — *"내 여기 컴퓨터에 LM 스튜디오와 로컬 a.i 젬마 모델이 설치되어
+    있거든? 그걸로 번역하게 만들어보자. 지금의 오픈 api가 아니라."*
+
+    LM Studio 는 OpenAI 와 **똑같은 모양의 서버**를 연다. 그래서 갈아 끼울 것이
+    주소 하나뿐이다. 키도 안 본다.
+    """
+    import asyncio
+    import base64
+    import os
+
+    from app import jp
+    from app.server import api_translate, translate_local
+
+    srv, 받은것 = _가짜_LM_스튜디오()
+    os.environ["LM_BASE"] = f"http://127.0.0.1:{srv.server_port}/v1"
+    try:
+        # ① 화면이 켜질 때 — **뭐가 올라와 있는지 물어본다.** 사람이 안 적는다
+        got = translate_local()
+        assert got["ready"] and got["models"] == ["gemma-3-12b-it"], got
+        assert got["chunk"] == jp.local_chunk()
+
+        # ② 실제 번역 — 태그·들여쓰기·줄끝이 한 글자도 안 바뀌어야 한다
+        원본 = ("<BGM_PLAY>bgm721,1000\r\n"
+               "<NAME_PLATE>凜子\r\n"
+               "//【対魔忍】\r\n"
+               "「本当だな？\r\n"
+               "　こんな……」\r\n"
+               "<SE_PLAY>se01\r\n")
+
+        class F:
+            filename = "script.txt"
+
+            async def read(self):
+                return 원본.encode("cp932")
+
+        d = asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
+        out = base64.b64decode(d["b64"]).decode("utf-8")
+
+        assert d["where"] == "내 컴퓨터" and d["model"] == "gemma-3-12b-it"
+        assert d["enc_in"] == "cp932", "Shift-JIS 를 못 읽었다"
+        assert (d["lines"], d["targets"], d["done"], d["failed"]) == (6, 4, 4, 0), d
+        assert out == ("<BGM_PLAY>bgm721,1000\r\n"
+                       "<NAME_PLATE>옮김:凜子\r\n"
+                       "//옮김:【対魔忍】\r\n"
+                       "옮김:「本当だな？\r\n"
+                       "　옮김:こんな……」\r\n"
+                       "<SE_PLAY>se01\r\n"), repr(out)
+
+        # ③ 보낸 모양 — 주소·모델·지시문 자리
+        보냄 = 받은것[-1]
+        assert 보냄["model"] == "gemma-3-12b-it"
+        assert [m["role"] for m in 보냄["messages"]] == ["system", "user"]
+        # 내 컴퓨터 서버는 옛 이름만 안다
+        assert "max_tokens" in 보냄 and "max_completion_tokens" not in 보냄
+    finally:
+        os.environ.pop("LM_BASE", None)
+        srv.shutdown()
+
+
+def test_LM_스튜디오가_꺼져_있으면_그렇다고_말한다():
+    """켜는 법까지 적어 준다. *"안 됩니다"* 만 뜨면 무엇을 해야 할지 모른다."""
+    import asyncio
+    import os
+
+    import pytest
+    from fastapi import HTTPException
+
+    from app.server import api_translate, translate_local
+
+    os.environ["LM_BASE"] = "http://127.0.0.1:9/v1"   # 아무도 안 듣는 포트
+    try:
+        assert translate_local()["ready"] is False
+
+        class F:
+            filename = "a.txt"
+
+            async def read(self):
+                return "「本当だな？\n".encode()
+
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
+        assert "LM Studio" in e.value.detail and "Start Server" in e.value.detail
+    finally:
+        os.environ.pop("LM_BASE", None)

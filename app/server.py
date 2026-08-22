@@ -331,7 +331,7 @@ JSON 배열 하나만 출력하라. 설명도 코드펜스도 붙이지 마라. 
 
 
 def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
-         model: str = "") -> dict:
+         model: str = "", base: str = "", timeout: int = 180) -> dict:
     """모델에 한 번 물어본다. 회사 차이는 llm 이 다 흡수한다.
 
     길이 상한의 이름만 예외다. OpenAI 쪽에서 `max_completion_tokens` 로 바뀌었는데
@@ -343,10 +343,10 @@ def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
 
     for legacy in (False, True):
         url, headers, body = llm.build(key, parts, max_tokens, legacy_cap=legacy,
-                                       model=model)
+                                       model=model, base=base)
         try:
             with urllib.request.urlopen(
-                urllib.request.Request(url, data=body, headers=headers), timeout=180
+                urllib.request.Request(url, data=body, headers=headers), timeout=timeout
             ) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
@@ -354,8 +354,13 @@ def _ask(key: str, parts: list[tuple[str, str]], max_tokens: int = 8000,
             retry = not legacy and llm.provider_of(key) == llm.OPENAI and "max_completion_tokens" in detail
             if retry:
                 continue
-            raise HTTPException(502, f"{llm.label(key)} API 호출 실패 ({e.code}): {detail}") from e
+            어디 = "내 컴퓨터 서버" if base else f"{llm.label(key)} API"
+            raise HTTPException(502, f"{어디} 호출 실패 ({e.code}): {detail}") from e
         except Exception as e:
+            if base:
+                raise HTTPException(
+                    502, f"내 컴퓨터 서버({base}) 에 닿지 못했습니다: {e}\n"
+                         "LM Studio 를 켜고 Developer → Start Server 를 눌렀는지 봐 주세요.") from e
             raise HTTPException(502, f"{llm.label(key)} API 에 닿지 못했습니다: {e}") from e
     raise HTTPException(502, "API 호출에 실패했습니다.")
 
@@ -539,15 +544,19 @@ def reset():
 
 
 @app.post("/api/translate")
-async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("utf-8")):
+async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("utf-8"),
+                        where: str = Form("api"), model: str = Form("")):
     """일본어 스크립트 txt → 한국어 txt. **변환기와 코드가 안 섞인다** (`jp.py` 머리말).
 
     모양을 지키는 일은 전부 `jp.py` 가 하고, 모델에게는 번역할 글자만 간다.
     묶음 하나가 실패하면 **그 묶음만 원문 그대로** 남기고 계속한다 — 한 군데
     때문에 파일 전체를 못 쓰게 만들지 않는다.
     """
+    # 어디서 돌릴지 — 회사 API 냐 내 컴퓨터냐. **키를 안 봐도 되는 쪽이 있다.**
+    로컬 = where == "local"
+    base = jp.local_base() if 로컬 else ""
     api = (key or "").strip() or llm.key_from_env()
-    if not api:
+    if not 로컬 and not api:
         raise HTTPException(400, "API 키가 필요합니다")
     if enc not in jp.ENCODINGS:
         raise HTTPException(400, f"모르는 인코딩입니다: {enc}")
@@ -561,7 +570,18 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
     if not todo:
         raise HTTPException(400, "일본어가 한 글자도 없습니다")
 
-    model = jp.model_for(api)
+    if 로컬:
+        # 사람이 모델 이름을 적게 하지 않는다 — LM Studio 에 뭐가 올라와 있는지 묻는다.
+        올라온것 = jp.local_models(base)
+        model = (model or "").strip() or (올라온것[0] if 올라온것 else "")
+        if not model:
+            raise HTTPException(
+                400, f"내 컴퓨터 서버({base}) 에서 모델을 못 찾았습니다.\n"
+                     "LM Studio 를 켜고 모델을 올린 뒤 Developer → Start Server 를 눌러 주세요.")
+        묶음크기, 시간 = jp.local_chunk(), 900
+    else:
+        model = (model or "").strip() or jp.model_for(api)
+        묶음크기, 시간 = jp.CHUNK, 180
     done: dict[int, str] = {}
     실패 = 0
 
@@ -570,21 +590,24 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
     이름 = jp.names(lines)
     if 이름:
         got = jp.take(
-            llm.extract(api, _ask(api, jp.name_parts(이름), max_tokens=1000, model=model))[0],
+            llm.extract(api, _ask(api, jp.name_parts(이름), max_tokens=1000,
+                                  model=model, base=base, timeout=시간))[0],
             len(이름),
         )
         if got:
             표 = dict(zip(이름, got))
     print(f"[번역] {file.filename} · {enc_in} · {len(lines)}줄 중 {len(todo)}줄 "
-          f"· 이름 {len(표)}개 · {model or llm.label(api)}")
+          f"· 이름 {len(표)}개 · {'내 컴퓨터' if 로컬 else llm.label(api)} · {model} "
+          f"· {묶음크기}줄씩")
 
     # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
-    for a in range(0, len(todo), jp.CHUNK):
-        묶음 = todo[a : a + jp.CHUNK]
+    for a in range(0, len(todo), 묶음크기):
+        묶음 = todo[a : a + 묶음크기]
         원문 = [lines[i].body for i in 묶음]
         try:
             reply, _stop = llm.extract(
-                api, _ask(api, jp.line_parts(원문, 표), max_tokens=8000, model=model)
+                api, _ask(api, jp.line_parts(원문, 표), max_tokens=8000,
+                          model=model, base=base, timeout=시간)
             )
         except HTTPException as e:
             print(f"[번역] {a}~ 묶음 실패 — {e.detail}")
@@ -617,7 +640,17 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         "failed": 실패,
         "names": 표,
         "model": model,
+        "where": "내 컴퓨터" if 로컬 else llm.label(api),
     }
+
+
+@app.get("/api/translate/local")
+def translate_local():
+    """내 컴퓨터 서버에 **뭐가 올라와 있나.** 화면이 켜질 때 한 번 물어본다."""
+    base = jp.local_base()
+    models = jp.local_models(base)
+    return {"base": base, "models": models, "ready": bool(models),
+            "chunk": jp.local_chunk()}
 
 
 def main() -> None:

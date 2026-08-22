@@ -44,6 +44,22 @@ NAME_TAGS = ("<NAME_PLATE>",)
 #: 한 번에 보낼 줄 수. 너무 크면 답이 잘리고, 너무 작으면 앞뒤 맥락이 끊긴다.
 CHUNK = 60
 
+#: **내 컴퓨터 모델은 더 잘게 보낸다.** 이 일에서 제일 어려운 지시는 번역이
+#: 아니라 *"받은 줄 수와 돌려주는 줄 수를 똑같이 하라"* 인데, 작은 모델일수록
+#: 60줄을 세다가 틀린다. 개수가 틀리면 그 묶음은 통째로 원문으로 남는다
+#: (`take` 가 `None` 을 돌려준다) — 잘게 보내면 틀려도 잃는 줄이 적다.
+#:
+#: ⚠️ **20 은 재 본 값이 아니다.** 사장님 컴퓨터의 젬마가 몇 B 짜리인지에 따라
+#: 다르다. 원문 유지가 많이 나오면 줄이고, 하나도 안 나오면 올리시면 된다 —
+#:
+#:     JP_CHUNK=10   더 안전하게 (부르는 횟수가 늘어 느려짐)
+#:     JP_CHUNK=40   더 빠르게 (개수 틀릴 위험 커짐)
+CHUNK_LOCAL = 20
+
+#: 내 컴퓨터에서 도는 서버 주소. LM Studio 의 기본값이다.
+#: (LM Studio → Developer → Start Server 를 켜면 여기서 듣는다)
+LOCAL_BASE = "http://localhost:1234/v1"
+
 #: 내려받을 때 고를 수 있는 인코딩. 원본이 무엇이든 한국어가 들어가므로
 #: Shift-JIS 로는 돌려줄 수 없다.
 ENCODINGS = ("utf-8", "utf-8-sig", "cp949")
@@ -77,6 +93,40 @@ def model_for(key: str) -> str:
     if llm.provider_of(key) != llm.OPENAI:
         return ""      # 빈 값이면 `llm.build` 가 제 기본 모델을 쓴다
     return os.environ.get("JP_MODEL", "").strip() or MODEL_OPENAI
+
+
+def local_base() -> str:
+    """내 컴퓨터 서버 주소. `LM_BASE` 로 바꿀 수 있다(포트를 옮겼을 때)."""
+    import os
+
+    return os.environ.get("LM_BASE", "").strip() or LOCAL_BASE
+
+
+def local_chunk() -> int:
+    """내 컴퓨터 모델에 한 번에 보낼 줄 수. 근거는 `CHUNK_LOCAL` 위에."""
+    import os
+
+    n = os.environ.get("JP_CHUNK", "").strip()
+    return int(n) if n.isdigit() and int(n) > 0 else CHUNK_LOCAL
+
+
+def local_models(base: str = "", timeout: float = 4.0) -> list[str]:
+    """LM Studio 에 **뭐가 올라와 있는지 물어본다.** 못 닿으면 빈 목록.
+
+    사람이 모델 이름을 손으로 적게 하지 않는다 — 적게 하면 반드시 오타가 난다.
+    LM Studio 는 OpenAI 와 같은 `/v1/models` 를 낸다.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    url = (base or local_base()).rstrip("/") + "/models"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            got = _json.loads(resp.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return []
+    return [str(x.get("id")) for x in (got.get("data") or []) if x.get("id")]
 
 
 @dataclass
