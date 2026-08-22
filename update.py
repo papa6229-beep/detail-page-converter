@@ -104,9 +104,10 @@ def pull(quiet: bool = False) -> bool:
         _git("fetch", "--all", "--prune")
         upstream = _git("rev-parse", "--abbrev-ref", "@{u}").stdout.strip()
         if not upstream or _git("reset", "--hard", upstream).returncode != 0:
-            if not quiet:
-                print("  갱신하지 못했습니다:")
-                print("  " + (result.stderr or result.stdout).strip()[:400])
+            # **quiet 여부와 무관하게 말한다.** 조용히 실패하면 옛 코드가 도는 줄
+            # 모른 채 결과물만 보고 원인을 엉뚱한 데서 찾게 된다. 실제로 그랬다.
+            print("  갱신하지 못했습니다:")
+            print("  " + (result.stderr or result.stdout).strip()[:400])
             return False
 
     after = _git("rev-parse", "HEAD").stdout.strip()

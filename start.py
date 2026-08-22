@@ -75,22 +75,56 @@ def open_browser_later(url: str) -> None:
     threading.Timer(2.5, lambda: webbrowser.open(url)).start()
 
 
+def 지금코드() -> str:
+    """지금 돌고 있는 코드가 무엇인지 한 줄로. git 이 아니면 빈 문자열.
+
+    ⚠️ **이게 없어서 옛 코드가 도는 줄 모르고 한참을 헤맸다.** 규칙을 바꿔
+    올렸는데 결과물이 옛 규칙 그대로였고, 화면 어디에도 무슨 코드가 도는지
+    안 나와서 사장님이 확인할 방법이 없었다. 켤 때마다 찍는다.
+    """
+    import subprocess
+
+    try:
+        r = subprocess.run(["git", "log", "--oneline", "-1"], cwd=str(ROOT),
+                           capture_output=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    # 한국어 윈도우에서 text=True 로 받으면 cp949 로 풀다 터진다. 바이트로 받는다.
+    return r.stdout.decode("utf-8", "replace").strip() if r.returncode == 0 else ""
+
+
 def auto_update() -> None:
     """켤 때 알아서 최신으로 당긴다.
 
     zip 을 매번 다시 받는 것이 가장 불편한 지점이었다. git 으로 받아 두면
     바뀐 것만 조용히 따라온다. 직접 고친 내용이 있으면 건드리지 않는다.
     CONVERTER_NO_UPDATE=1 이면 건너뛴다.
+
+    ⚠️ **안 됐으면 왜 안 됐는지 반드시 말한다.** 예전에는 `except Exception:
+    pass` 로 통째로 삼켰다. 그래서 갱신이 조용히 안 되고 있어도 아무도 몰랐다.
+    실행을 막지는 않되, 입은 다물지 않는다.
     """
     if os.environ.get("CONVERTER_NO_UPDATE"):
+        print("  CONVERTER_NO_UPDATE 가 켜져 있어 갱신을 건너뜁니다.")
         return
     try:
         import update
-
-        if update.is_clone() and update.has_git() and update.pull(quiet=True):
+    except Exception as e:
+        print(f"  [!] 갱신 코드를 못 읽었습니다 — {type(e).__name__}: {e}")
+        return
+    if not update.is_clone():
+        print("  이 폴더는 zip 을 푼 것이라 자동 갱신이 안 됩니다.")
+        print("  git 으로 받아 두면 켤 때마다 알아서 최신이 됩니다 (README 의 '코드 받기').")
+        return
+    if not update.has_git():
+        print("  git 이 없어 자동 갱신을 못 합니다.")
+        print("  https://git-scm.com/download/win 에서 설치하면 됩니다.")
+        return
+    try:
+        if update.pull(quiet=True):
             print()
-    except Exception:
-        pass  # 갱신 실패가 실행을 막지는 않는다
+    except Exception as e:
+        print(f"  [!] 갱신 중 문제가 있었습니다 — {type(e).__name__}: {e}")
 
 
 def main() -> int:
@@ -100,6 +134,11 @@ def main() -> int:
     print("  " + "-" * 36)
     print()
     auto_update()
+
+    코드 = 지금코드()
+    if 코드:
+        print(f"  지금 도는 코드 : {코드}")
+        print()
 
     if sys.version_info < (3, 10):
         print(f"  [!] 파이썬 3.10 이상이 필요합니다. 지금은 {sys.version.split()[0]} 입니다.")
