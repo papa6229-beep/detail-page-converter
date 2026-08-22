@@ -380,3 +380,110 @@ def test_못_읽은_답을_화면에_보여_준다():
     finally:
         os.environ.pop("LM_BASE", None)
         srv.shutdown()
+
+
+def test_줄_안쪽_명령과_변수는_모델에게_안_보낸다():
+    """사장님 지시 — *"텍스트에 무슨 기호건 괄호건 막 있어도 그런건 다 그대로
+    유지하고 딱 일본어 부분만 한글로 변환하는거?"*
+
+    ⚠️ **절반만 지키고 있었다.** 줄 바깥(태그·들여쓰기·줄끝)은 코드가 지키는데,
+    줄 **안쪽**의 `[r]` `%name%` `\\n` 은 모델에게 보내 놓고 *"그대로 둬라"* 고
+    **부탁만** 했다. 부탁은 보장이 아니다 — 가려서 보내고 되돌린다.
+    """
+    from app.jp import HOLE, mask, unmask
+
+    for 원문, 가릴것 in [
+        ("「……ほ、本当だな？[r]", ["[r]"]),
+        (r"%name%は「こんな……」と言った。\n", ["%name%", r"\n"]),
+        ("本当に<r>そうなのか？", ["<r>"]),
+        ('[ruby text="りんこ"]凜子[endruby]が来た！', ["[endruby]"]),
+    ]:
+        가린것, 보관 = mask(원문)
+        assert 보관 == 가릴것, (원문, 보관)
+        for x in 가릴것:
+            assert x not in 가린것, f"{x} 가 모델에게 그대로 간다"
+        assert unmask(가린것, 보관) == 원문
+
+    # **일본어가 든 덩어리는 안 가린다** — 그건 명령이 아니라 옮길 글이다
+    assert mask("【対魔忍】秋山凜子　Ｈ１")[1] == []
+    assert mask('[ruby text="りんこ"]')[1] == [], "일본어가 든 대괄호를 가렸다"
+
+    # 모델이 표시를 지우거나 바꾸면 **되돌릴 수 없다** → 그 줄은 원문 유지
+    assert unmask("표시가 사라진 번역", ["[r]"]) is None
+    assert unmask(f"{HOLE}9{HOLE} 번호가 바뀜", ["[r]"]) is None
+
+
+def test_기호가_잔뜩인_스크립트를_끝까지_돌려_본다():
+    """가린 것 · 안 가린 것 · 안 보낸 것이 **한 파일에서 동시에** 맞아야 한다."""
+    import asyncio
+    import base64
+    import json
+    import os
+    import re
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    from app.server import api_translate
+
+    바꿈 = {"本当だな": "정말이야", "こんな": "이런", "と言った": "라고 말했다",
+           "が来た": "가 왔다", "対魔忍": "대마인", "秋山凜子": "아키야마 린코",
+           "凜子": "린코", "は": "는"}
+
+    class H(BaseHTTPRequestHandler):
+        def log_message(self, *a):
+            pass
+
+        def _s(self, o):
+            b = json.dumps(o).encode()
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(b)))
+            self.end_headers()
+            self.wfile.write(b)
+
+        def do_GET(self):
+            self._s({"data": [{"id": "supergemma4-26b"}]})
+
+        def do_POST(self):
+            req = json.loads(self.rfile.read(int(self.headers["content-length"])))
+            본문 = req["messages"][-1]["content"]
+            글 = 본문[0]["text"] if isinstance(본문, list) else 본문
+            out = []
+            for x in re.findall(r"^\d+\. (.*)$", 글, re.M):
+                for a, b in 바꿈.items():
+                    x = x.replace(a, b)
+                out.append(x)
+            # 진짜 Reasoning 모델처럼 생각과 군말을 붙여 돌려준다
+            self._s({"choices": [{"message": {"content":
+                     "<think>대사니까 반말로 [주의]</think>\n네:\n"
+                     + json.dumps(out, ensure_ascii=False)}}]})
+
+    srv = HTTPServer(("127.0.0.1", 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    os.environ["LM_BASE"] = f"http://127.0.0.1:{srv.server_port}/v1"
+    try:
+        원본 = ("<BGM_PLAY>bgm721,1000\r\n"
+               "<NAME_PLATE>凜子\r\n"
+               "//【対魔忍】秋山凜子　Ｈ１\r\n"
+               "　「……ほ、本当だな？[r]\r\n"
+               "\t%name%は「こんな……」と言った。\\n\r\n"
+               "@wait time=500\r\n")
+
+        class F:
+            filename = "script.txt"
+
+            async def read(self):
+                return 원본.encode("utf-8")
+
+        d = asyncio.run(api_translate(F(), key="", enc="utf-8", where="local", model=""))
+        out = base64.b64decode(d["b64"]).decode()
+        assert (d["targets"], d["done"], d["failed"]) == (4, 4, 0), d
+        assert out == ("<BGM_PLAY>bgm721,1000\r\n"          # 일본어 없음 — 안 보냄
+                       "<NAME_PLATE>린코\r\n"                # 태그는 그대로
+                       "//【대마인】아키야마 린코　Ｈ１\r\n"      # 【】· 전각공백 그대로
+                       "　「……ほ、정말이야？[r]\r\n"           # 전각 들여쓰기 · [r] 그대로
+                       "\t%name%는「이런……」라고 말했다。\\n\r\n"  # \t · %name% · \n 그대로
+                       "@wait time=500\r\n"), repr(out)     # 일본어 없음 — 안 보냄
+    finally:
+        os.environ.pop("LM_BASE", None)
+        srv.shutdown()

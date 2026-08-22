@@ -606,7 +606,10 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
     # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
     for a in range(0, len(todo), 묶음크기):
         묶음 = todo[a : a + 묶음크기]
-        원문 = [lines[i].body for i in 묶음]
+        # **줄 안쪽 명령·변수를 가려서 보낸다.** `[r]` `%name%` `\n` 같은 것을
+        # 모델이 옮기거나 지우면 스크립트가 안 돈다. 부탁 대신 가린다.
+        가린것 = [jp.mask(lines[i].body) for i in 묶음]
+        원문 = [x for x, _ in 가린것]
         try:
             reply, _stop = llm.extract(
                 api, _ask(api, jp.line_parts(원문, 표), max_tokens=길이,
@@ -624,7 +627,17 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
             본것 = 본것 or (reply or "(빈 답)")[:600]
             실패 += len(묶음)
             continue
-        done.update(dict(zip(묶음, got)))
+
+        # 가린 것을 되돌린다. **하나라도 사라졌으면 그 줄은 원문 그대로.**
+        # 명령이 빠진 스크립트는 안 도는 것이라 반쯤 옮긴 것보다 원문이 낫다.
+        for 자리, 옮긴것, (_가림, 보관) in zip(묶음, got, 가린것):
+            되돌린것 = jp.unmask(옮긴것, 보관)
+            if 되돌린것 is None:
+                print(f"[번역] {자리}줄 — 명령 {보관} 이 사라져 원문 유지")
+                본것 = 본것 or f"(명령이 사라짐) {옮긴것[:200]}"
+                실패 += 1
+                continue
+            done[자리] = 되돌린것
 
     out = jp.build(lines, done)
     name = Path(file.filename or "script.txt").stem
