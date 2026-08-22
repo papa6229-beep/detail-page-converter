@@ -566,9 +566,13 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         raise HTTPException(400, "빈 파일입니다")
     text, enc_in = jp.decode(raw)
     lines = jp.parse(text)
-    todo = [i for i, ln in enumerate(lines) if ln.target]
+    # **「 」 사이만 옮긴다.** 지문·화자 이름은 일본어로 남는다 — 사장님 지시다
+    # (`jp.targets` 머리말에 그대로 적어 뒀다).
+    todo = jp.targets(text, lines)
     if not todo:
-        raise HTTPException(400, "일본어가 한 글자도 없습니다")
+        raise HTTPException(
+            400, "「 」 안에 일본어가 한 군데도 없습니다.\n"
+                 "이 번역기는 「 와 」 사이만 옮깁니다.")
 
     if 로컬:
         # 사람이 모델 이름을 적게 하지 않는다 — LM Studio 에 뭐가 올라와 있는지 묻는다.
