@@ -26,11 +26,22 @@ from app import jp
 )
 
 
+#: 같은 대본이 **한 줄짜리 JSON 덩어리**로 오는 경우. 사장님이 실제로 올리신 모양.
+샘플_JSON = (
+    'sceneData={"0001_1":{"SCRIPTS":{"PART1":{"SCRIPT":['
+    '"<BGM_PLAY>bgm721,1000","<NAME_PLATE>凜子",'
+    '"「……ほ、本当だな？","本当の本当に、こんな……コトでッ！？」","<PAUSE>"]}}}}'
+)
+
+
 def test_아무것도_안_옮기면_원문_그대로다():
-    """제일 중요한 검사다. 구조 계층이 한 글자라도 흘리면 여기서 걸린다."""
-    lines = jp.parse(샘플)
-    assert jp.build(lines, {}) == 샘플
-    assert len(lines) == 10
+    """제일 중요한 검사다. 구조 계층이 한 글자라도 흘리면 여기서 걸린다.
+
+    **파일 모양을 안 가린다** — 줄로 나뉜 txt 도, 한 줄짜리 JSON 덩어리도
+    되붙이면 원문과 한 글자도 안 달라야 한다.
+    """
+    for 글 in (샘플, 샘플_JSON):
+        assert jp.build(jp.parse(글), {}) == 글
 
 
 def test_줄끝을_먼저_떼어_낸다():
@@ -72,8 +83,7 @@ def test_화자_이름은_나온_차례대로_한_번씩():
 
 
 def test_옮긴_것을_제자리에_끼운다():
-    lines = jp.parse(샘플)
-    got = jp.build(lines, {5: "린코", 6: "「……저, 정말이지?"})
+    got = jp.build(jp.parse(샘플), {10: "린코", 12: "「……저, 정말이지?"})
     assert "<NAME_PLATE>린코\r\n" in got
     assert "「……저, 정말이지?\r\n" in got
     # 손 안 댄 줄은 그대로
@@ -81,6 +91,26 @@ def test_옮긴_것을_제자리에_끼운다():
     assert "　本当の本当に、こんな……コトでッ！？」\r\n" in got
     # 줄 수는 안 변한다
     assert got.count("\r\n") == 샘플.count("\r\n")
+
+
+def test_한_줄짜리_JSON_덩어리도_제자리에_끼운다():
+    """사장님 지시 — *"json으로 어렵게 굽고 그럴 필요 있어? 그냥 형태가 json형태건
+    어쨌건 txt파일이잖아"*
+
+    JSON 으로 읽고 다시 굽지 않는다. **따옴표 사이의 일본어만 바꿔 끼운다.**
+    뼈대(`sceneData={` · `,` · `"SCRIPT"`)는 한 글자도 안 움직인다.
+    """
+    got = jp.build(jp.parse(샘플_JSON), {22: "린코", 26: "「……저, 정말이지?"})
+
+    assert '"<NAME_PLATE>린코"' in got
+    assert '"「……저, 정말이지?"' in got
+    # 뼈대는 그대로 — 따옴표도 쉼표도 대괄호도 안 건드린다
+    assert got.startswith('sceneData={"0001_1":{"SCRIPTS":{"PART1":{"SCRIPT":[')
+    assert got.endswith('"<PAUSE>"]}}}}')
+    assert '"<BGM_PLAY>bgm721,1000"' in got
+    assert got.count('"') == 샘플_JSON.count('"')
+    # 안 옮긴 것은 일본어 그대로
+    assert '"本当の本当に、こんな……コトでッ！？」"' in got
 
 
 def test_개수가_안_맞으면_통째로_버린다():
@@ -262,7 +292,7 @@ def test_내_컴퓨터의_LM_스튜디오로_번역한다():
 
         assert d["where"] == "내 컴퓨터" and d["model"] == "gemma-3-12b-it"
         assert d["enc_in"] == "cp932", "Shift-JIS 를 못 읽었다"
-        assert (d["lines"], d["targets"], d["done"], d["failed"]) == (6, 4, 4, 0), d
+        assert (d["targets"], d["done"], d["failed"]) == (4, 4, 0), d
         assert out == ("<BGM_PLAY>bgm721,1000\r\n"
                        "<NAME_PLATE>옮김:凜子\r\n"
                        "//옮김:【対魔忍】\r\n"

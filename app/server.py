@@ -599,9 +599,9 @@ async def api_translate(file: UploadFile, key: str = Form(""), enc: str = Form("
         )
         if got:
             표 = dict(zip(이름, got))
-    print(f"[번역] {file.filename} · {enc_in} · {len(lines)}줄 중 {len(todo)}줄 "
+    print(f"[번역] {file.filename} · {enc_in} · 토막 {len(lines)}개 중 일본어 {len(todo)}군데 "
           f"· 이름 {len(표)}개 · {'내 컴퓨터' if 로컬 else llm.label(api)} · {model} "
-          f"· {묶음크기}줄씩 · 최대 {길이}토큰")
+          f"· {묶음크기}개씩 · 최대 {길이}토큰")
 
     # ② 나머지를 묶음으로. 이름 표를 매번 같이 보낸다.
     for a in range(0, len(todo), 묶음크기):

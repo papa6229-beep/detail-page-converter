@@ -536,8 +536,8 @@ $('#btnJp').onclick = async () => {
     setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 
     const 이름 = Object.entries(d.names || {}).map(([a,b]) => a + '→' + b).join(' · ');
-    m.textContent = `${d.name} 내려받았습니다 (${d.where} · ${d.model}) · 전체 ${d.lines}줄 중 일본어 ${d.targets}줄, `
-      + `옮김 ${d.done}줄` + (d.failed ? ` · 원문 유지 ${d.failed}줄(다시 눌러 보세요)` : '')
+    m.textContent = `${d.name} 내려받았습니다 (${d.where} · ${d.model}) · 일본어 ${d.targets}군데 중 `
+      + `옮김 ${d.done}군데` + (d.failed ? ` · 원문 유지 ${d.failed}군데(다시 눌러 보세요)` : '')
       + ` · 원본 인코딩 ${d.enc_in}`
       + (d.lost ? ` · ${d.enc} 로 못 적은 글자 ${d.lost}자` : '')
       + (이름 ? `\n이름: ${이름}` : '')
