@@ -60,6 +60,17 @@ class Shot:
     solo: float       #: 가장 큰 덩어리가 어두운 화소에서 차지하는 몫 — 제품이 하나인가
     area: int
     band: int = -1    #: 몇 번 밴드에서 나왔나
+    #: 배경(밝은 쪽)의 평균 채도. **배경이 흰가 · 옅은 색인가 · 진한 색인가**를 가른다.
+    #: `design` 은 못 가른다 — 페이지 바닥에 색이 깔리면 옅든 진하든 다 1.0 에 붙는다.
+    bg_sat: float = 0.0
+    #: 배경이 아닌 화소의 몫. 넓이를 잴 때 쓴다 — `ink` 는 **어둡고 채도 낮은** 것만
+    #: 세어서 파란 제품을 거의 0 으로 본다(브루스). 색 있는 제품에는 이쪽이 맞다.
+    subject: float = 0.0
+
+    @property
+    def subject_pixels(self) -> float:
+        """제품이 찍힌 넓이 — 색을 안 가린다."""
+        return self.area * self.subject
 
     @property
     def size(self) -> tuple[int, int]:
@@ -87,7 +98,12 @@ def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
     ink = float(((lum < 115) & (sat < 40)).mean())
     letters, solo = _blobs(lum)
     area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
-    return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band)
+    # 배경은 **밝은 쪽 40%** 로 본다. 제품을 빼고 바닥만 남기려는 것이다.
+    bright = lum >= np.percentile(lum, 60)
+    bg_sat = float(sat[bright].mean()) if bright.any() else 0.0
+    subject = float(((lum < 232) | (sat >= 45)).mean())
+    return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band,
+                bg_sat=bg_sat, subject=subject)
 
 
 def _densest(mask: np.ndarray) -> float:
@@ -318,6 +334,132 @@ def pick_hero_relaxed(cands: list[Shot]) -> Shot | None:
     return max(clean, key=lambda c: c.product_pixels)
 
 
+# ── 등급 ────────────────────────────────────────────────────────────────
+#
+#   A  배경이 비어 있음(흰색) · 글자 없음 · 제품 하나        누끼 단독컷
+#   B  배경에 옅은 색 · 손이 잡음 · 거치대 등 소품            누끼 연출컷
+#   C  그 밖 (색 배경 진함 · 글자 박힘 · 여러 제품)
+#
+# 잣대는 하나고 등급만 셋이다. 실측 (핑거위글 img1 · 브루스, 눈으로 매긴 등급과 맞춰) —
+#
+#                       배경채도  글자  제품하나   눈으로
+#   핑거위글 b9            0.9     0    1.000     A 누끼 단독
+#   핑거위글 b19           4.7     0    0.999     A 누끼(케이블만)
+#   브루스   b21           1.1     7    0.994     A 누끼 단독
+#   ────────────────────────────────────────────────────────
+#   핑거위글 b5·b25        0.0    24    0.946     B 거치대+리모컨
+#   핑거위글 b2            0.0    21    0.985     B 손이 잡음
+#   브루스   b19           1.7    13    0.981     B 파우치+케이블
+#   ────────────────────────────────────────────────────────
+#   핑거위글 b12           0.0    42    0.703     C 치수 도해(글자)
+#   핑거위글 b22           0.0     7    0.499     C 제품 둘
+#   브루스   b2            8.9     1    1.000     C 보라 배경 진함
+#   브루스   b3·b4        44.2/36.4                C 색판 위 표
+#
+#: 배경이 "비어 있다"고 볼 채도. 흰 바탕은 0~5, 진한 색 배경은 9 위다.
+A_BG_SAT = 6.0
+#: 글자가 "없다"고 볼 개수. 누끼컷은 0~7, 주석이 붙으면 13 위로 뛴다.
+A_LETTERS = 8
+#: 배경에 색이 깔려도 **옅으면** 연출컷으로 본다. 브루스 보라 배경(8.9)부터는 C.
+B_BG_SAT = 8.0
+#: 손이 잡거나 소품이 끼면 덩어리가 갈린다. 제품 둘(0.499)까지 내려가면 C.
+B_SOLO = 0.60
+
+
+def grade(s: Shot) -> str:
+    """후보 한 장의 등급 A · B · C."""
+    if not (0.03 <= s.ink <= 0.75) and s.subject < 0.05:
+        return "C"                                    # 제품이 안 보인다
+    if (s.bg_sat <= A_BG_SAT and s.letters <= A_LETTERS
+            and s.solo >= SOLO and s.design < DESIGN_INK * 6):
+        return "A"
+    if (s.bg_sat <= B_BG_SAT and s.letters < TEXT_BAND and s.solo >= B_SOLO):
+        return "B"
+    return "C"
+
+
+def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
+               blocked: set[int] | frozenset = frozenset(),
+               ai_main=None, ai_feature=None) -> tuple[int, int, list[str]]:
+    """대표컷과 키피쳐를 **같은 흐름으로** 고른다. (대표컷 밴드, 키피쳐 밴드, 메모)
+
+    후보는 페이지 전체의 PHOTO·MIXED 밴드. 요약정보 표·TEXT·PROMO 는 뺀다.
+
+        대표컷   A 에서만. A 가 없으면 B 에서 고르고 적는다
+        키피쳐   대표컷을 뺀 나머지에서 A → B 순. C 는 안 쓴다
+                 대표컷과 dHash 가 같으면 건너뛴다 — 같은 사진이 두 번 실린다
+
+    **AI 픽은 먼저 검사하는 후보일 뿐이다.** 통과하면 쓰고, 떨어지면 코드가 고른다.
+    전에는 대표컷에만 재선택이 있고 키피쳐엔 없어서, 모델이 침묵하거나 픽이
+    떨어지면 KEY FEATURE 가 통째로 비었다.
+    """
+    notes: list[str] = []
+    pool = {b: sh for b, sh in shots.items()
+            if b < len(kinds) and kinds[b] in ("PHOTO", "MIXED") and b not in blocked}
+    graded = {b: grade(sh) for b, sh in pool.items()}
+
+    def best(want: str, skip: set[int]) -> int | None:
+        got = [b for b, g in graded.items() if g == want and b not in skip]
+        return max(got, key=lambda b: pool[b].subject_pixels) if got else None
+
+    def same_photo(a: int, b: int) -> bool:
+        ha = hashes[a] if a < len(hashes) else 0
+        hb = hashes[b] if b < len(hashes) else 0
+        return B.hamming(ha, hb) <= B.DUP_HAMMING
+
+    def ai_ok(pick, want: tuple[str, ...], why: str, skip: dict[int, str]) -> int | None:
+        if not isinstance(pick, int):
+            return None
+        if pick not in pool:
+            notes.append(f"{why}: AI 픽 [{pick}] 은 후보가 아니다"
+                         f"({'요약정보 표' if pick in blocked else kinds[pick] if pick < len(kinds) else '범위 밖'})")
+            return None
+        if pick in skip:
+            notes.append(f"{why}: AI 픽 [{pick}] 은 {skip[pick]}")
+            return None
+        if graded[pick] not in want:
+            notes.append(f"{why}: AI 픽 [{pick}] 은 {graded[pick]}등급이라 떨어졌다 — {why_not_hero(pool[pick])}")
+            return None
+        return pick
+
+    # ── 대표컷 ──
+    hero = ai_ok(ai_main, ("A",), "대표컷", {})
+    if hero is None:
+        hero = best("A", set())
+        if hero is not None and ai_main is not None:
+            notes.append(f"대표컷을 A등급에서 다시 골랐다 — 밴드 [{hero}]")
+    if hero is None:
+        hero = best("B", set())
+        if hero is not None:
+            notes.append(f"A등급(누끼 단독컷)이 없어 B등급 밴드 [{hero}] 로 세웠다")
+    if hero is None:
+        hero = best("C", set())
+        if hero is not None:
+            notes.append(f"A·B 가 하나도 없어 C등급 밴드 [{hero}] 로 세웠다 — 눈으로 봐야 한다")
+
+    # ── 키피쳐 ── 대표컷 자신과, 대표컷과 **같은 사진**인 밴드는 건너뛴다
+    skip: dict[int, str] = {}
+    if hero is not None:
+        skip[hero] = "대표컷으로 이미 썼다"
+        for b in pool:
+            if b != hero and same_photo(b, hero):
+                skip[b] = f"대표컷 [{hero}] 과 같은 사진이다"
+    feat = ai_ok(ai_feature, ("A", "B"), "키피쳐", skip)
+    if feat is None:
+        feat = best("A", set(skip)) or best("B", set(skip))
+        if feat is not None and ai_feature is not None:
+            notes.append(f"키피쳐를 다시 골랐다 — 밴드 [{feat}]")
+    if feat is None:
+        notes.append("키피쳐 후보(A·B)가 없다 — 비워 둔다")
+
+    for slot, b in (("대표컷", hero), ("키피쳐", feat)):
+        if b is not None:
+            notes.append(f"{slot} = 밴드 [{b}] · {graded[b]}등급")
+    return (hero if hero is not None else -1,
+            feat if feat is not None else -1,
+            notes)
+
+
 #: 강조색. 고도몰 생성기의 기본값을 그대로 쓴다 (`DEFAULT_THEME_COLOR`).
 ACCENT = "#E11D48"
 
@@ -410,8 +552,11 @@ class Page:
     feature: Path | None = None
     #: 원본 메인섹션이 끝나고 본문이 시작되는 첫 밴드 번호
     body_start: int = 0
-    #: 대표컷으로 세운 밴드 번호. 보고용 — 어느 컷을 세웠는지 사람이 봐야 한다.
+    #: 대표컷·키피쳐로 세운 밴드 번호와 등급. 보고용 — 사람이 봐야 한다.
     main_band: int = -1
+    main_grade: str = ""
+    feature_band: int = -1
+    feature_grade: str = ""
 
 
 #: 사장님이 고정한 다섯 항목. 1행 셋, 2행 둘 — 2행을 왼쪽에 두는 것은
@@ -629,9 +774,9 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
     **잘못된 사진보다 빈 칸이 안전하다.** 손님은 이 그림을 보고 주문한다.
     다만 대표컷만은 예외다 — 비면 페이지가 통째로 무너지므로 다시 고른다.
 
-    `shots` 를 주면 **모델이 고른 것도 검사대를 지난다.** 대표컷은 `clean_hero`,
-    feature 는 `usable_photo`. 모델은 원본 대표컷(컬러 배경 위의 컷)을 곧잘
-    고르는데 그건 우리가 피하려던 바로 그것이다.
+    대표컷과 키피쳐는 `pick_slots` 가 등급(A·B·C)으로 고른다. **모델 픽은 먼저
+    검사하는 후보일 뿐이다** — 통과하면 쓰고 떨어지면 코드가 고른다. 모델은 원본
+    대표컷(컬러 배경 위의 컷)을 곧잘 고르는데 그건 우리가 피하려던 바로 그것이다.
     `blocked` 는 어떤 경우에도 못 쓰는 밴드 — 요약정보 표가 든 자리다.
     """
     m = re.search(r"\{[\s\S]*\}", reply or "")
@@ -646,7 +791,7 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
     hashes = hashes or []
     used: list[int] = []
 
-    def cut(v, why: str, gate=None) -> int | None:
+    def cut(v, why: str) -> int | None:
         """쓸 수 있으면 밴드 번호를, 못 쓰면 None. 막을 때마다 까닭을 적는다."""
         if not isinstance(v, int) or not (0 <= v < len(cuts)):
             return None
@@ -665,34 +810,8 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
             if B.hamming(h, hashes[u] if u < len(hashes) else 0) <= B.DUP_HAMMING:
                 notes.append(f"{why}: [{v}] 는 [{u}] 와 같은 사진이다")
                 return None
-        if gate is not None and shots is not None:
-            s = shots.get(v)
-            if s is None:
-                notes.append(f"{why}: [{v}] 는 잰 값이 없어 검사대를 못 지났다")
-                return None
-            if not gate(s):
-                notes.append(f"{why}: [{v}] 는 검사대에서 떨어졌다 — {why_not_hero(s)}")
-                return None
         used.append(v)
         return v
-
-    def spare_hero() -> int | None:
-        """페이지 전체에서 다시 고른다. PHOTO 먼저, 없으면 MIXED."""
-        if shots is None:
-            return None
-        def pool_of(want: str) -> list[Shot]:
-            return [
-                sh for i, sh in shots.items()
-                if i < len(kinds) and kinds[i] == want and i not in used and i not in blocked
-            ]
-
-        for chooser in (pick_hero, pick_hero_relaxed):
-            for want in ("PHOTO", "MIXED"):
-                best = chooser(pool_of(want))
-                if best is not None:
-                    used.append(best.band)
-                    return best.band
-        return None
 
     spec = {k: str(v).strip() for k, v in (got.get("spec") or got.get("summary") or {}).items()
             if str(v).strip()}
@@ -705,39 +824,20 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
     ][:3]
 
     page = Page(spec=spec, keys=keys)
-    # 자리 순서가 곧 우선권이다. 특징·패키지를 먼저 잡고 대표컷이 그 나머지에서 고르게 한다.
-    fi = cut(got.get("feature"), "특징컷", gate=usable_photo)
     pi = cut(got.get("package"), "패키지")
-    mi = cut(got.get("main"), "대표컷", gate=clean_hero)
-
-    # 대표컷이 비면 페이지가 통째로 무너진다(legacy ⓒ — 결과가 백지로 나왔다).
-    # 모델 픽이 검사대에서 떨어지면 **페이지 전체에서 다시 고른다.**
-    if mi is None:
-        mi = spare_hero()
-        if mi is not None:
-            notes.append(f"대표컷을 다시 골랐다 — 밴드 [{mi}] (깨끗한 단독컷)")
-    if mi is None:
-        quiet: list[str] = []          # 후보를 훑는 동안의 메모는 남기지 않는다
-        for want in ("PHOTO", "MIXED", "UNKNOWN"):
-            for i, kind in enumerate(kinds):
-                if kind != want:
-                    continue
-                keep, notes = notes, quiet
-                spare = cut(i, "대표컷 대신")
-                notes = keep
-                if spare is not None:
-                    mi = spare
-                    notes.append(f"깨끗한 컷이 없어 [{i}]({want}) 로 대신했다")
-                    break
-            if mi is not None:
-                break
-    if mi is None:
-        notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
-
-    page.feature = cuts[fi] if fi is not None else None
     page.package = cuts[pi] if pi is not None else None
-    page.main = cuts[mi] if mi is not None else None
-    page.main_band = mi if mi is not None else -1
+
+    # 대표컷과 키피쳐는 **같은 흐름**으로 고른다. AI 픽은 먼저 검사하는 후보일 뿐이다.
+    mi, fi, slot_notes = pick_slots(shots or {}, kinds, hashes, blocked,
+                                    ai_main=got.get("main"), ai_feature=got.get("feature"))
+    notes += slot_notes
+    page.main = cuts[mi] if 0 <= mi < len(cuts) else None
+    page.feature = cuts[fi] if 0 <= fi < len(cuts) else None
+    page.main_band, page.feature_band = mi, fi
+    page.main_grade = grade(shots[mi]) if shots and mi in shots else ""
+    page.feature_grade = grade(shots[fi]) if shots and fi in shots else ""
+    if page.main is None:
+        notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
 
     bs = got.get("body_start")
     page.body_start = bs if isinstance(bs, int) and 0 <= bs < len(cuts) else -1

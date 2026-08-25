@@ -210,50 +210,6 @@ def shots_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int,
     return got
 
 
-def pick_hero_cut(files: list[Path], entries: list[boundary.Entry], cuts: list[Path],
-                  kinds: list[str]) -> tuple[Path | None, str]:
-    """대표컷을 픽셀로 고른다. **페이지 전체에서 찾는다.**
-
-    첫 이미지만 보면 안 된다 — 핑거위글의 첫 이미지는 통째로 원본 메인섹션이라
-    컬러 배경 위의 컷과 표뿐이고, 깨끗한 제품 단독컷은 둘째 이미지에 있다.
-
-    `pick_hero` 가 빈손이면 잣대를 한 칸씩 늦춘다. 셋 다 실패해도 **제일 나쁜
-    것은 빈 대표컷**이라(legacy ⓒ — 결과가 백지로 나왔다) 마지막에는 종류만
-    보고라도 세운다. 다만 글자 밴드는 끝까지 안 세운다.
-    """
-    blocked = boundary.summary_bands(entries)
-    cands = list(shots_by_band(files, entries).values())
-    usable = [c for c in cands
-              if c.band < len(cuts) and kinds[c.band] not in ("TEXT", "PROMO")
-              and c.band not in blocked]
-    for want in ("PHOTO", "MIXED"):
-        hero = main.pick_hero([c for c in usable if kinds[c.band] == want])
-        if hero is not None:
-            return cuts[hero.band], f"대표컷을 픽셀로 골랐다 — 밴드 [{hero.band}] ({want} · 깨끗한 단독컷)"
-
-    # 페이지 바닥에 원본 색이 통째로 깔린 원본이 있다(브루스). 그때는 design 을 뺀다.
-    for want in ("PHOTO", "MIXED"):
-        hero = main.pick_hero_relaxed([c for c in usable if kinds[c.band] == want])
-        if hero is not None:
-            return cuts[hero.band], (f"페이지 전체에 원본 색이 깔려 있어 design 을 빼고 골랐다 — "
-                                     f"밴드 [{hero.band}] ({want} · 제품 단독컷)")
-
-    photos = main.pick_photos(usable)
-    if photos:
-        best = max(photos, key=lambda c: c.product_pixels)
-        return cuts[best.band], f"단독컷이 없어 제품이 가장 크게 찍힌 밴드 [{best.band}] 로 세웠다"
-
-    if usable:
-        best = max(usable, key=lambda c: c.product_pixels)
-        return cuts[best.band], f"쓸 만한 사진이 없어 밴드 [{best.band}] 로 세웠다"
-
-    for want in ("PHOTO", "MIXED", "UNKNOWN"):
-        pick = next((i for i, k in enumerate(kinds) if k == want), None)
-        if pick is not None:
-            return cuts[pick], f"후보가 없어 [{pick}]({want}) 로 세웠다"
-    return None, "대표컷 후보가 하나도 없다"
-
-
 @router.post("/api/basic/convert")
 def api_basic_convert(req: ConvertReq):
     sheet = SHEETS.get(req.sheet)
@@ -317,11 +273,16 @@ def api_basic_convert(req: ConvertReq):
             source_of_start = "AI"
             notes.append(f"{why} (AI 는 {page.body_start} 라고 했다)")
 
-        # 대표컷이 비면 페이지가 무너진다(legacy ⓒ). AI 를 안 불렀으면 픽셀로 고른다.
+        # 키가 없어 AI 를 안 불렀으면 **AI 픽만 없는 같은 흐름**으로 고른다.
+        # 대표컷만 고르고 키피쳐를 안 고르면 KEY FEATURE 가 통째로 빈다.
         if page.main is None and cuts:
-            page.main, note = pick_hero_cut(files, entries, cuts, kinds)
-            notes.append(note)
-            page.main_band = next((i for i, c in enumerate(cuts) if c == page.main), -1)
+            mi, fi, slot_notes = main.pick_slots(shots, kinds, hashes, blocked)
+            notes += slot_notes
+            page.main = cuts[mi] if 0 <= mi < len(cuts) else None
+            page.feature = cuts[fi] if 0 <= fi < len(cuts) else None
+            page.main_band, page.feature_band = mi, fi
+            page.main_grade = main.grade(shots[mi]) if mi in shots else ""
+            page.feature_grade = main.grade(shots[fi]) if fi in shots else ""
         if page.main is None:
             notes.append("대표컷이 비었다 — 손으로 지정해야 한다")
 
@@ -371,7 +332,10 @@ def api_basic_convert(req: ConvertReq):
             "body_start_from": source_of_start, "fallback_body_start": fallback,
             "sections": len(secs), "crops": len(crops),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
-            "hero": bool(page.main), "hero_band": page.main_band, "notes": notes,
+            "hero": bool(page.main), "hero_band": page.main_band,
+            "hero_grade": page.main_grade,
+            "feature": bool(page.feature), "feature_band": page.feature_band,
+            "feature_grade": page.feature_grade, "notes": notes,
             "bytes": len(html.encode()), "url": f"/basic/out/{row.code}"}
 
 
@@ -487,7 +451,8 @@ $('#f').onchange = async e => {
             <div style="margin-top:6px">
               <span class="tag${fb}">body_start ${d2.body_start} · ${d2.body_start_from}</span>
               <span class="tag">예비 규칙 ${d2.fallback_body_start}</span>
-              <span class="tag">${d2.hero ? '대표컷 밴드 [' + d2.hero_band + ']' : '대표컷 없음'}</span>
+              <span class="tag">${d2.hero ? '대표컷 [' + d2.hero_band + '] ' + d2.hero_grade + '등급' : '대표컷 없음'}</span>
+              <span class="tag${d2.feature ? '' : ' tag--fb'}">${d2.feature ? '키피쳐 [' + d2.feature_band + '] ' + d2.feature_grade + '등급' : '키피쳐 없음'}</span>
             </div>`;
           const det = document.createElement('details');
           const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');
