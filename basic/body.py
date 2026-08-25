@@ -21,7 +21,7 @@ from . import sidetext
 BADGE, TITLE, BODY, PHOTO, FOOT = "badge", "title", "body", "photo", "foot"
 
 #: 제목이라 부를 최대 높이. 글줄 하나~둘. 본문 설명은 이보다 길다.
-TITLE_MAX_H = 95
+TITLE_MAX_H = 100
 
 
 @dataclass
@@ -71,6 +71,29 @@ def _dark_box(crop: np.ndarray):
     return bw, bh, float(dark.sum() / (bw * bh)), runs
 
 
+def _is_color_header(crop: np.ndarray) -> bool:
+    """색 글씨로 된 낮은 머리띠(큰 번호 + 제목)인가. 핑거위글의 `01 | 제품특징` 이 이것이다.
+
+    사진과의 차이: 잉크가 폭의 일부에만 있고, 높이가 낮고, 잉크의 채도가 높다(색 글씨).
+    검은 제품 사진은 채도가 낮고, 살색 사진은 높이가 훨씬 크다.
+    """
+    h, w = crop.shape[:2]
+    if h > 130:
+        return False
+    f = crop.astype(np.int32)
+    lum = f @ np.array([299, 587, 114]) // 1000
+    sat = f.max(2) - f.min(2)
+    ink = (lum < 225) | (sat >= 40)
+    if ink.mean() < 0.01:
+        return False
+    ys, xs = np.where(ink)
+    bw = xs.max() - xs.min() + 1
+    if bw > 0.6 * w:
+        return False
+    colored = (sat[ink] >= 60).mean()
+    return colored >= 0.15
+
+
 def _role(b: B.Band, crop: np.ndarray) -> str:
     """밴드 하나의 역할. 종류(PHOTO/TEXT…)는 이미 붙어 있고, 여기선 자리를 정한다."""
     W = crop.shape[1]
@@ -81,9 +104,11 @@ def _role(b: B.Band, crop: np.ndarray) -> str:
         return BADGE                              # 좁고 꽉 찬 어두운 상자 = 라벨 알약
     if b.kind == B.TEXT:
         return BODY
+    if _is_color_header(crop):
+        return TITLE                              # `01 | 제품특징` 같은 색 번호 머리띠
     if box and b.white > 0.6 and b.color < 0.2 and box[2] < 0.5:
         lines = [r for r in box[3] if r >= 6]
-        if lines and max(lines) <= 70:            # 글줄 높이 안쪽 — 사진은 한 덩이가 훨씬 크다
+        if lines and max(lines) <= 100:            # 글줄 높이 안쪽(큰 번호 제목까지) — 사진은 한 덩이가 훨씬 크다
             if len(lines) == 1 and lines[0] >= 22 and b.height <= TITLE_MAX_H:
                 return TITLE                      # 굵은 한 줄
             return BODY
