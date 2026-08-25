@@ -1,6 +1,7 @@
 # 분할기
 numpy>=1.24
 Pillow>=10.0
+opencv-python-headless>=4.9
 
 # 엑셀 · HTML 읽기
 openpyxl>=3.1
