@@ -162,7 +162,7 @@ def shot(**kw) -> main.Shot:
     """잰 값으로 후보 한 장. 안 준 것은 **깨끗한 단독컷**의 값."""
     d = dict(rect=main.Rect(0, 0, 100, 100), white=0.8, color=0.02, ink=0.30,
              letters=2, design=0.01, solo=0.98, area=10000, band=0,
-             bg_sat=0.0, subject=0.35)
+             bg_sat=0.0, has_text=False, subject=0.35)
     d.update(kw)
     return main.Shot(**d)
 
@@ -189,7 +189,7 @@ def test_ai_hero_pick_must_pass_the_gate(tmp_path):
         c.write_bytes(b"x")
     kinds = ["PHOTO", "PHOTO", "PHOTO"]
     shots = {0: shot(band=0, bg_sat=30.0),          # 원본 대표컷 — 진한 색 배경
-             1: shot(band=1, letters=80),           # 글 구간
+             1: shot(band=1, has_text=True),           # 글 구간
              2: shot(band=2)}                       # 누끼 단독컷
     page, notes = main.take(json.dumps({"main": 0}), cuts, kinds, [1, 2, 4],
                             shots=shots, blocked=set())
@@ -214,14 +214,29 @@ def test_summary_plate_can_never_be_hero_or_feature(tmp_path):
 # ── 대표컷·키피쳐 등급 ───────────────────────────────────────────────────
 
 def test_grades_match_what_the_eye_says():
-    """실물에서 잰 값으로 A·B·C 를 가른다 (main.py 등급 표 참고)."""
-    assert main.grade(shot(bg_sat=0.9, letters=0, solo=1.000)) == "A"    # 핑거위글 누끼
-    assert main.grade(shot(bg_sat=1.1, letters=7, solo=0.994)) == "A"    # 브루스 누끼
-    assert main.grade(shot(bg_sat=0.0, letters=24, solo=0.946)) == "B"   # 거치대+리모컨
-    assert main.grade(shot(bg_sat=1.7, letters=13, solo=0.981)) == "B"   # 파우치+케이블
-    assert main.grade(shot(bg_sat=0.0, letters=42, solo=0.703)) == "C"   # 글자 박힘
-    assert main.grade(shot(bg_sat=0.0, letters=7, solo=0.499)) == "C"    # 제품 둘
-    assert main.grade(shot(bg_sat=8.9, letters=1, solo=1.000)) == "C"    # 진한 색 배경
+    """실물에서 잰 값으로 A·B·C 를 가른다 (main.py 등급 표 참고).
+
+    글자 수는 **그 페이지의 바닥에 견준다** — 무늬 있는 제품은 평범한 사진도
+    글자꼴이 60~76 개로 세어져서 절대값으로는 못 가른다(다일레이터).
+    """
+    assert main.grade(shot(bg_sat=0.0, letters=0, solo=1.000), floor=0) == "A"   # 핑거위글 누끼
+    assert main.grade(shot(bg_sat=0.0, letters=7, solo=0.994), floor=0) == "A"   # 브루스 누끼
+    assert main.grade(shot(bg_sat=0.0, letters=6, solo=0.978), floor=0) == "A"   # 다일레이터 누끼
+    assert main.grade(shot(bg_sat=0.0, letters=24, solo=0.946), floor=0) == "B"  # 거치대+리모컨
+    assert main.grade(shot(bg_sat=0.0, letters=13, solo=0.981), floor=0) == "B"  # 파우치+케이블
+    assert main.grade(shot(has_text=True, solo=0.971), floor=0) == "C"           # 글자 박힘
+    assert main.grade(shot(letters=7, solo=0.499), floor=0) == "C"               # 제품 둘
+    assert main.grade(shot(bg_sat=46.0, letters=1, solo=1.000), floor=0) == "C"  # 진한 색 배경
+    # 같은 글자 수라도 바닥이 높으면 A 다 — 무늬 있는 제품 페이지
+    assert main.grade(shot(letters=69, solo=0.978), floor=66) == "A"
+
+
+def test_letters_are_judged_against_the_page():
+    """무늬 있는 제품 페이지에서 절대 임계값은 답을 뒤집는다."""
+    patterned = [shot(band=i, letters=n) for i, n in enumerate([66, 69, 73, 76])]
+    assert main.letter_floor(patterned) == 66
+    assert main.grade(patterned[0], floor=66) == "A"      # 그 페이지에선 가장 깨끗하다
+    assert main.grade(patterned[0], floor=0) == "B"       # 절대값으로는 글 구간처럼 보인다
 
 
 def test_keyfeature_is_filled_when_clean_cuts_are_plenty():
@@ -253,7 +268,7 @@ def test_keyfeature_skips_the_same_photo_as_hero():
 def test_keyfeature_never_uses_grade_c():
     """C 는 안 쓴다. A·B 가 없으면 그때만 빈칸."""
     kinds = ["PHOTO", "PHOTO"]
-    shots = {0: shot(band=0), 1: shot(band=1, letters=90, solo=0.2)}   # 1 은 C
+    shots = {0: shot(band=0), 1: shot(band=1, has_text=True)}   # 1 은 C
     hero, feat, notes = main.pick_slots(shots, kinds, [1, 2])
     assert hero == 0
     assert feat == -1, notes
@@ -263,8 +278,8 @@ def test_keyfeature_never_uses_grade_c():
 def test_hero_falls_back_to_b_and_says_so():
     """A 가 없으면 빈칸이 아니라 B 에서 고르고 적는다."""
     kinds = ["PHOTO", "PHOTO"]
-    shots = {0: shot(band=0, letters=24, solo=0.946),      # B
-             1: shot(band=1, letters=90, solo=0.2)}        # C
+    shots = {0: shot(band=0, solo=0.70),                   # B — 손이 잡아 덩어리가 갈렸다
+             1: shot(band=1, has_text=True)}               # C — 글자가 박혔다
     hero, feat, notes = main.pick_slots(shots, kinds, [1, 2])
     assert hero == 0
     assert any("A등급(누끼 단독컷)이 없어" in n for n in notes)
@@ -275,7 +290,7 @@ def test_ai_feature_pick_is_also_rechecked(tmp_path):
     cuts = [tmp_path / f"b{i}.jpg" for i in range(3)]
     for c in cuts:
         c.write_bytes(b"x")
-    shots = {0: shot(band=0, area=20000), 1: shot(band=1, letters=95, solo=0.1), 2: shot(band=2)}
+    shots = {0: shot(band=0, area=20000), 1: shot(band=1, has_text=True), 2: shot(band=2)}
     page, notes = main.take(json.dumps({"main": 0, "feature": 1}), cuts,
                             ["PHOTO"] * 3,
                             [0x0000000000000000, 0xFFFFFFFF00000000, 0x00000000FFFFFFFF],

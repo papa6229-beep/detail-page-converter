@@ -23,7 +23,10 @@ CSS = """
 .bpage p{font-size:16px;line-height:1.9;margin:6px 0 14px}
 .bpage p+p{margin-top:0}
 .bpage strong{font-weight:800;color:#1a2440}
-.bpage .unread{display:inline-block;border:1px dashed #c9ccd6;padding:6px;background:#fafafa;max-width:100%}
+/* 못 읽은 글자 조각은 **그림 그대로** 보여준다. 예전엔 점선 상자에 담았는데,
+   본문 곳곳에 네모 테두리가 떠서 디자인이 깨져 보인다는 말을 계속 들었다.
+   테두리는 우리가 그린 것이지 원본에 있던 것이 아니다. */
+.bpage .unread{display:block;max-width:100%}
 .bpage .unread img{max-width:100%;display:block}
 """
 

@@ -16,6 +16,17 @@ import cv2
 import numpy as np
 
 
+#: 배경이 이보다 어두우면 흰 바탕이 아니다 — 색 깔린 디자인 배너다.
+BG_MIN_LIGHT = 225
+#: 배경 색이 이보다 짙으면 흰 바탕이 아니다.
+BG_MAX_SAT = 25
+
+#: 글자 상자가 밴드 폭에서 차지해야 할 최소 몫. 글은 가로로 뻗는다.
+MIN_TEXT_WIDTH = 0.20
+#: 글자 상자가 밴드 넓이에서 차지할 수 있는 최대 몫. 넘으면 사진을 삼킨 것이다.
+MAX_TEXT_AREA = 0.30
+
+
 @dataclass
 class Split:
     text_box: tuple[int, int, int, int]   #: (x0, y0, x1, y1) 글자 영역
@@ -69,6 +80,13 @@ def _by_lines(im: np.ndarray) -> list[tuple[int, int, int, int]]:
 def split(im: np.ndarray) -> Split | None:
     """RGB 배열 하나. 글자가 없으면 None."""
     h, w = im.shape[:2]
+    # **흰 바탕 위의 글자만 뗀다.** 맨 위 설명의 전제 그대로다. 색이 깔린 광고 배너는
+    # 글자가 배경 위에 디자인으로 얹혀 있어서, 떼려 들면 `roi[ink] = bg` 가 그 글자를
+    # **지워 버린다** — 유니버셜의 보라·초록 배너 본문이 반쯤 지워져 나왔다.
+    # 그런 밴드는 손대지 않고 그림 그대로 둔다.
+    bgc = _bg(im)
+    if bgc.mean() < BG_MIN_LIGHT or (bgc.max() - bgc.min()) > BG_MAX_SAT:
+        return None
     # 임계값들은 폭 500~800px 원본에서 잰 것이다. 폭이 좁은 원본은 키워서 본다.
     k = 2 if w < 600 else 1
     big = cv2.resize(im, (w * k, h * k), interpolation=cv2.INTER_CUBIC) if k > 1 else im
@@ -83,8 +101,23 @@ def split(im: np.ndarray) -> Split | None:
     y0 = max(min(b[1] for b in boxes) - 4, 0)
     x1 = min(max(b[2] for b in boxes) + 4, w)
     y1 = min(max(b[3] for b in boxes) + 4, h)
-    # 글자 영역이 밴드의 대부분이면 이건 '사진 옆 글자'가 아니라 그냥 글자 밴드다.
-    if (x1 - x0) * (y1 - y0) > 0.6 * h * w:
+    tw, th = x1 - x0, y1 - y0
+    # **너무 작으면 글자가 아니다.** 제품 표면의 하이라이트 한 점, 그림자 끄트머리가
+    # 자꾸 '캡션'으로 잡혀서 본문 곳곳에 점선 상자가 박혔다. 실측 —
+    #
+    #     진짜 캡션   폭점유 0.44 · 0.75 · 0.75 · 0.83 · 0.98 · 1.00
+    #     헛것        폭점유 0.06 · 0.07 · 0.07
+    #
+    # 0.07 과 0.44 사이가 통째로 비어 있다. 글은 가로로 뻗는다 — 그것이 사진 얼룩과
+    # 다른 점이다.
+    if tw < MIN_TEXT_WIDTH * w:
+        return None
+    # **너무 크면 사진을 통째로 글자로 오해한 것이다.** 다일레이터의 6칸 격자(넓이비
+    # 0.426)를 통째로 떼어내는 바람에 남은 사진이 조각조각 깨져 나왔다. 실측 —
+    #
+    #     진짜 캡션   넓이비 0.132 ~ 0.218
+    #     통째로 삼킴 넓이비 0.426
+    if tw * th > MAX_TEXT_AREA * h * w:
         return None
     text = im[y0:y1, x0:x1].copy()
     photo = im.copy()

@@ -60,9 +60,13 @@ class Shot:
     solo: float       #: 가장 큰 덩어리가 어두운 화소에서 차지하는 몫 — 제품이 하나인가
     area: int
     band: int = -1    #: 몇 번 밴드에서 나왔나
-    #: 배경(밝은 쪽)의 평균 채도. **배경이 흰가 · 옅은 색인가 · 진한 색인가**를 가른다.
-    #: `design` 은 못 가른다 — 페이지 바닥에 색이 깔리면 옅든 진하든 다 1.0 에 붙는다.
+    #: **테두리 한 겹의 채도.** 배경이 흰가 · 옅은 색인가 · 진한 색인가를 가른다.
+    #: 밝은 쪽 40% 로 재던 것을 바꿨다 — 다일레이터처럼 제품 자체가 옅은 보라·연두면
+    #: 제품 화소가 '배경' 에 섞여 들어와 흰 바탕인데도 23 이 나온다. 테두리는 안 섞인다.
     bg_sat: float = 0.0
+    #: 이 밴드에 **글자가 박혀 있는가.** 덩어리 개수(letters)는 무늬 있는 제품에서
+    #: 60~76 까지 뛰어 못 믿는다. 밴드 종류(MIXED)와 `sidetext` 가 직접 말해 준다.
+    has_text: bool = False
     #: 배경이 아닌 화소의 몫. 넓이를 잴 때 쓴다 — `ink` 는 **어둡고 채도 낮은** 것만
     #: 세어서 파란 제품을 거의 0 으로 본다(브루스). 색 있는 제품에는 이쪽이 맞다.
     subject: float = 0.0
@@ -98,9 +102,12 @@ def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
     ink = float(((lum < 115) & (sat < 40)).mean())
     letters, solo = _blobs(lum)
     area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
-    # 배경은 **밝은 쪽 40%** 로 본다. 제품을 빼고 바닥만 남기려는 것이다.
-    bright = lum >= np.percentile(lum, 60)
-    bg_sat = float(sat[bright].mean()) if bright.any() else 0.0
+    # 배경은 **테두리 한 겹**으로 본다. 제품은 가운데에 있고 테두리는 바닥이다.
+    t = max(2, min(6, crop.shape[0] // 8, crop.shape[1] // 8))
+    edge = np.concatenate([crop[:t].reshape(-1, 3), crop[-t:].reshape(-1, 3),
+                           crop[:, :t].reshape(-1, 3), crop[:, -t:].reshape(-1, 3)])
+    med = np.median(edge, axis=0)
+    bg_sat = float(med.max() - med.min())
     subject = float(((lum < 232) | (sat >= 45)).mean())
     return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band,
                 bg_sat=bg_sat, subject=subject)
@@ -210,6 +217,8 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
     한다. **대표컷은 페이지 전체에서 찾는다** — 핑거위글은 깨끗한 단독컷이
     둘째 이미지에 있어서, 첫 이미지만 보면 하나도 못 고른다.
     """
+    from . import sidetext
+
     w = arr.shape[1]
     floor = int(w * MIN_SIDE_FRAC)
     out = []
@@ -219,7 +228,10 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
             continue
         if min(r.x1 - r.x0 + 1, r.y1 - r.y0 + 1) < floor:
             continue
-        out.append(_stats(arr, r, offset + i))
+        sh = _stats(arr, r, offset + i)
+        # 글자가 박혀 있는가 — 밴드 종류와 `sidetext` 에게 **직접** 묻는다.
+        sh.has_text = b.kind == B.MIXED or sidetext.split(arr[b.y:b.y + b.height]) is not None
+        out.append(sh)
     return out
 
 
@@ -340,42 +352,48 @@ def pick_hero_relaxed(cands: list[Shot]) -> Shot | None:
 #   B  배경에 옅은 색 · 손이 잡음 · 거치대 등 소품            누끼 연출컷
 #   C  그 밖 (색 배경 진함 · 글자 박힘 · 여러 제품)
 #
-# 잣대는 하나고 등급만 셋이다. 실측 (핑거위글 img1 · 브루스, 눈으로 매긴 등급과 맞춰) —
+# **글자 수는 그 페이지 안에서만 뜻이 있다.** 절대값으로 자르면 못 가른다 —
 #
-#                       배경채도  글자  제품하나   눈으로
-#   핑거위글 b9            0.9     0    1.000     A 누끼 단독
-#   핑거위글 b19           4.7     0    0.999     A 누끼(케이블만)
-#   브루스   b21           1.1     7    0.994     A 누끼 단독
-#   ────────────────────────────────────────────────────────
-#   핑거위글 b5·b25        0.0    24    0.946     B 거치대+리모컨
-#   핑거위글 b2            0.0    21    0.985     B 손이 잡음
-#   브루스   b19           1.7    13    0.981     B 파우치+케이블
-#   ────────────────────────────────────────────────────────
-#   핑거위글 b12           0.0    42    0.703     C 치수 도해(글자)
-#   핑거위글 b22           0.0     7    0.499     C 제품 둘
-#   브루스   b2            8.9     1    1.000     C 보라 배경 진함
-#   브루스   b3·b4        44.2/36.4                C 색판 위 표
+#     핑거위글 누끼컷  0 · 0        거치대컷 24     ← 24 를 빼야 한다
+#     다일레이터 누끼컷 6            평범한 제품컷 58·69·73·76
+#                                    ← 무늬가 잘게 갈려 글자처럼 세어진다
 #
-#: 배경이 "비어 있다"고 볼 채도. 흰 바탕은 0~5, 진한 색 배경은 9 위다.
+# 같은 숫자가 두 답을 낸다. 그래서 그 페이지에서 가장 적은 것을 바닥으로 삼는다.
+# B 는 글자 수를 아예 안 본다 — `has_text`(밴드 종류·sidetext)가 직접 말해 주므로
+# 무늬를 글자로 오해할 일이 없다.
+#
+#: 배경이 "비어 있다"고 볼 테두리 채도. 흰 바탕 0~5, 진한 색 배경 10 위.
 A_BG_SAT = 6.0
-#: 글자가 "없다"고 볼 개수. 누끼컷은 0~7, 주석이 붙으면 13 위로 뛴다.
-A_LETTERS = 8
-#: 배경에 색이 깔려도 **옅으면** 연출컷으로 본다. 브루스 보라 배경(8.9)부터는 C.
+#: 바닥에서 이만큼까지는 "글자 없음" 으로 본다.
+A_LETTER_ROOM = 8
+#: 배경에 색이 깔려도 **옅으면** 연출컷. 브루스 보라(46)·다일레이터 초록(46)부터는 C.
 B_BG_SAT = 8.0
-#: 손이 잡거나 소품이 끼면 덩어리가 갈린다. 제품 둘(0.499)까지 내려가면 C.
+#: 손이 잡거나 소품이 끼면 덩어리가 갈린다. 제품 둘까지 내려가면 C.
 B_SOLO = 0.60
 
 
-def grade(s: Shot) -> str:
-    """후보 한 장의 등급 A · B · C."""
-    if not (0.03 <= s.ink <= 0.75) and s.subject < 0.05:
-        return "C"                                    # 제품이 안 보인다
-    if (s.bg_sat <= A_BG_SAT and s.letters <= A_LETTERS
-            and s.solo >= SOLO and s.design < DESIGN_INK * 6):
+def letter_floor(cands) -> int:
+    """그 페이지에서 가장 적은 글자 수. 없으면 0."""
+    got = [c.letters for c in cands]
+    return min(got) if got else 0
+
+
+def grade(s: Shot, floor: int = 0) -> str:
+    """후보 한 장의 등급. `floor` 는 그 페이지의 글자 수 바닥."""
+    if s.has_text:
+        return "C"                                    # 글자가 박혀 있다
+    if s.bg_sat > B_BG_SAT:
+        return "C"                                    # 색 배경이 진하다
+    if s.solo < B_SOLO:
+        return "C"                                    # 제품이 여럿이다
+    # `design`(유채색이 가장 빽빽한 가로 띠)은 여기서 안 본다. 그것은 **배경에 색이
+    # 깔렸는가**를 재려던 것인데, 제품 자체가 색이면(브루스 보라 0.68 · 다일레이터
+    # 0.89) 제품을 배경으로 오해한다. 배경은 테두리(`bg_sat`)가 본다.
+    if (s.bg_sat <= A_BG_SAT and s.solo >= SOLO
+            and s.letters <= floor + A_LETTER_ROOM
+            and 0.03 <= s.ink <= 0.75):
         return "A"
-    if (s.bg_sat <= B_BG_SAT and s.letters < TEXT_BAND and s.solo >= B_SOLO):
-        return "B"
-    return "C"
+    return "B"
 
 
 def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
@@ -396,7 +414,8 @@ def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
     notes: list[str] = []
     pool = {b: sh for b, sh in shots.items()
             if b < len(kinds) and kinds[b] in ("PHOTO", "MIXED") and b not in blocked}
-    graded = {b: grade(sh) for b, sh in pool.items()}
+    floor = letter_floor(pool.values())
+    graded = {b: grade(sh, floor) for b, sh in pool.items()}
 
     def best(want: str, skip: set[int]) -> int | None:
         got = [b for b, g in graded.items() if g == want and b not in skip]
