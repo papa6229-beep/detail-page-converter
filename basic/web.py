@@ -266,7 +266,7 @@ $('#f').onchange = async e => {
             <a href="${d2.url}/file">HTML 내려받기</a>`;
           const det = document.createElement('details');
           det.innerHTML = `<summary>섹션 ${d2.sections}개 · 밴드 ${d2.bands}개 · ${Math.round(d2.bytes/1024)}KB</summary>
-            <pre>${d2.note}\n\n쓴 것:\n  ${d2.used.join('\n  ')}${d2.skipped.length ? '\n\n뺀 것:\n  ' + d2.skipped.join('\n  ') : ''}</pre>`;
+            <pre>${d2.note}\\n\\n쓴 것:\\n  ${d2.used.join('\\n  ')}${d2.skipped.length ? '\\n\\n뺀 것:\\n  ' + d2.skipped.join('\\n  ') : ''}</pre>`;
           links.appendChild(det);
         } catch (err) {
           btn.textContent = '기본형 변환';
