@@ -81,12 +81,39 @@ def body_images(row) -> tuple[list[str], list[str]]:
     return use, skipped
 
 
+def plain_en(name: str) -> str:
+    """영문명의 **바깥 괄호**만 벗긴다 — `(Finger Wiggle …)` → `Finger Wiggle …`.
+
+    상품명에서 갈라 온 영문명은 괄호째 딸려 온다. 그대로 띠에 늘어놓으면
+    `(Pretty Love Bruse)  ·  (Pretty Love Bruse)  ·  …` 가 되어 괄호만 눈에 띈다.
+    안쪽 괄호는 건드리지 않는다 — 이름의 일부일 수 있다.
+    """
+    t = (name or "").strip()
+    while len(t) > 1 and t.startswith("(") and t.endswith(")"):
+        t = t[1:-1].strip()
+    return t
+
+
 def typed_text(row) -> str:
     """원본에 직접 타이핑돼 있던 글. 모델에게 **읽는 근거**로 준다."""
     parsed = _source.parse(row.body)
     lines = [b.text for b in parsed.lead_blocks if b.text.strip()]
     lines += [p.caption for p in parsed.pieces if p.caption.strip()]
     return "\n".join(lines).strip()
+
+
+def model_hero_pick(reply: str):
+    """모델이 대표컷으로 뭘 골랐는지만 꺼낸다. 탈락 여부를 보고하려고.
+
+    답이 깨져 있어도 여기서 터지면 안 된다 — 그건 `take` 가 이미 다룬다.
+    """
+    m = re.search(r"\{[\s\S]*\}", reply or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(0)).get("main")
+    except (json.JSONDecodeError, AttributeError):
+        return None
 
 
 def ask_model(key: str, parts, timeout: int = 240) -> str:
@@ -167,6 +194,22 @@ def body_pieces(files: list[Path], entries: list[boundary.Entry], start: int, as
     return out
 
 
+def shots_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int, main.Shot]:
+    """밴드 번호 → 그 밴드를 잰 값. **밴드 폭 전체가 아니라 알맹이로 잰다.**
+
+    밴드는 늘 폭 전체라 그대로 재면 옆 여백이 값을 묽게 만들어, 컬러 배경이
+    깔린 컷도 깨끗해 보인다. `main.shots` 가 `_content_rect` 로 알맹이를 집는다.
+    """
+    got: dict[int, main.Shot] = {}
+    off = 0
+    for gi, f in enumerate(files):
+        n = sum(1 for e in entries if e.image == gi)
+        for sh in main.shots(np.asarray(Image.open(f).convert("RGB")), offset=off):
+            got[sh.band] = sh
+        off += n
+    return got
+
+
 def pick_hero_cut(files: list[Path], entries: list[boundary.Entry], cuts: list[Path],
                   kinds: list[str]) -> tuple[Path | None, str]:
     """대표컷을 픽셀로 고른다. **페이지 전체에서 찾는다.**
@@ -178,17 +221,22 @@ def pick_hero_cut(files: list[Path], entries: list[boundary.Entry], cuts: list[P
     것은 빈 대표컷**이라(legacy ⓒ — 결과가 백지로 나왔다) 마지막에는 종류만
     보고라도 세운다. 다만 글자 밴드는 끝까지 안 세운다.
     """
-    cands: list[main.Shot] = []
-    off = 0
-    for gi, f in enumerate(files):
-        n = sum(1 for e in entries if e.image == gi)
-        cands += main.shots(np.asarray(Image.open(f).convert("RGB")), offset=off)
-        off += n
+    blocked = boundary.summary_bands(entries)
+    cands = list(shots_by_band(files, entries).values())
+    usable = [c for c in cands
+              if c.band < len(cuts) and kinds[c.band] not in ("TEXT", "PROMO")
+              and c.band not in blocked]
+    for want in ("PHOTO", "MIXED"):
+        hero = main.pick_hero([c for c in usable if kinds[c.band] == want])
+        if hero is not None:
+            return cuts[hero.band], f"대표컷을 픽셀로 골랐다 — 밴드 [{hero.band}] ({want} · 깨끗한 단독컷)"
 
-    usable = [c for c in cands if c.band < len(cuts) and kinds[c.band] not in ("TEXT", "PROMO")]
-    hero = main.pick_hero(usable)
-    if hero is not None:
-        return cuts[hero.band], f"대표컷을 픽셀로 골랐다 — 밴드 [{hero.band}] (깨끗한 단독컷)"
+    # 페이지 바닥에 원본 색이 통째로 깔린 원본이 있다(브루스). 그때는 design 을 뺀다.
+    for want in ("PHOTO", "MIXED"):
+        hero = main.pick_hero_relaxed([c for c in usable if kinds[c.band] == want])
+        if hero is not None:
+            return cuts[hero.band], (f"페이지 전체에 원본 색이 깔려 있어 design 을 빼고 골랐다 — "
+                                     f"밴드 [{hero.band}] ({want} · 제품 단독컷)")
 
     photos = main.pick_photos(usable)
     if photos:
@@ -239,14 +287,22 @@ def api_basic_convert(req: ConvertReq):
         # ③ 【1콜】 메인 — spec · keys · 그림 셋 · body_start
         key = "" if req.raw else _llm.key_from_env()
         _tags, name_kr, name_en = _apprender.split_name(row.name)
-        page = main.Page(name_kr=name_kr or row.name, name_en=name_en,
+        page = main.Page(name_kr=name_kr or row.name, name_en=plain_en(name_en),
                          maker=row.brand or row.maker)
+        shots = shots_by_band(files, entries)
+        blocked = boundary.summary_bands(entries)
+        if blocked:
+            notes.append(f"요약정보 표가 든 밴드 {sorted(blocked)} — 대표컷·feature 에서 뺀다")
         if key:
             reply = ask_model(key, main.parts_for(row.name, page.maker, typed_text(row), cuts, kinds))
-            got, ai_notes = main.take(reply, cuts, kinds, hashes)
+            got, ai_notes = main.take(reply, cuts, kinds, hashes, shots=shots, blocked=blocked)
             got.name_kr, got.name_en, got.maker = page.name_kr, page.name_en, page.maker
-            page, notes = got, ai_notes
+            head, page, notes = notes, got, ai_notes
+            notes[:0] = head
             notes.insert(0, f"{_llm.label(key)} 1콜 — 밴드 {len(cuts)}장을 보냈다")
+            ai_pick = model_hero_pick(reply)
+            if isinstance(ai_pick, int) and ai_pick != page.main_band:
+                notes.append(f"AI 대표컷 픽 [{ai_pick}] 은 탈락 — 세운 것은 [{page.main_band}]")
         else:
             notes.append("키가 없어 AI 를 안 불렀다 — 메인 스펙·핵심특징은 비고, 경계는 예비 규칙으로 잡는다")
             page.body_start = -1
@@ -265,6 +321,7 @@ def api_basic_convert(req: ConvertReq):
         if page.main is None and cuts:
             page.main, note = pick_hero_cut(files, entries, cuts, kinds)
             notes.append(note)
+            page.main_band = next((i for i, c in enumerate(cuts) if c == page.main), -1)
         if page.main is None:
             notes.append("대표컷이 비었다 — 손으로 지정해야 한다")
 
@@ -314,7 +371,7 @@ def api_basic_convert(req: ConvertReq):
             "body_start_from": source_of_start, "fallback_body_start": fallback,
             "sections": len(secs), "crops": len(crops),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
-            "hero": bool(page.main), "notes": notes,
+            "hero": bool(page.main), "hero_band": page.main_band, "notes": notes,
             "bytes": len(html.encode()), "url": f"/basic/out/{row.code}"}
 
 
@@ -430,7 +487,7 @@ $('#f').onchange = async e => {
             <div style="margin-top:6px">
               <span class="tag${fb}">body_start ${d2.body_start} · ${d2.body_start_from}</span>
               <span class="tag">예비 규칙 ${d2.fallback_body_start}</span>
-              <span class="tag">${d2.hero ? '대표컷 있음' : '대표컷 없음'}</span>
+              <span class="tag">${d2.hero ? '대표컷 밴드 [' + d2.hero_band + ']' : '대표컷 없음'}</span>
             </div>`;
           const det = document.createElement('details');
           const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');

@@ -236,6 +236,41 @@ def pick_photos(cands: list[Shot]) -> list[Shot]:
     ]
 
 
+def usable_photo(s: Shot) -> bool:
+    """feature 자리에 쓸 수 있는가 — **느슨하게.** legacy 의 `pick_photos` 그대로.
+
+    손이 들고 있어도, 거치대에 얹혀 있어도, 작은 주석이 붙어 있어도 쓴다.
+    못 쓰는 것은 셋뿐이다 — 글 구간 · 컬러 배경/배너 · 제 네모를 꽉 채운 상자.
+    """
+    return s.design < DESIGN_INK and s.letters < TEXT_BAND and 0.03 <= s.ink <= 0.75
+
+
+def clean_hero(s: Shot) -> bool:
+    """대표컷 자리에 쓸 수 있는가 — **깐깐하게.**
+
+    `pick_hero` 가 보는 것과 같은 잣대다: 유채색 배경이 없고(design), 큰 글자가
+    구워져 있지 않고(letters), 제품이 화면을 적당히 채우며(ink), **한 덩어리**로
+    찍혀 있어야 한다(solo). 모델이 골랐어도 이걸 못 넘으면 안 쓴다 —
+    원본 대표컷은 하나같이 컬러 배경 위에 얹혀 있어서, 그대로 가져오면 새
+    쇼핑몰에 남의 디자인이 따라 들어온다(legacy ⓖ).
+    """
+    return usable_photo(s) and s.solo >= SOLO
+
+
+def why_not_hero(s: Shot) -> str:
+    """못 넘은 까닭을 사람 말로. 조용히 버리지 않는다."""
+    bad = []
+    if s.design >= DESIGN_INK:
+        bad.append(f"유채색 배경 {s.design:.2f}")
+    if s.letters >= TEXT_BAND:
+        bad.append(f"큰 글자 {s.letters}개")
+    if not (0.03 <= s.ink <= 0.75):
+        bad.append(f"제품 크기 {s.ink:.2f}")
+    if s.solo < SOLO:
+        bad.append(f"제품이 하나가 아님 {s.solo:.2f}")
+    return " · ".join(bad) or "알 수 없음"
+
+
 def pick_hero(cands: list[Shot]) -> Shot | None:
     """대표컷 하나를 고른다. 판정하지 않고 **그 페이지 안에서 견준다.**
 
@@ -252,6 +287,30 @@ def pick_hero(cands: list[Shot]) -> Shot | None:
     삼고 거기서 얼마까지 봐줄지로 정한다.
     """
     photos = [c for c in pick_photos(cands) if c.solo >= SOLO]
+    if not photos:
+        return None
+    floor = min(c.letters for c in photos)
+    clean = [c for c in photos if c.letters <= floor + CLEAN_ROOM]
+    return max(clean, key=lambda c: c.product_pixels)
+
+
+def pick_hero_relaxed(cands: list[Shot]) -> Shot | None:
+    """**페이지 전체에 원본 디자인 색이 깔려 있을 때**의 차선.
+
+    브루스를 재보니 밴드 열아홉 장이 전부 `design` 0.38~1.00 이었다 — 보라 그라데
+    이션이 페이지 바닥에 통째로 깔려 있어서, 그 잣대로는 **아무것도 못 가른다.**
+    깨끗한 컷이 없는 게 아니라 그 페이지에 흰 바탕이 없는 것이다.
+
+    그래서 `design` 하나만 뺀다. 나머지는 그대로 — 제품이 한 덩어리로 찍혔고
+    (solo), 글이 적고(letters), 화면을 적당히 채워야(ink) 한다. 그 다음은
+    `pick_hero` 와 같은 상대 잣대다.
+
+    이걸 안 두면 `product_pixels` 만 보고 고르게 되는데, 브루스에서는 그러면
+    구성품 컷(글자 68개 · 121k)이 제품 단독컷(글자 13개 · 121k)을 근소하게
+    이겨서 파우치와 케이블과 분홍 캡션이 대표컷으로 올라간다.
+    """
+    photos = [c for c in cands
+              if c.letters < TEXT_BAND and 0.03 <= c.ink <= 0.75 and c.solo >= SOLO]
     if not photos:
         return None
     floor = min(c.letters for c in photos)
@@ -351,6 +410,8 @@ class Page:
     feature: Path | None = None
     #: 원본 메인섹션이 끝나고 본문이 시작되는 첫 밴드 번호
     body_start: int = 0
+    #: 대표컷으로 세운 밴드 번호. 보고용 — 어느 컷을 세웠는지 사람이 봐야 한다.
+    main_band: int = -1
 
 
 #: 사장님이 고정한 다섯 항목. 1행 셋, 2행 둘 — 2행을 왼쪽에 두는 것은
@@ -554,7 +615,9 @@ def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
 
 
 def take(reply: str, cuts: list[Path], kinds: list[str],
-         hashes: list[int] | None = None) -> tuple[Page, list[str]]:
+         hashes: list[int] | None = None,
+         shots: dict[int, Shot] | None = None,
+         blocked: set[int] | frozenset = frozenset()) -> tuple[Page, list[str]]:
     """모델이 돌려준 것을 받는다. **그대로 믿지 않는다.**
 
     막는 것은 셋뿐이다 —
@@ -565,6 +628,11 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
 
     **잘못된 사진보다 빈 칸이 안전하다.** 손님은 이 그림을 보고 주문한다.
     다만 대표컷만은 예외다 — 비면 페이지가 통째로 무너지므로 다시 고른다.
+
+    `shots` 를 주면 **모델이 고른 것도 검사대를 지난다.** 대표컷은 `clean_hero`,
+    feature 는 `usable_photo`. 모델은 원본 대표컷(컬러 배경 위의 컷)을 곧잘
+    고르는데 그건 우리가 피하려던 바로 그것이다.
+    `blocked` 는 어떤 경우에도 못 쓰는 밴드 — 요약정보 표가 든 자리다.
     """
     m = re.search(r"\{[\s\S]*\}", reply or "")
     if not m:
@@ -578,12 +646,16 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
     hashes = hashes or []
     used: list[int] = []
 
-    def cut(v, why: str) -> Path | None:
+    def cut(v, why: str, gate=None) -> int | None:
+        """쓸 수 있으면 밴드 번호를, 못 쓰면 None. 막을 때마다 까닭을 적는다."""
         if not isinstance(v, int) or not (0 <= v < len(cuts)):
             return None
         kind = kinds[v] if v < len(kinds) else UNKNOWN_KIND
         if kind in ("TEXT", "PROMO"):
             notes.append(f"{why}: [{v}] 는 {kind} 라 그림으로 못 씀")
+            return None
+        if v in blocked:
+            notes.append(f"{why}: [{v}] 는 원본 요약정보 표가 든 밴드라 못 씀")
             return None
         if v in used:
             notes.append(f"{why}: [{v}] 는 이미 다른 자리에 썼다")
@@ -593,8 +665,34 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
             if B.hamming(h, hashes[u] if u < len(hashes) else 0) <= B.DUP_HAMMING:
                 notes.append(f"{why}: [{v}] 는 [{u}] 와 같은 사진이다")
                 return None
+        if gate is not None and shots is not None:
+            s = shots.get(v)
+            if s is None:
+                notes.append(f"{why}: [{v}] 는 잰 값이 없어 검사대를 못 지났다")
+                return None
+            if not gate(s):
+                notes.append(f"{why}: [{v}] 는 검사대에서 떨어졌다 — {why_not_hero(s)}")
+                return None
         used.append(v)
-        return cuts[v]
+        return v
+
+    def spare_hero() -> int | None:
+        """페이지 전체에서 다시 고른다. PHOTO 먼저, 없으면 MIXED."""
+        if shots is None:
+            return None
+        def pool_of(want: str) -> list[Shot]:
+            return [
+                sh for i, sh in shots.items()
+                if i < len(kinds) and kinds[i] == want and i not in used and i not in blocked
+            ]
+
+        for chooser in (pick_hero, pick_hero_relaxed):
+            for want in ("PHOTO", "MIXED"):
+                best = chooser(pool_of(want))
+                if best is not None:
+                    used.append(best.band)
+                    return best.band
+        return None
 
     spec = {k: str(v).strip() for k, v in (got.get("spec") or got.get("summary") or {}).items()
             if str(v).strip()}
@@ -608,13 +706,17 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
 
     page = Page(spec=spec, keys=keys)
     # 자리 순서가 곧 우선권이다. 특징·패키지를 먼저 잡고 대표컷이 그 나머지에서 고르게 한다.
-    page.feature = cut(got.get("feature"), "특징컷")
-    page.package = cut(got.get("package"), "패키지")
-    page.main = cut(got.get("main"), "대표컷")
+    fi = cut(got.get("feature"), "특징컷", gate=usable_photo)
+    pi = cut(got.get("package"), "패키지")
+    mi = cut(got.get("main"), "대표컷", gate=clean_hero)
 
     # 대표컷이 비면 페이지가 통째로 무너진다(legacy ⓒ — 결과가 백지로 나왔다).
-    # 모델 픽이 거부되면 **남은 것 중에서 다시 고른다.**
-    if page.main is None:
+    # 모델 픽이 검사대에서 떨어지면 **페이지 전체에서 다시 고른다.**
+    if mi is None:
+        mi = spare_hero()
+        if mi is not None:
+            notes.append(f"대표컷을 다시 골랐다 — 밴드 [{mi}] (깨끗한 단독컷)")
+    if mi is None:
         quiet: list[str] = []          # 후보를 훑는 동안의 메모는 남기지 않는다
         for want in ("PHOTO", "MIXED", "UNKNOWN"):
             for i, kind in enumerate(kinds):
@@ -624,13 +726,18 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
                 spare = cut(i, "대표컷 대신")
                 notes = keep
                 if spare is not None:
-                    page.main = spare
-                    notes.append(f"모델이 고른 대표컷을 못 써서 [{i}] 로 대신했다")
+                    mi = spare
+                    notes.append(f"깨끗한 컷이 없어 [{i}]({want}) 로 대신했다")
                     break
-            if page.main is not None:
+            if mi is not None:
                 break
-        if page.main is None:
-            notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
+    if mi is None:
+        notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
+
+    page.feature = cuts[fi] if fi is not None else None
+    page.package = cuts[pi] if pi is not None else None
+    page.main = cuts[mi] if mi is not None else None
+    page.main_band = mi if mi is not None else -1
 
     bs = got.get("body_start")
     page.body_start = bs if isinstance(bs, int) and 0 <= bs < len(cuts) else -1

@@ -6,7 +6,7 @@ import html
 import re
 from pathlib import Path
 
-from .body import BODY, PHOTO, Section
+from .body import BODY, PHOTO, SUB, Section
 
 CSS = """
 .bpage{max-width:860px;margin:0 auto;font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif;color:#2b2f3a;-webkit-font-smoothing:antialiased}
@@ -15,6 +15,8 @@ CSS = """
 .bpage .sec:first-child{border-top:0}
 .bpage .no{font-size:13px;font-weight:800;letter-spacing:.22em;color:#1a2440;opacity:.55}
 .bpage h2{font-size:28px;font-weight:800;letter-spacing:-.02em;color:#1a2440;margin:8px 0 22px;line-height:1.25}
+.bpage h3{font-size:19px;font-weight:800;letter-spacing:-.01em;color:#1a2440;margin:26px 0 10px;line-height:1.35}
+.bpage h3:first-child{margin-top:0}
 .bpage figure{margin:0 0 18px;text-align:center}
 .bpage figure img{max-width:100%;height:auto;display:inline-block}
 .bpage figcaption{text-align:left;max-width:640px;margin:10px auto 0;font-size:14.5px;line-height:1.75;color:#4a4f5c}
@@ -75,6 +77,9 @@ def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
                 if it.crop:
                     cap = f"<figcaption>{_text_or_crop(it, assets)}</figcaption>"
                 out.append(f'<figure><img src="{src(it.file)}" alt="">{cap}</figure>')
+            elif it.kind == SUB:
+                # 섹션을 못 연 제목. 층을 지키려고 h3 로 들어간다 (body.sections 참고).
+                out.append(f"<h3>{_text_or_crop(it, assets, tag='h3')}</h3>")
             elif it.kind == BODY:
                 out.append(_text_or_crop(it, assets))
         out.append("</section>")

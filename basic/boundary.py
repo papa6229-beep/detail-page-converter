@@ -75,6 +75,16 @@ def _is_plate(b: B.Band) -> bool:
     return b.largest_cc >= PLATE_BLOB and b.fill_ratio >= PLATE_FILL
 
 
+def summary_bands(entries: list[Entry]) -> set[int]:
+    """요약정보 표가 든 밴드 번호들.
+
+    **대표컷·feature 로 절대 못 쓰는 자리다.** 원본 메인섹션의 표를 대표컷으로
+    세우면 새 페이지에 남의 디자인이 통째로 따라 들어온다 — 기본형이 피하려는
+    바로 그것이다(legacy ⓖ).
+    """
+    return {i for i, e in enumerate(entries[:PLATE_LOOK]) if _is_plate(e.band)}
+
+
 def _after_summary(entries: list[Entry]) -> int:
     """요약정보 표를 찾으면 그 다음부터 훑는다. 못 찾으면 처음부터."""
     for i, e in enumerate(entries[:PLATE_LOOK]):

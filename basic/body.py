@@ -19,6 +19,10 @@ from . import bands as B
 from . import sidetext
 
 BADGE, TITLE, BODY, PHOTO, FOOT = "badge", "title", "body", "photo", "foot"
+#: 큰 번호 머리띠(`01 | 제품특징`). 제목 중에서도 **한 급 위**다 — 아래 sections() 참고.
+HEAD = "head"
+#: 섹션을 못 연 제목. 열려 있는 섹션 안의 소제목(h3)으로 들어간다.
+SUB = "sub"
 
 #: 제목이라 부를 최대 높이. 글줄 하나~둘. 본문 설명은 이보다 길다.
 TITLE_MAX_H = 100
@@ -105,7 +109,7 @@ def _role(b: B.Band, crop: np.ndarray) -> str:
     if b.kind == B.TEXT:
         return BODY
     if _is_color_header(crop):
-        return TITLE                              # `01 | 제품특징` 같은 색 번호 머리띠
+        return HEAD                               # `01 | 제품특징` 같은 색 번호 머리띠
     if box and b.white > 0.6 and b.color < 0.2 and box[2] < 0.5:
         lines = [r for r in box[3] if r >= 6]
         if lines and max(lines) <= 100:            # 글줄 높이 안쪽(큰 번호 제목까지) — 사진은 한 덩이가 훨씬 크다
@@ -186,7 +190,7 @@ def read_image(path: Path, out: Path, prefix: str = "") -> list[Piece]:
         if role == BADGE:
             pieces.append(Piece(BADGE, b.y, b.height, crop=_save(crop, out, f"{nm}_badge.png", 2),
                                 band_kind=b.kind, why=b.why))
-        elif role in (TITLE, BODY):
+        elif role in (HEAD, TITLE, BODY):
             pieces.append(Piece(role, b.y, b.height, crop=_save(crop, out, f"{nm}_{role}.png", 2),
                                 band_kind=b.kind, why=b.why))
         else:
@@ -201,10 +205,35 @@ def read_image(path: Path, out: Path, prefix: str = "") -> list[Piece]:
     return pieces
 
 
+#: 섹션을 열 수 있는 신호. **세기 순**이다.
+#:
+#:     ① HEAD   큰 번호 머리띠 (`01 | 제품특징`)
+#:     ② BADGE  알약 라벨
+#:     ③ TITLE  굵은 한 줄 제목
+#:     ④ (없음) 설명 뒤에 다시 나오는 사진
+OPENERS = (HEAD, BADGE, TITLE)
+
+
+def tier_of(pieces: list[Piece]) -> str | None:
+    """이 페이지가 쓸 급 하나. 없으면 None (④ 로 간다)."""
+    return next((k for k in OPENERS if any(p.kind == k for p in pieces)), None)
+
+
 def sections(pieces: list[Piece]) -> list[Section]:
-    has_title = any(p.kind in (TITLE, BADGE) for p in pieces)
+    """조각들을 섹션으로 묶는다. **페이지마다 한 급만 쓴다.**
+
+    한 페이지 안에서 머리띠와 굵은 제목이 둘 다 섹션을 열면 층이 뒤섞인다 —
+    핑거위글은 머리띠가 넷(제품특징·포인트·사이즈·전원)인데 그 안의 굵은 제목·
+    색 문장까지 섹션을 열어 여섯 조각으로 흩어졌다. 그래서 **가장 센 급 하나만**
+    섹션을 열고, 못 연 급은 열려 있는 섹션의 소제목(h3)으로 들어간다.
+
+    예외 하나 — ① 로 여는 페이지에서 **첫 머리띠보다 앞에 나온** ②·③ 은 첫
+    섹션을 연다. 머리띠 앞의 도입부가 갈 곳이 없어지기 때문이다.
+    """
+    tier = tier_of(pieces)
     secs: list[Section] = []
     cur: Section | None = None
+    seen_tier = False
 
     def new() -> Section:
         s = Section(len(secs) + 1)
@@ -212,12 +241,24 @@ def sections(pieces: list[Piece]) -> list[Section]:
         return s
 
     for p in pieces:
-        if p.kind == BADGE:
-            cur = new()                     # 배지는 섹션 시작 신호. 글은 안 쓴다(상품명 반복)
-            continue
-        if p.kind == TITLE:
+        if p.kind in OPENERS:
+            # 급이 맞으면 연다. ① 페이지의 머리띠 앞 도입부도 연다.
+            opens = p.kind == tier or (tier == HEAD and not seen_tier)
+            if p.kind == tier:
+                seen_tier = True
+            if not opens:
+                if p.kind == BADGE:
+                    continue            # 배지에는 글이 없다. 소제목으로 못 쓴다
+                if cur is None:
+                    cur = new()
+                p.kind = SUB            # 급이 낮다 — 섹션 안의 소제목으로
+                cur.items.append(p)
+                continue
+            if p.kind == BADGE:
+                cur = new()             # 배지는 시작 신호. 글은 안 쓴다(상품명 반복)
+                continue
             if cur is not None and cur.title is not None and not cur.items:
-                p.kind = BODY               # 제목 바로 뒤의 제목 = 부제. 섹션을 또 열지 않는다
+                p.kind = SUB            # 제목 바로 뒤의 제목 = 부제. 섹션을 또 열지 않는다
                 cur.items.append(p)
                 continue
             if cur is None or cur.title is not None or cur.items:
@@ -226,7 +267,7 @@ def sections(pieces: list[Piece]) -> list[Section]:
             continue
         if cur is None:
             cur = new()
-        if (not has_title and p.kind == PHOTO and cur.bodies):
-            cur = new()                     # 제목 없는 페이지: 설명 뒤 사진 = 다음 섹션
+        if tier is None and p.kind == PHOTO and cur.bodies:
+            cur = new()                 # ④ 제목이 없는 페이지: 설명 뒤 사진 = 다음 섹션
         cur.items.append(p)
     return [s for s in secs if s.title or s.items]

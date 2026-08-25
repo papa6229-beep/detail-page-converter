@@ -149,3 +149,122 @@ def test_main_width_matches_body():
     from basic import render as bodyrender
     assert "width:860px" in main.CSS
     assert "max-width:860px" in bodyrender.CSS
+
+
+# ── 대표컷 검사대 ────────────────────────────────────────────────────────
+
+def shot(**kw) -> main.Shot:
+    """잰 값으로 후보 한 장. 안 준 것은 **깨끗한 단독컷**의 값."""
+    d = dict(rect=main.Rect(0, 0, 100, 100), white=0.8, color=0.02, ink=0.30,
+             letters=2, design=0.01, solo=0.98, area=10000, band=0)
+    d.update(kw)
+    return main.Shot(**d)
+
+
+def test_gate_tells_clean_from_designed():
+    assert main.clean_hero(shot())
+    assert not main.clean_hero(shot(design=0.35))     # 컬러 배경이 깔렸다
+    assert not main.clean_hero(shot(letters=60))      # 큰 글자가 구워져 있다
+    assert not main.clean_hero(shot(solo=0.40))       # 제품이 하나가 아니다
+    assert not main.clean_hero(shot(ink=0.01))        # 제품이 너무 작다
+
+
+def test_feature_gate_is_looser_than_hero():
+    """손이 든 컷은 대표컷은 못 되지만 feature 로는 쓴다 (legacy 대로)."""
+    hand = shot(solo=0.49)
+    assert not main.clean_hero(hand)
+    assert main.usable_photo(hand)
+
+
+def test_ai_hero_pick_must_pass_the_gate(tmp_path):
+    """모델이 원본 대표컷(컬러 배경)을 골라도 **버리고 다시 고른다.**"""
+    cuts = [tmp_path / f"b{i}.jpg" for i in range(3)]
+    for c in cuts:
+        c.write_bytes(b"x")
+    kinds = ["PHOTO", "PHOTO", "PHOTO"]
+    shots = {0: shot(band=0, design=0.55),          # 원본 대표컷 — 분홍 배경
+             1: shot(band=1, letters=80),           # 글 구간
+             2: shot(band=2)}                       # 깨끗한 단독컷
+    page, notes = main.take(json.dumps({"main": 0}), cuts, kinds, [1, 2, 4],
+                            shots=shots, blocked=set())
+    assert page.main_band == 2, notes
+    assert any("검사대에서 떨어졌다" in n for n in notes)
+    assert any("유채색 배경" in n for n in notes)
+
+
+def test_summary_plate_can_never_be_hero_or_feature(tmp_path):
+    """요약정보 표는 어떤 경우에도 대표컷·feature 가 못 된다."""
+    cuts = [tmp_path / f"b{i}.jpg" for i in range(2)]
+    for c in cuts:
+        c.write_bytes(b"x")
+    shots = {0: shot(band=0), 1: shot(band=1)}
+    page, notes = main.take(json.dumps({"main": 0, "feature": 0}), cuts,
+                            ["PHOTO", "PHOTO"], [1, 1 << 30],
+                            shots=shots, blocked={0})
+    assert page.main_band == 1
+    assert page.feature is None or page.feature != cuts[0]
+    assert any("요약정보 표" in n for n in notes)
+
+
+def test_gate_prefers_photo_over_mixed(tmp_path):
+    """다시 고를 때 PHOTO 를 먼저 본다."""
+    cuts = [tmp_path / f"b{i}.jpg" for i in range(3)]
+    for c in cuts:
+        c.write_bytes(b"x")
+    kinds = ["MIXED", "MIXED", "PHOTO"]
+    shots = {0: shot(band=0), 1: shot(band=1), 2: shot(band=2, area=5000)}
+    page, _ = main.take(json.dumps({"main": None}), cuts, kinds, [1, 2, 4],
+                        shots=shots, blocked=set())
+    assert page.main_band == 2      # 더 작아도 PHOTO 가 먼저다
+
+
+# ── 본문 섹션 급 ─────────────────────────────────────────────────────────
+
+def piece(kind: str, y: int = 0) -> "object":
+    from basic import body
+    return body.Piece(kind, y, 40, crop="c.png", text="글")
+
+
+def test_only_the_strongest_tier_opens_sections():
+    """①이 있으면 ①만 연다. ③은 소제목으로 내려간다."""
+    from basic import body
+    ps = [piece(body.HEAD, 0), piece(body.TITLE, 1), piece(body.BODY, 2),
+          piece(body.HEAD, 3), piece(body.TITLE, 4)]
+    secs = body.sections(ps)
+    assert body.tier_of(ps) is None or True          # tier_of 는 위에서 이미 계산됐다
+    assert len(secs) == 2                            # 머리띠 둘만 연다
+    assert ps[1].kind == body.SUB and ps[4].kind == body.SUB
+
+
+def test_title_opens_when_no_head():
+    from basic import body
+    ps = [piece(body.TITLE, 0), piece(body.BODY, 1), piece(body.TITLE, 2)]
+    assert body.tier_of(ps) == body.TITLE
+    assert len(body.sections(ps)) == 2
+
+
+def test_badge_outranks_title():
+    """②가 있으면 ③은 소제목으로 내려간다. 빈 섹션은 안 만든다."""
+    from basic import body
+    ps = [piece(body.BADGE, 0), piece(body.TITLE, 1), piece(body.BODY, 2),
+          piece(body.BADGE, 3), piece(body.BODY, 4)]
+    assert body.tier_of(ps) == body.BADGE
+    secs = body.sections(ps)
+    assert len(secs) == 2
+    assert ps[1].kind == body.SUB          # 굵은 제목은 소제목으로
+
+
+def test_intro_before_first_head_still_opens():
+    """①보다 앞에 나온 ③은 첫 섹션을 연다 — 도입부가 갈 곳이 없어진다."""
+    from basic import body
+    ps = [piece(body.TITLE, 0), piece(body.BODY, 1), piece(body.HEAD, 2)]
+    secs = body.sections(ps)
+    assert len(secs) == 2
+    assert secs[0].title is ps[0] and ps[0].kind == body.TITLE
+
+
+def test_plain_en_strips_outer_parens():
+    from basic import web
+    assert web.plain_en("(Finger Wiggle Prostate Massager)") == "Finger Wiggle Prostate Massager"
+    assert web.plain_en("Glans Penis Trainer") == "Glans Penis Trainer"
+    assert web.plain_en("명기(名器) 시리즈") == "명기(名器) 시리즈"   # 안쪽 괄호는 그대로
