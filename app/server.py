@@ -535,6 +535,10 @@ def reset():
     return JSONResponse({"ok": True})
 
 
+#: 기본형 화면은 basic/ 안에서 따로 산다. 여긴 붙이는 한 줄뿐이다 → /basic
+app.include_router(__import__("basic.web", fromlist=["router"]).router)
+
+
 def main() -> None:
     import uvicorn
 
