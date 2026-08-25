@@ -6,29 +6,48 @@
     /basic/out/<상품번호>     미리보기
     /basic/out/<상품번호>/file  내려받기
 
-단순형에서 빌려 쓰는 것은 **읽기 전용 세 가지**뿐이다 — 엑셀 파서(app.excel),
-상세설명 파서(app.source), 받아 두기(app.convert.fetch), 키 찾기(app.llm).
-단순형의 변환·배치·렌더는 부르지 않는다. 여기 것은 basic/ 파이프라인이다.
+흐름 — **상품당 AI 2콜.**
+
+    엑셀 행 → 상세 이미지(gif·공통장식 제외)
+      → bands.read 로 전부 밴드로 자른다 (번호는 이미지를 넘어서 이어진다)
+      → 【1콜】 main.parts_for + PROMPT → main.take
+                spec · keys · main · feature · package · body_start
+      → 메인  = main.render_page
+      → 본문  = body_start 이후 밴드만 body.sections
+      → 【2콜】 read_text — **본문 글자 조각만.** 메인 것은 1콜에서 이미 나왔다
+      → 한 파일: 메인 HTML + 본문 HTML (둘 다 폭 860)
+
+단순형에서 빌려 쓰는 것은 **읽기 전용 다섯**뿐이다 — 엑셀 파서(app.excel),
+상세설명 파서(app.source), 받아 두기(app.convert.fetch), 상품명 가르기
+(app.render.split_name), 키 찾기(app.llm). 단순형의 변환·배치·렌더는 안 부른다.
 
 app.server 를 가져오지 않는다. server 가 이쪽을 붙이므로 서로 가져오면 원이 된다.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import traceback
+import urllib.request
 from pathlib import Path
 
+import numpy as np
 from fastapi import APIRouter, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
+from PIL import Image
 from pydantic import BaseModel
 
 from app import convert as _convert
 from app import excel as _excel
 from app import llm as _llm
+from app import render as _apprender
 from app import source as _source
 
-from . import body, read_text, render
+from . import bands as B
+from . import body, boundary, main, read_text, render
+
+Image.MAX_IMAGE_PIXELS = None
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = Path(os.environ.get("CONVERTER_WORK", ROOT / "work"))
@@ -45,7 +64,7 @@ SKIP_EXT = (".gif",)
 
 
 def body_images(row) -> tuple[list[str], list[str]]:
-    """(쓸 본문 이미지, 뺀 것과 이유).
+    """(쓸 이미지, 뺀 것과 이유).
 
     공통 장식·배너는 app.source 가 이미 걷어낸다(`banana_img/conf/` 따위).
     여기서 더 빼는 것은 gif 뿐이다.
@@ -62,10 +81,28 @@ def body_images(row) -> tuple[list[str], list[str]]:
     return use, skipped
 
 
+def typed_text(row) -> str:
+    """원본에 직접 타이핑돼 있던 글. 모델에게 **읽는 근거**로 준다."""
+    parsed = _source.parse(row.body)
+    lines = [b.text for b in parsed.lead_blocks if b.text.strip()]
+    lines += [p.caption for p in parsed.pieces if p.caption.strip()]
+    return "\n".join(lines).strip()
+
+
+def ask_model(key: str, parts, timeout: int = 240) -> str:
+    """모델에 한 번 물어본다. 어댑터는 단순형 것을 그대로 빌린다."""
+    url, headers, payload = _llm.build(key, parts, max_tokens=4000)
+    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        got = json.loads(r.read())
+    text, _stop = _llm.extract(key, got)
+    return text
+
+
 class ConvertReq(BaseModel):
     sheet: str
     row: int
-    #: 켜면 AI 를 안 부르고 글자 자리에 조각 이미지를 그대로 둔다.
+    #: 켜면 AI 를 아예 안 부른다 — 경계는 예비 규칙, 글자는 원본 조각 그대로.
     raw: bool = False
 
 
@@ -85,6 +122,90 @@ async def api_basic_excel(file: UploadFile):
     return {"sheet": key, "rows": rows, "missing": getattr(sheet, "missing", [])}
 
 
+def cut_bands(files: list[Path], assets: Path):
+    """이미지들을 순서대로 밴드로 자른다. **번호는 이미지를 넘어서 이어진다.**
+
+    돌려주는 것 넷 — (밴드+이미지번호, 밴드 그림 파일, 종류, dHash).
+    종류는 `bands.classify` 가 붙인 것에 홍보 움짤 판정을 얹는다.
+    """
+    entries: list[boundary.Entry] = []
+    cuts: list[Path] = []
+    kinds: list[str] = []
+    hashes: list[int] = []
+    for gi, f in enumerate(files):
+        arr = np.asarray(Image.open(f).convert("RGB"))
+        promo = main.is_promo(arr, f.name)
+        for b in B.read(arr):
+            n = len(cuts)
+            path = assets / f"band_{n:03d}.jpg"
+            Image.fromarray(arr[b.y : b.y + b.height]).save(path, quality=90)
+            entries.append(boundary.Entry(b, gi))
+            cuts.append(path)
+            kinds.append("PROMO" if promo else b.kind)
+            hashes.append(b.dhash)
+    return entries, cuts, kinds, hashes
+
+
+def body_pieces(files: list[Path], entries: list[boundary.Entry], start: int, assets: Path) -> list:
+    """`start` 번 밴드부터를 본문으로 보고 조각을 낸다.
+
+    밴드 번호를 (이미지, y) 로 바꿔서 자른다. `body.read_image` 는 밴드를 다시
+    읽어 배지를 떼고 글줄을 붙이므로 **조각 번호와 밴드 번호가 다르다.** 그래서
+    번호가 아니라 **자리(y)** 로 가른다 — 조각의 y 는 밴드의 y 와 같은 자다.
+    """
+    if start >= len(entries):
+        return []
+    edge_img, edge_y = entries[start].image, entries[start].band.y
+    out = []
+    for gi, f in enumerate(files):
+        if gi < edge_img:
+            continue
+        pieces = body.read_image(f, assets, prefix=f"i{gi}_")
+        if gi == edge_img:
+            pieces = [p for p in pieces if p.y >= edge_y]
+        out += pieces
+    return out
+
+
+def pick_hero_cut(files: list[Path], entries: list[boundary.Entry], cuts: list[Path],
+                  kinds: list[str]) -> tuple[Path | None, str]:
+    """대표컷을 픽셀로 고른다. **페이지 전체에서 찾는다.**
+
+    첫 이미지만 보면 안 된다 — 핑거위글의 첫 이미지는 통째로 원본 메인섹션이라
+    컬러 배경 위의 컷과 표뿐이고, 깨끗한 제품 단독컷은 둘째 이미지에 있다.
+
+    `pick_hero` 가 빈손이면 잣대를 한 칸씩 늦춘다. 셋 다 실패해도 **제일 나쁜
+    것은 빈 대표컷**이라(legacy ⓒ — 결과가 백지로 나왔다) 마지막에는 종류만
+    보고라도 세운다. 다만 글자 밴드는 끝까지 안 세운다.
+    """
+    cands: list[main.Shot] = []
+    off = 0
+    for gi, f in enumerate(files):
+        n = sum(1 for e in entries if e.image == gi)
+        cands += main.shots(np.asarray(Image.open(f).convert("RGB")), offset=off)
+        off += n
+
+    usable = [c for c in cands if c.band < len(cuts) and kinds[c.band] not in ("TEXT", "PROMO")]
+    hero = main.pick_hero(usable)
+    if hero is not None:
+        return cuts[hero.band], f"대표컷을 픽셀로 골랐다 — 밴드 [{hero.band}] (깨끗한 단독컷)"
+
+    photos = main.pick_photos(usable)
+    if photos:
+        best = max(photos, key=lambda c: c.product_pixels)
+        return cuts[best.band], f"단독컷이 없어 제품이 가장 크게 찍힌 밴드 [{best.band}] 로 세웠다"
+
+    if usable:
+        best = max(usable, key=lambda c: c.product_pixels)
+        return cuts[best.band], f"쓸 만한 사진이 없어 밴드 [{best.band}] 로 세웠다"
+
+    for want in ("PHOTO", "MIXED", "UNKNOWN"):
+        pick = next((i for i, k in enumerate(kinds) if k == want), None)
+        if pick is not None:
+            return cuts[pick], f"후보가 없어 [{pick}]({want}) 로 세웠다"
+    return None, "대표컷 후보가 하나도 없다"
+
+
 @router.post("/api/basic/convert")
 def api_basic_convert(req: ConvertReq):
     sheet = SHEETS.get(req.sheet)
@@ -96,14 +217,15 @@ def api_basic_convert(req: ConvertReq):
 
     urls, skipped = body_images(row)
     if not urls:
-        raise HTTPException(400, "쓸 본문 이미지가 없다 (공통 장식·gif 를 빼고 나니 0장)")
+        raise HTTPException(400, "쓸 이미지가 없다 (공통 장식·gif 를 빼고 나니 0장)")
 
     out = OUT / f"basic_{row.code}"
     assets = out / "assets"
     assets.mkdir(parents=True, exist_ok=True)
+    notes: list[str] = []
 
     try:
-        # 1) 받아 두기 — 단순형과 같은 통을 쓴다. 같은 그림을 두 번 받지 않는다.
+        # ① 받아 두기 — 단순형과 같은 통. 같은 그림을 두 번 받지 않는다.
         files = []
         for n, url in enumerate(urls):
             data = _convert.fetch(url, CACHE)
@@ -111,30 +233,66 @@ def api_basic_convert(req: ConvertReq):
             f.write_bytes(data)
             files.append(f)
 
-        # 2) 밴드로 자르고 섹션으로 묶는다
-        pieces = []
-        for n, f in enumerate(files):
-            pieces += body.read_image(f, assets, prefix=f"i{n}_")
+        # ② 밴드로 자른다 (AI 0콜)
+        entries, cuts, kinds, hashes = cut_bands(files, assets)
+
+        # ③ 【1콜】 메인 — spec · keys · 그림 셋 · body_start
+        key = "" if req.raw else _llm.key_from_env()
+        _tags, name_kr, name_en = _apprender.split_name(row.name)
+        page = main.Page(name_kr=name_kr or row.name, name_en=name_en,
+                         maker=row.brand or row.maker)
+        if key:
+            reply = ask_model(key, main.parts_for(row.name, page.maker, typed_text(row), cuts, kinds))
+            got, ai_notes = main.take(reply, cuts, kinds, hashes)
+            got.name_kr, got.name_en, got.maker = page.name_kr, page.name_en, page.maker
+            page, notes = got, ai_notes
+            notes.insert(0, f"{_llm.label(key)} 1콜 — 밴드 {len(cuts)}장을 보냈다")
+        else:
+            notes.append("키가 없어 AI 를 안 불렀다 — 메인 스펙·핵심특징은 비고, 경계는 예비 규칙으로 잡는다")
+            page.body_start = -1
+
+        # ④ 경계 — 모델 답이 없거나 범위 밖이면 예비 규칙
+        fallback, why = boundary.find_body_start(entries)
+        if page.body_start < 0:
+            page.body_start = fallback
+            notes.append(why)
+            source_of_start = "예비 규칙"
+        else:
+            source_of_start = "AI"
+            notes.append(f"{why} (AI 는 {page.body_start} 라고 했다)")
+
+        # 대표컷이 비면 페이지가 무너진다(legacy ⓒ). AI 를 안 불렀으면 픽셀로 고른다.
+        if page.main is None and cuts:
+            page.main, note = pick_hero_cut(files, entries, cuts, kinds)
+            notes.append(note)
+        if page.main is None:
+            notes.append("대표컷이 비었다 — 손으로 지정해야 한다")
+
+        # ⑤ 대표컷 다시 앉히기
+        if page.main is not None:
+            page.main = main.reframe(page.main, assets / "hero.jpg")
+
+        # ⑥ 본문 — body_start 이후 밴드만
+        pieces = body_pieces(files, entries, page.body_start, assets)
         crops = [p for p in pieces if p.crop and p.kind != body.BADGE]
 
-        # 3) 글자 읽기 — 키는 단순형이 쓰는 방법 그대로 서버가 찾는다
-        key = "" if req.raw else _llm.key_from_env()
-        texts: dict[str, str] = {}
-        note = ""
-        if key:
+        # ⑦ 【2콜】 본문 글자 읽기 — 메인 것은 이미 1콜에서 나왔다
+        if key and crops:
             texts = read_text.read(key, [assets / p.crop for p in crops])
-            note = f"{_llm.label(key)} 로 글자 조각 {len(crops)}개를 읽었다"
+            notes.append(f"{_llm.label(key)} 2콜 — 본문 글자 조각 {len(crops)}개를 읽었다")
         else:
-            note = ("키가 없어 글자를 안 읽었다 — 글자 자리에 원본 조각을 그대로 두었다."
-                    " ANTHROPIC_API_KEY 나 OPENAI_API_KEY 를 넣고 다시 돌리면 채워진다.")
+            texts = {}
+            if crops:
+                notes.append(f"본문 글자 조각 {len(crops)}개는 안 읽었다 — 원본 조각을 그대로 둔다")
         for i, p in enumerate(crops):
             p.text = texts.get(str(i), texts.get(p.crop, ""))
 
-        # 4) 렌더
+        # ⑧ 한 파일 — 메인 + 본문. 둘 다 폭 860.
         secs = body.sections(pieces)
         html = ('<!doctype html><meta charset="utf-8">'
                 '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/'
                 'pretendard@v1.3.9/dist/web/static/pretendard.min.css">'
+                + main.render_page(page)
                 + render.render(secs, assets))
         (out / "index.html").write_text(html, encoding="utf-8", newline="\n")
     except HTTPException:
@@ -143,14 +301,20 @@ def api_basic_convert(req: ConvertReq):
         traceback.print_exc()
         raise HTTPException(500, f"변환 실패: {e}") from e
 
-    log = [f"밴드 {len(pieces)}개 → 섹션 {len(secs)}개 · 읽을 조각 {len(crops)}개"]
-    log += [f"  y={p.y:5d} h={p.h:4d} {p.kind:6} [{p.band_kind}] {p.why}" for p in pieces]
+    log = [f"밴드 {len(cuts)}개 · body_start {page.body_start}({source_of_start})"
+           f" → 본문 조각 {len(pieces)}개 · 섹션 {len(secs)}개"]
+    log += [f"  [{i:3}] img{e.image} y={e.band.y:6d} h={e.band.height:5d} {k:8}"
+            f"{'  ← 본문 시작' if i == page.body_start else ''}"
+            for i, (e, k) in enumerate(zip(entries, kinds))]
     (out / "log.txt").write_text("\n".join(log), encoding="utf-8")
 
     return {"ok": True, "code": row.code, "name": row.name,
             "used": urls, "skipped": skipped,
-            "bands": len(pieces), "sections": len(secs), "crops": len(crops),
-            "read": bool(key), "note": note,
+            "bands": len(cuts), "body_start": page.body_start,
+            "body_start_from": source_of_start, "fallback_body_start": fallback,
+            "sections": len(secs), "crops": len(crops),
+            "spec": page.spec, "keys": [list(k) for k in page.keys],
+            "hero": bool(page.main), "notes": notes,
             "bytes": len(html.encode()), "url": f"/basic/out/{row.code}"}
 
 
@@ -184,41 +348,39 @@ body{font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif;color:#2b2f
 h1{font-size:24px;font-weight:800;color:#1a2440;letter-spacing:-.02em}
 .sub{margin-top:6px;color:#6b7280;font-size:14px}
 .card{background:#fff;border:1px solid #e6e8ee;border-radius:12px;padding:20px;margin-top:18px}
-.todo{background:#fff8e6;border:1px solid #f0dCa0;border-radius:10px;padding:12px 14px;margin-top:14px;font-size:14px;color:#7a5d00}
-.todo b{color:#5c4600}
 label.file{display:inline-block;border:1px dashed #c9ccd6;border-radius:8px;padding:14px 18px;cursor:pointer;background:#fafbfc;font-size:14px}
 label.file:hover{background:#f2f4f7}
 input[type=file]{display:none}
 table{width:100%;border-collapse:collapse;margin-top:6px;font-size:14px}
 th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #eef0f4;vertical-align:middle}
 th{font-size:12px;letter-spacing:.06em;color:#8a90a0;font-weight:700;text-transform:uppercase}
-td.nm{max-width:520px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+td.nm{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 button{font:inherit;font-weight:700;border:0;border-radius:8px;padding:8px 14px;cursor:pointer;background:#1a2440;color:#fff}
 button:disabled{opacity:.45;cursor:default}
-button.ghost{background:#eef0f4;color:#1a2440}
 .msg{margin-top:12px;font-size:14px;color:#4a4f5c;white-space:pre-wrap}
 .err{color:#b42318}
 .chk{font-size:13px;color:#6b7280;margin-left:12px}
 .links a{display:inline-block;margin-right:10px}
+.tag{display:inline-block;border-radius:999px;padding:2px 9px;font-size:12px;font-weight:700;
+ background:#eef2ff;color:#3730a3;margin-right:6px}
+.tag--fb{background:#fff7ed;color:#9a3412}
 details{margin-top:8px}
 summary{cursor:pointer;font-size:13px;color:#6b7280}
 pre{font-size:12px;color:#6b7280;white-space:pre-wrap;margin-top:6px;line-height:1.6}
 </style>
 <div class="wrap">
   <h1>기본형 변환기</h1>
-  <div class="sub">본문 이미지를 밴드로 잘라 섹션으로 다시 짠다. 단순형과 따로 돈다.</div>
-
-  <div class="todo"><b>지금은 본문만 변환됩니다.</b> 메인(대표 이미지·상단 히어로)은 아직입니다.</div>
+  <div class="sub">원본을 재료로만 쓴다 — 메인은 새로 세우고, 본문은 밴드로 다시 짠다. 단순형과 따로 돈다.</div>
 
   <div class="card">
     <label class="file">엑셀 올리기 <input type="file" id="f" accept=".xlsx,.xls"></label>
-    <label class="chk"><input type="checkbox" id="raw"> 글자는 원본 조각 그대로 (AI 안 부름)</label>
+    <label class="chk"><input type="checkbox" id="raw"> AI 안 부르기 (경계는 예비 규칙 · 글자는 원본 조각)</label>
     <div class="msg" id="m"></div>
   </div>
 
   <div class="card" id="listCard" style="display:none">
     <table>
-      <thead><tr><th>상품번호</th><th>상품명</th><th>본문</th><th></th><th></th></tr></thead>
+      <thead><tr><th>상품번호</th><th>상품명</th><th>이미지</th><th></th><th></th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
@@ -262,11 +424,19 @@ $('#f').onchange = async e => {
         try {
           const d2 = await post('/api/basic/convert', {sheet, row: row.i, raw: $('#raw').checked});
           btn.textContent = '다시 변환';
+          const fb = d2.body_start_from === 'AI' ? '' : ' tag--fb';
           links.innerHTML = `<a href="${d2.url}" target="_blank">미리보기</a>
-            <a href="${d2.url}/file">HTML 내려받기</a>`;
+            <a href="${d2.url}/file">HTML 내려받기</a>
+            <div style="margin-top:6px">
+              <span class="tag${fb}">body_start ${d2.body_start} · ${d2.body_start_from}</span>
+              <span class="tag">예비 규칙 ${d2.fallback_body_start}</span>
+              <span class="tag">${d2.hero ? '대표컷 있음' : '대표컷 없음'}</span>
+            </div>`;
           const det = document.createElement('details');
-          det.innerHTML = `<summary>섹션 ${d2.sections}개 · 밴드 ${d2.bands}개 · ${Math.round(d2.bytes/1024)}KB</summary>
-            <pre>${d2.note}\\n\\n쓴 것:\\n  ${d2.used.join('\\n  ')}${d2.skipped.length ? '\\n\\n뺀 것:\\n  ' + d2.skipped.join('\\n  ') : ''}</pre>`;
+          const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');
+          const keys = (d2.keys || []).map(k => `  · ${k[0]} — ${k[1]}`).join('\\n');
+          det.innerHTML = `<summary>밴드 ${d2.bands}개 · 본문 섹션 ${d2.sections}개 · ${Math.round(d2.bytes/1024)}KB</summary>
+            <pre>AI notes:\\n  ${(d2.notes||[]).join('\\n  ')}\\n\\n요약정보:\\n${spec || '  (없음)'}\\n\\n핵심특징:\\n${keys || '  (없음)'}\\n\\n쓴 것:\\n  ${d2.used.join('\\n  ')}${d2.skipped.length ? '\\n\\n뺀 것:\\n  ' + d2.skipped.join('\\n  ') : ''}</pre>`;
           links.appendChild(det);
         } catch (err) {
           btn.textContent = '기본형 변환';
