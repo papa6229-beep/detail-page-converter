@@ -30,9 +30,6 @@ from PIL import Image
 
 from . import bands as B
 
-#: 대표컷이 되려면 이만한 크기는 돼야 한다. 페이지 폭에 대한 비율로 잰다 —
-#: px 로 못박으면 폭이 다른 원본에서 그대로 어긋난다.
-MIN_SIDE_FRAC = 0.25
 #: 글자꼴 덩어리를 셀 때 이 크기로 줄여서 본다. 글자가 뭉개지지 않으면서 빠르다.
 CC_SCALE = 200
 
@@ -60,10 +57,10 @@ class Shot:
     solo: float       #: 가장 큰 덩어리가 어두운 화소에서 차지하는 몫 — 제품이 하나인가
     area: int
     band: int = -1    #: 몇 번 밴드에서 나왔나
-    #: **테두리 한 겹의 채도.** 배경이 흰가 · 옅은 색인가 · 진한 색인가를 가른다.
-    #: 밝은 쪽 40% 로 재던 것을 바꿨다 — 다일레이터처럼 제품 자체가 옅은 보라·연두면
-    #: 제품 화소가 '배경' 에 섞여 들어와 흰 바탕인데도 23 이 나온다. 테두리는 안 섞인다.
-    bg_sat: float = 0.0
+    #: **테두리 한 겹에서 색이 있는 화소의 몫.** 배경에 색이 깔렸는가를 가른다.
+    #: 채도의 *중앙값* 으로 재던 것을 *비율* 로 바꿨다 — 죠우무의 파란 그라데이션 컷은
+    #: 좌우에 흰 여백이 있어 중앙값이 0 으로 나왔다(막지 못했다). 비율은 0.41 이다.
+    bg_tint: float = 0.0
     #: 이 밴드에 **글자가 박혀 있는가.** 덩어리 개수(letters)는 무늬 있는 제품에서
     #: 60~76 까지 뛰어 못 믿는다. 밴드 종류(MIXED)와 `sidetext` 가 직접 말해 준다.
     has_text: bool = False
@@ -103,14 +100,15 @@ def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
     letters, solo = _blobs(lum)
     area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
     # 배경은 **테두리 한 겹**으로 본다. 제품은 가운데에 있고 테두리는 바닥이다.
+    # 중앙값이 아니라 **색이 있는 화소의 몫**을 센다 — 한쪽에만 색이 깔린 컷을
+    # 중앙값으로는 못 잡는다.
     t = max(2, min(6, crop.shape[0] // 8, crop.shape[1] // 8))
     edge = np.concatenate([crop[:t].reshape(-1, 3), crop[-t:].reshape(-1, 3),
                            crop[:, :t].reshape(-1, 3), crop[:, -t:].reshape(-1, 3)])
-    med = np.median(edge, axis=0)
-    bg_sat = float(med.max() - med.min())
+    bg_tint = float(((edge.max(1) - edge.min(1)) >= 40).mean())
     subject = float(((lum < 232) | (sat >= 45)).mean())
     return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band,
-                bg_sat=bg_sat, subject=subject)
+                bg_tint=bg_tint, subject=subject)
 
 
 def _densest(mask: np.ndarray) -> float:
@@ -213,20 +211,19 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
     알맹이 자리를 따로 찾아 잰다.
 
     `offset` 은 이 이미지의 첫 밴드가 몇 번인가 — 상품 이미지가 여러 장이면
-    밴드 번호가 이미지를 넘어서 이어지므로, 돌려주는 `Shot.band` 도 그 번호여야
-    한다. **대표컷은 페이지 전체에서 찾는다** — 핑거위글은 깨끗한 단독컷이
-    둘째 이미지에 있어서, 첫 이미지만 보면 하나도 못 고른다.
+    밴드 번호가 이미지를 넘어서 이어지므로, 돌려주는 `Shot.band` 도 그 번호여야 한다.
+
+    **작다고 건너뛰지 않는다.** 예전에는 폭의 1/4 보다 작은 밴드를 뺐다. 코드가
+    대표컷을 직접 고르던 시절의 잣대다. 지금은 모델이 고르므로, 모델이 고른 밴드를
+    안 재 놓으면 "너무 작아 후보로 안 쟀다" 는 **네 번째 거르기**가 몰래 생긴다
+    (유컵스에서 실제로 그랬다). 거르는 기준은 셋뿐이어야 한다.
     """
     from . import sidetext
 
-    w = arr.shape[1]
-    floor = int(w * MIN_SIDE_FRAC)
     out = []
     for i, b in enumerate(B.read(arr)):
         r = _content_rect(arr, b.y, b.height)
         if r is None:
-            continue
-        if min(r.x1 - r.x0 + 1, r.y1 - r.y0 + 1) < floor:
             continue
         sh = _stats(arr, r, offset + i)
         # 글자가 박혀 있는가 — 밴드 종류와 `sidetext` 에게 **직접** 묻는다.
@@ -235,248 +232,122 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
     return out
 
 
-#: 대표컷이 되려면 제품이 한 덩어리로 찍혀 있어야 한다. 실측 —
-#: 제품 셋이 쌓인 사이즈 구간 36% · 손이 든 컷 49% ↔ 제품 단독컷 95~100%.
-SOLO = 0.9
-#: 그 페이지에서 가장 깨끗한 컷보다 이만큼까지는 같이 본다. 딱 하나만 남기면
-#: 워터마크 하나로 답이 뒤집힌다.
-CLEAN_ROOM = 10
-#: 원본 디자인의 색 글씨·배경이 박혀 있다고 보는 자리. 핑거위글 실측 —
-#: 깨끗한 사진 0.4·0.6·0.6·4.2% ↔ 디자인이 박힌 것 23·31·31·32·38·61·62·100%.
-DESIGN_INK = 0.15
-#: 글 구간과 사진을 가르는 자리. 핑거위글 조각 열넷에서 **23 과 51 사이가 비어 있다**.
-TEXT_BAND = 40
-
-
-def pick_photos(cands: list[Shot]) -> list[Shot]:
-    """쓸 만한 사진들. 대표컷보다 잣대가 헐거워야 한다.
-
-    **못 쓰는 것은 세 가지뿐이다.**
-
-        글 구간이다      원본 디자인의 글이 통째로 딸려 온다 (글자꼴 51개 이상)
-        컬러 배경·배너다  원본 쇼핑몰의 색이 따라 들어온다
-        상자다          제 네모를 꽉 채운 검은 덩어리 — 패키지 자리로 간다
-    """
-    return [
-        c
-        for c in cands
-        if c.design < DESIGN_INK and c.letters < TEXT_BAND and 0.03 <= c.ink <= 0.75
-    ]
-
-
-def usable_photo(s: Shot) -> bool:
-    """feature 자리에 쓸 수 있는가 — **느슨하게.** legacy 의 `pick_photos` 그대로.
-
-    손이 들고 있어도, 거치대에 얹혀 있어도, 작은 주석이 붙어 있어도 쓴다.
-    못 쓰는 것은 셋뿐이다 — 글 구간 · 컬러 배경/배너 · 제 네모를 꽉 채운 상자.
-    """
-    return s.design < DESIGN_INK and s.letters < TEXT_BAND and 0.03 <= s.ink <= 0.75
-
-
-def clean_hero(s: Shot) -> bool:
-    """대표컷 자리에 쓸 수 있는가 — **깐깐하게.**
-
-    `pick_hero` 가 보는 것과 같은 잣대다: 유채색 배경이 없고(design), 큰 글자가
-    구워져 있지 않고(letters), 제품이 화면을 적당히 채우며(ink), **한 덩어리**로
-    찍혀 있어야 한다(solo). 모델이 골랐어도 이걸 못 넘으면 안 쓴다 —
-    원본 대표컷은 하나같이 컬러 배경 위에 얹혀 있어서, 그대로 가져오면 새
-    쇼핑몰에 남의 디자인이 따라 들어온다(legacy ⓖ).
-    """
-    return usable_photo(s) and s.solo >= SOLO
-
-
-def why_not_hero(s: Shot) -> str:
-    """못 넘은 까닭을 사람 말로. 조용히 버리지 않는다."""
-    bad = []
-    if s.design >= DESIGN_INK:
-        bad.append(f"유채색 배경 {s.design:.2f}")
-    if s.letters >= TEXT_BAND:
-        bad.append(f"큰 글자 {s.letters}개")
-    if not (0.03 <= s.ink <= 0.75):
-        bad.append(f"제품 크기 {s.ink:.2f}")
-    if s.solo < SOLO:
-        bad.append(f"제품이 하나가 아님 {s.solo:.2f}")
-    return " · ".join(bad) or "알 수 없음"
-
-
-def pick_hero(cands: list[Shot]) -> Shot | None:
-    """대표컷 하나를 고른다. 판정하지 않고 **그 페이지 안에서 견준다.**
-
-    원본 대표컷은 못 쓴다 — 기본형 원본은 하나같이 컬러 배경 위에 제품을 얹어
-    놓아서, 그대로 가져오면 새 쇼핑몰에 남의 디자인이 따라 들어온다.
-
-    **깨끗함은 그 페이지 안에서만 뜻이 있다.** 상품 둘을 재보면 절대값으로는
-    못 가른다 —
-
-        핑거위글  제품 단독컷 글자꼴 0·0·2   거치대+리모컨 23   ← 23 을 빼야 한다
-        글랜스    제품 단독컷 글자꼴 11·17·22                  ← 22 를 넣어야 한다
-
-    같은 숫자가 두 답을 낸다. 그래서 그 페이지에서 가장 깨끗한 컷을 바닥으로
-    삼고 거기서 얼마까지 봐줄지로 정한다.
-    """
-    photos = [c for c in pick_photos(cands) if c.solo >= SOLO]
-    if not photos:
-        return None
-    floor = min(c.letters for c in photos)
-    clean = [c for c in photos if c.letters <= floor + CLEAN_ROOM]
-    return max(clean, key=lambda c: c.product_pixels)
-
-
-def pick_hero_relaxed(cands: list[Shot]) -> Shot | None:
-    """**페이지 전체에 원본 디자인 색이 깔려 있을 때**의 차선.
-
-    브루스를 재보니 밴드 열아홉 장이 전부 `design` 0.38~1.00 이었다 — 보라 그라데
-    이션이 페이지 바닥에 통째로 깔려 있어서, 그 잣대로는 **아무것도 못 가른다.**
-    깨끗한 컷이 없는 게 아니라 그 페이지에 흰 바탕이 없는 것이다.
-
-    그래서 `design` 하나만 뺀다. 나머지는 그대로 — 제품이 한 덩어리로 찍혔고
-    (solo), 글이 적고(letters), 화면을 적당히 채워야(ink) 한다. 그 다음은
-    `pick_hero` 와 같은 상대 잣대다.
-
-    이걸 안 두면 `product_pixels` 만 보고 고르게 되는데, 브루스에서는 그러면
-    구성품 컷(글자 68개 · 121k)이 제품 단독컷(글자 13개 · 121k)을 근소하게
-    이겨서 파우치와 케이블과 분홍 캡션이 대표컷으로 올라간다.
-    """
-    photos = [c for c in cands
-              if c.letters < TEXT_BAND and 0.03 <= c.ink <= 0.75 and c.solo >= SOLO]
-    if not photos:
-        return None
-    floor = min(c.letters for c in photos)
-    clean = [c for c in photos if c.letters <= floor + CLEAN_ROOM]
-    return max(clean, key=lambda c: c.product_pixels)
-
-
-# ── 등급 ────────────────────────────────────────────────────────────────
+# ── 대표컷·키피쳐 고르기 ────────────────────────────────────────────────
 #
-#   A  배경이 비어 있음(흰색) · 글자 없음 · 제품 하나        누끼 단독컷
-#   B  배경에 옅은 색 · 손이 잡음 · 거치대 등 소품            누끼 연출컷
-#   C  그 밖 (색 배경 진함 · 글자 박힘 · 여러 제품)
+# **코드는 고르지 않는다. 거르기만 한다.**
 #
-# **글자 수는 그 페이지 안에서만 뜻이 있다.** 절대값으로 자르면 못 가른다 —
+# 모델이 자리마다 후보를 순서대로 준다. 코드는 그 순서대로 검사해서 첫 통과를
+# 쓴다. 예전에는 코드가 등급(A·B·C)을 매겨 직접 골랐는데, 상품이 하나 늘 때마다
+# 임계값이 늘고 결과는 오히려 나빠졌다 — 무늬 있는 제품에서는 글자꼴이 60~76 개로
+# 세어지고, 파란 제품에서는 `ink` 가 0 이 되고, 페이지 바닥에 색이 깔리면
+# `design` 이 전부 1.0 에 붙었다. 픽셀로 "무엇이 어울리는가" 를 재려던 것이 잘못이다.
 #
-#     핑거위글 누끼컷  0 · 0        거치대컷 24     ← 24 를 빼야 한다
-#     다일레이터 누끼컷 6            평범한 제품컷 58·69·73·76
-#                                    ← 무늬가 잘게 갈려 글자처럼 세어진다
+# 거르는 기준은 **셋뿐이다.** 늘리지 않는다.
 #
-# 같은 숫자가 두 답을 낸다. 그래서 그 페이지에서 가장 적은 것을 바닥으로 삼는다.
-# B 는 글자 수를 아예 안 본다 — `has_text`(밴드 종류·sidetext)가 직접 말해 주므로
-# 무늬를 글자로 오해할 일이 없다.
+#     ① 유채색 배경이 깔림   (대표컷만 — 키피쳐는 연출컷도 쓴다)
+#     ② 글자가 박힘
+#     ③ 제품이 여러 개
 #
-#: 배경이 "비어 있다"고 볼 테두리 채도. 흰 바탕 0~5, 진한 색 배경 10 위.
-A_BG_SAT = 6.0
-#: 바닥에서 이만큼까지는 "글자 없음" 으로 본다.
-A_LETTER_ROOM = 8
-#: 배경에 색이 깔려도 **옅으면** 연출컷. 브루스 보라(46)·다일레이터 초록(46)부터는 C.
-B_BG_SAT = 8.0
-#: 손이 잡거나 소품이 끼면 덩어리가 갈린다. 제품 둘까지 내려가면 C.
-B_SOLO = 0.60
+# 숫자는 7개 상품(핑거위글·브루스·글랜스·다일레이터·벨벳키스·유컵스·죠우무)의
+# 후보 밴드 100장을 재서 골랐다. **веto 다.** 애매하면 통과시킨다 — 고르는 일은
+# 모델 몫이고, 여기서 막는 것은 누가 봐도 아닌 것뿐이다.
+
+#: ① 테두리에서 색이 있는 화소의 몫이 이보다 크면 유채색 배경이다. 실측 —
+#:     흰 바탕 제품컷   0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.03 · 0.04 · 0.05
+#:     색 배경         0.31 · 0.37 · 0.41 · 0.46 · 0.47 · 0.53 · 0.55 · 0.59 · 0.63 · 0.95 · 1.00
+#: **0.05 와 0.31 사이가 통째로 비어 있다.** 어디에 그어도 답이 같다.
+TINTED_BG = 0.15
+
+#: ③ 가장 큰 덩어리가 어두운 화소에서 차지하는 몫. 이보다 작으면 제품이 여러 개다.
+#: 실측 — 격자·나열컷 0.167 · 0.193 · 0.260 ↔ 단독컷 0.37 이상.
+#: 낮게 잡는다. 창백한 제품(죠우무 살구색)은 단독컷인데도 덩어리가 잘게 갈려
+#: 0.37 까지 내려간다 — 높이 잡으면 멀쩡한 단독컷을 막는다.
+MULTI_SOLO = 0.40
 
 
-def letter_floor(cands) -> int:
-    """그 페이지에서 가장 적은 글자 수. 없으면 0."""
-    got = [c.letters for c in cands]
-    return min(got) if got else 0
+def reject(s: Shot, hero: bool) -> str:
+    """못 쓰는 까닭 한 줄. 쓸 수 있으면 빈 글자.
 
-
-def grade(s: Shot, floor: int = 0) -> str:
-    """후보 한 장의 등급. `floor` 는 그 페이지의 글자 수 바닥."""
+    `hero` 면 유채색 배경까지 본다. 키피쳐는 손·소품·옅은 배경을 허용한다.
+    """
+    if hero and s.bg_tint > TINTED_BG:
+        return f"유채색 배경이 깔렸다 (테두리 색비율 {s.bg_tint:.2f})"
     if s.has_text:
-        return "C"                                    # 글자가 박혀 있다
-    if s.bg_sat > B_BG_SAT:
-        return "C"                                    # 색 배경이 진하다
-    if s.solo < B_SOLO:
-        return "C"                                    # 제품이 여럿이다
-    # `design`(유채색이 가장 빽빽한 가로 띠)은 여기서 안 본다. 그것은 **배경에 색이
-    # 깔렸는가**를 재려던 것인데, 제품 자체가 색이면(브루스 보라 0.68 · 다일레이터
-    # 0.89) 제품을 배경으로 오해한다. 배경은 테두리(`bg_sat`)가 본다.
-    if (s.bg_sat <= A_BG_SAT and s.solo >= SOLO
-            and s.letters <= floor + A_LETTER_ROOM
-            and 0.03 <= s.ink <= 0.75):
-        return "A"
-    return "B"
+        return "글자가 박혔다"
+    if s.solo < MULTI_SOLO:
+        return f"제품이 여러 개다 (한 덩어리 몫 {s.solo:.2f})"
+    return ""
+
+
+def first_pass(picks, shots: dict[int, Shot], kinds: list[str], hashes: list[int],
+               blocked, used: list[int], hero: bool, slot: str,
+               notes: list[str]) -> int:
+    """모델이 준 순서대로 검사해서 **첫 통과**를 쓴다. 없으면 -1.
+
+    막을 때마다 왜 막았는지 적는다. 셋 다 떨어지면 빈칸으로 두고 그 사실도 적는다 —
+    조용히 비워 두면 화면만 보고는 모델이 안 골랐는지 우리가 막았는지 알 수 없다.
+    """
+    if not isinstance(picks, list):
+        picks = [picks]
+    for v in picks[:3]:
+        if not isinstance(v, int) or not (0 <= v < len(kinds)):
+            continue
+        kind = kinds[v]
+        if kind in ("TEXT", "PROMO"):
+            notes.append(f"{slot} [{v}] 막음 — {kind} 밴드다")
+            continue
+        if v in blocked:
+            notes.append(f"{slot} [{v}] 막음 — 원본 요약정보 표가 든 밴드다")
+            continue
+        if v in used:
+            notes.append(f"{slot} [{v}] 막음 — 이미 다른 자리에 썼다")
+            continue
+        if any(B.hamming(hashes[v] if v < len(hashes) else 0,
+                         hashes[u] if u < len(hashes) else 0) <= B.DUP_HAMMING
+               for u in used):
+            notes.append(f"{slot} [{v}] 막음 — 이미 쓴 것과 같은 사진이다")
+            continue
+        sh = shots.get(v)
+        if sh is None:
+            notes.append(f"{slot} [{v}] 막음 — 너무 작아 후보로 재지 않았다")
+            continue
+        why = reject(sh, hero)
+        if why:
+            notes.append(f"{slot} [{v}] 막음 — {why}")
+            continue
+        used.append(v)
+        return v
+    notes.append(f"{slot} 빈칸 — 모델이 준 후보가 셋 다 떨어졌거나 없다")
+    return -1
 
 
 def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
                blocked: set[int] | frozenset = frozenset(),
-               ai_main=None, ai_feature=None) -> tuple[int, int, list[str]]:
-    """대표컷과 키피쳐를 **같은 흐름으로** 고른다. (대표컷 밴드, 키피쳐 밴드, 메모)
-
-    후보는 페이지 전체의 PHOTO·MIXED 밴드. 요약정보 표·TEXT·PROMO 는 뺀다.
-
-        대표컷   A 에서만. A 가 없으면 B 에서 고르고 적는다
-        키피쳐   대표컷을 뺀 나머지에서 A → B 순. C 는 안 쓴다
-                 대표컷과 dHash 가 같으면 건너뛴다 — 같은 사진이 두 번 실린다
-
-    **AI 픽은 먼저 검사하는 후보일 뿐이다.** 통과하면 쓰고, 떨어지면 코드가 고른다.
-    전에는 대표컷에만 재선택이 있고 키피쳐엔 없어서, 모델이 침묵하거나 픽이
-    떨어지면 KEY FEATURE 가 통째로 비었다.
-    """
+               ai_main=None, ai_feature=None,
+               ai_package=None) -> tuple[int, int, int, list[str]]:
+    """(대표컷, 키피쳐, 패키지, 메모). 셋 다 모델이 준 순서대로 검사한 결과다."""
     notes: list[str] = []
-    pool = {b: sh for b, sh in shots.items()
-            if b < len(kinds) and kinds[b] in ("PHOTO", "MIXED") and b not in blocked}
-    floor = letter_floor(pool.values())
-    graded = {b: grade(sh, floor) for b, sh in pool.items()}
-
-    def best(want: str, skip: set[int]) -> int | None:
-        got = [b for b, g in graded.items() if g == want and b not in skip]
-        return max(got, key=lambda b: pool[b].subject_pixels) if got else None
-
-    def same_photo(a: int, b: int) -> bool:
-        ha = hashes[a] if a < len(hashes) else 0
-        hb = hashes[b] if b < len(hashes) else 0
-        return B.hamming(ha, hb) <= B.DUP_HAMMING
-
-    def ai_ok(pick, want: tuple[str, ...], why: str, skip: dict[int, str]) -> int | None:
-        if not isinstance(pick, int):
-            return None
-        if pick not in pool:
-            notes.append(f"{why}: AI 픽 [{pick}] 은 후보가 아니다"
-                         f"({'요약정보 표' if pick in blocked else kinds[pick] if pick < len(kinds) else '범위 밖'})")
-            return None
-        if pick in skip:
-            notes.append(f"{why}: AI 픽 [{pick}] 은 {skip[pick]}")
-            return None
-        if graded[pick] not in want:
-            notes.append(f"{why}: AI 픽 [{pick}] 은 {graded[pick]}등급이라 떨어졌다 — {why_not_hero(pool[pick])}")
-            return None
-        return pick
-
-    # ── 대표컷 ──
-    hero = ai_ok(ai_main, ("A",), "대표컷", {})
-    if hero is None:
-        hero = best("A", set())
-        if hero is not None and ai_main is not None:
-            notes.append(f"대표컷을 A등급에서 다시 골랐다 — 밴드 [{hero}]")
-    if hero is None:
-        hero = best("B", set())
-        if hero is not None:
-            notes.append(f"A등급(누끼 단독컷)이 없어 B등급 밴드 [{hero}] 로 세웠다")
-    if hero is None:
-        hero = best("C", set())
-        if hero is not None:
-            notes.append(f"A·B 가 하나도 없어 C등급 밴드 [{hero}] 로 세웠다 — 눈으로 봐야 한다")
-
-    # ── 키피쳐 ── 대표컷 자신과, 대표컷과 **같은 사진**인 밴드는 건너뛴다
-    skip: dict[int, str] = {}
-    if hero is not None:
-        skip[hero] = "대표컷으로 이미 썼다"
-        for b in pool:
-            if b != hero and same_photo(b, hero):
-                skip[b] = f"대표컷 [{hero}] 과 같은 사진이다"
-    feat = ai_ok(ai_feature, ("A", "B"), "키피쳐", skip)
-    if feat is None:
-        feat = best("A", set(skip)) or best("B", set(skip))
-        if feat is not None and ai_feature is not None:
-            notes.append(f"키피쳐를 다시 골랐다 — 밴드 [{feat}]")
-    if feat is None:
-        notes.append("키피쳐 후보(A·B)가 없다 — 비워 둔다")
-
-    for slot, b in (("대표컷", hero), ("키피쳐", feat)):
-        if b is not None:
-            notes.append(f"{slot} = 밴드 [{b}] · {graded[b]}등급")
-    return (hero if hero is not None else -1,
-            feat if feat is not None else -1,
-            notes)
+    used: list[int] = []
+    # `or []` 를 쓰면 안 된다 — 0번 밴드는 거짓이라 통째로 사라진다.
+    hero = first_pass([] if ai_main is None else ai_main,
+                      shots, kinds, hashes, blocked, used, True, "대표컷", notes)
+    feat = first_pass([] if ai_feature is None else ai_feature,
+                      shots, kinds, hashes, blocked, used, False, "키피쳐", notes)
+    # **패키지에는 셋을 안 댄다.** 상자 사진은 으레 상자와 제품이 같이 놓여 있어
+    # "제품이 여러 개" 에 걸린다 — 벨벳키스의 진짜 상자컷(한 덩어리 몫 0.25)이
+    # 그렇게 죽었다. 못 쓰는 밴드(TEXT·PROMO·요약정보 표·중복)만 막는다.
+    pkg = -1
+    if isinstance(ai_package, int) and 0 <= ai_package < len(kinds):
+        if kinds[ai_package] in ("TEXT", "PROMO"):
+            notes.append(f"패키지 [{ai_package}] 막음 — {kinds[ai_package]} 밴드다")
+        elif ai_package in blocked:
+            notes.append(f"패키지 [{ai_package}] 막음 — 원본 요약정보 표가 든 밴드다")
+        elif ai_package in used:
+            notes.append(f"패키지 [{ai_package}] 막음 — 이미 다른 자리에 썼다")
+        else:
+            used.append(ai_package)
+            pkg = ai_package
+    return hero, feat, pkg, notes
 
 
 #: 강조색. 고도몰 생성기의 기본값을 그대로 쓴다 (`DEFAULT_THEME_COLOR`).
@@ -571,11 +442,10 @@ class Page:
     feature: Path | None = None
     #: 원본 메인섹션이 끝나고 본문이 시작되는 첫 밴드 번호
     body_start: int = 0
-    #: 대표컷·키피쳐로 세운 밴드 번호와 등급. 보고용 — 사람이 봐야 한다.
+    #: 세운 밴드 번호들. 보고용 — 어느 컷을 세웠는지 사람이 봐야 한다.
     main_band: int = -1
-    main_grade: str = ""
     feature_band: int = -1
-    feature_grade: str = ""
+    package_band: int = -1
 
 
 #: 사장님이 고정한 다섯 항목. 1행 셋, 2행 둘 — 2행을 왼쪽에 두는 것은
@@ -701,12 +571,20 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
    3줄이 모자라면 요약정보나 설명 글에서 보탠다. **없는 사실을 지어내지 마라.**
    제목은 한눈에 읽히게 짧게, 설명은 한 줄로.
 
-3. **그림 고르기** — 자리마다 **가장 어울리는 것**을 고른다.
+3. **그림 고르기** — 자리마다 **좋은 순서대로 셋**을 준다. 하나만 주지 마라.
+   앞엣것이 막히면 뒤엣것을 쓴다. 그러니 **1번이 가장 좋은 것**이어야 한다.
 
-    main      대표컷. 배경색이 깔린 컷보다 **깨끗한 제품 단독컷**이 어울린다.
-              깨끗한 컷이 없으면 그때는 차선을 고르고 `notes` 에 적어라.
-    feature   핵심특징 옆에 놓일 컷. 대표컷과 다른 것으로.
-    package   패키지 상자가 찍힌 컷. 없으면 비워라.
+    main      대표컷 후보 셋. **흰 바탕에 제품만 놓인 컷**을 찾아라.
+              사람(모델)이 나온 컷 · 색 배너 · 글자 띠는 **절대 넣지 마라.**
+              그런 컷밖에 없어도 넣지 말고, 흰 바탕 제품컷을 다시 찾아라.
+              같은 제품이 여러 개 나란히 놓인 컷은 괜찮다 — 배경만 희면 된다.
+              흰 바탕 컷이 여럿이면 제품이 크게 찍힌 순서로.
+    feature   대표컷과 **다른** 제품컷 후보 셋. 손이 잡고 있어도, 거치대에
+              얹혀 있어도, 배경에 옅은 색이 깔려 있어도 된다.
+              설계도·단면도·치수 도해보다 **실제 제품 사진**이 앞이다.
+    package   **판매용 상자**가 찍힌 컷 하나. 상자가 없으면 null.
+              상자 옆에 제품이 같이 놓여 있어도 된다 — 상자가 보이면 그것이다.
+              제품만 찍힌 컷, 글자만 있는 띠는 여기 넣지 마라.
 
 4. **메인과 본문의 경계** — `body_start` 에 숫자 하나.
 
@@ -734,12 +612,18 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 **돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
 
 ```json
-{"spec":{"타입":"","재질":"","무게":"","전원":""},
- "keys":[{"t":"제목","d":"한 줄 설명"},{"t":"","d":""},{"t":"","d":""}],
- "main":0,"feature":1,"package":null,
+{"타입":"","재질":"","무게":"","전원":"",
+ "key1_t":"제목","key1_d":"한 줄 설명",
+ "key2_t":"","key2_d":"",
+ "key3_t":"","key3_d":"",
+ "main":[16,31,14],"feature":[26,12,9],"package":4,
  "body_start":7,
  "notes":["깨끗한 누끼컷이 없어 차선을 썼다"]}
 ```
+
+**칸은 이 열여섯 개가 전부다. 안에 또 중괄호나 대괄호를 만들지 마라** —
+`notes` 와 `main`·`feature` 만 배열이고, 그 안에는 값만 들어간다.
+`main` 과 `feature` 는 **반드시 배열**이다. 숫자 하나만 주지 마라.
 """
 
 #: 라벨을 못 받았을 때의 기본값. 차단하지 않는다.
@@ -782,21 +666,15 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
          hashes: list[int] | None = None,
          shots: dict[int, Shot] | None = None,
          blocked: set[int] | frozenset = frozenset()) -> tuple[Page, list[str]]:
-    """모델이 돌려준 것을 받는다. **그대로 믿지 않는다.**
+    """모델이 돌려준 것을 받는다. **코드는 고르지 않고 거르기만 한다.**
 
-    막는 것은 셋뿐이다 —
+    모델이 자리마다 후보를 순서대로 주면(`main`·`feature` 는 셋), `pick_slots` 가
+    그 순서대로 검사해 첫 통과를 쓴다. 막는 것은 `reject` 의 셋 + 못 쓰는 밴드
+    (TEXT·PROMO·요약정보 표·이미 쓴 것·같은 사진)뿐이다.
 
-        TEXT · PROMO 밴드를 그림 자리에 넣었다   → 그 자리를 비운다
-        같은 밴드를 두 자리에 넣었다             → 뒤엣것을 비운다
-        같은 사진이 다른 밴드로 또 들어왔다        → dHash 로 알아보고 비운다
-
-    **잘못된 사진보다 빈 칸이 안전하다.** 손님은 이 그림을 보고 주문한다.
-    다만 대표컷만은 예외다 — 비면 페이지가 통째로 무너지므로 다시 고른다.
-
-    대표컷과 키피쳐는 `pick_slots` 가 등급(A·B·C)으로 고른다. **모델 픽은 먼저
-    검사하는 후보일 뿐이다** — 통과하면 쓰고 떨어지면 코드가 고른다. 모델은 원본
-    대표컷(컬러 배경 위의 컷)을 곧잘 고르는데 그건 우리가 피하려던 바로 그것이다.
-    `blocked` 는 어떤 경우에도 못 쓰는 밴드 — 요약정보 표가 든 자리다.
+    셋 다 떨어지면 **비운다.** 예전에는 대표컷이 비면 코드가 페이지 전체를 훑어
+    다시 골랐는데, 그 '다시 고르기' 가 6칸 격자나 파우치 컷을 대표컷으로 세웠다.
+    잘못 세우는 것보다 비우고 왜 비었는지 말하는 편이 낫다.
     """
     m = re.search(r"\{[\s\S]*\}", reply or "")
     if not m:
@@ -808,55 +686,38 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
 
     notes = [str(x) for x in got.get("notes") or []]
     hashes = hashes or []
-    used: list[int] = []
 
-    def cut(v, why: str) -> int | None:
-        """쓸 수 있으면 밴드 번호를, 못 쓰면 None. 막을 때마다 까닭을 적는다."""
-        if not isinstance(v, int) or not (0 <= v < len(cuts)):
-            return None
-        kind = kinds[v] if v < len(kinds) else UNKNOWN_KIND
-        if kind in ("TEXT", "PROMO"):
-            notes.append(f"{why}: [{v}] 는 {kind} 라 그림으로 못 씀")
-            return None
-        if v in blocked:
-            notes.append(f"{why}: [{v}] 는 원본 요약정보 표가 든 밴드라 못 씀")
-            return None
-        if v in used:
-            notes.append(f"{why}: [{v}] 는 이미 다른 자리에 썼다")
-            return None
-        h = hashes[v] if v < len(hashes) else 0
-        for u in used:
-            if B.hamming(h, hashes[u] if u < len(hashes) else 0) <= B.DUP_HAMMING:
-                notes.append(f"{why}: [{v}] 는 [{u}] 와 같은 사진이다")
-                return None
-        used.append(v)
-        return v
-
-    spec = {k: str(v).strip() for k, v in (got.get("spec") or got.get("summary") or {}).items()
-            if str(v).strip()}
+    # 답은 **평평한 칸 열여섯**이다. 중첩을 없앤 이유는 모델이 자꾸 `keys` 배열의
+    # 닫는 대괄호를 빠뜨려 답 전체가 버려졌기 때문이다(글랜스·다일레이터).
+    # 옛 모양(`spec`·`keys` 중첩)도 받아 준다 — 저장해 둔 답이 아직 그 모양일 수 있다.
+    nested = got.get("spec") or got.get("summary") or {}
+    spec = {k: str(v).strip() for k, v in nested.items() if str(v).strip()}
+    for k in ("타입", "재질", "무게", "전원", "특징"):
+        if str(got.get(k, "")).strip():
+            spec[k] = str(got[k]).strip()
     spec["치수"] = SIZE_FIXED
+
     keys = [
         (str(k.get("t") or k.get("title") or "").strip(),
          str(k.get("d") or k.get("desc") or "").strip())
         for k in (got.get("keys") or got.get("keyFeatures") or [])
         if isinstance(k, dict) and str(k.get("t") or k.get("title") or "").strip()
     ][:3]
+    if not keys:
+        keys = [(str(got.get(f"key{n}_t", "")).strip(), str(got.get(f"key{n}_d", "")).strip())
+                for n in (1, 2, 3)]
+        keys = [(t, d) for t, d in keys if t][:3]
 
     page = Page(spec=spec, keys=keys)
-    pi = cut(got.get("package"), "패키지")
-    page.package = cuts[pi] if pi is not None else None
-
-    # 대표컷과 키피쳐는 **같은 흐름**으로 고른다. AI 픽은 먼저 검사하는 후보일 뿐이다.
-    mi, fi, slot_notes = pick_slots(shots or {}, kinds, hashes, blocked,
-                                    ai_main=got.get("main"), ai_feature=got.get("feature"))
+    mi, fi, pi, slot_notes = pick_slots(
+        shots or {}, kinds, hashes, blocked,
+        ai_main=got.get("main"), ai_feature=got.get("feature"),
+        ai_package=got.get("package"))
     notes += slot_notes
     page.main = cuts[mi] if 0 <= mi < len(cuts) else None
     page.feature = cuts[fi] if 0 <= fi < len(cuts) else None
-    page.main_band, page.feature_band = mi, fi
-    page.main_grade = grade(shots[mi]) if shots and mi in shots else ""
-    page.feature_grade = grade(shots[fi]) if shots and fi in shots else ""
-    if page.main is None:
-        notes.append("대표컷 후보가 없다 — 손으로 지정해야 한다")
+    page.package = cuts[pi] if 0 <= pi < len(cuts) else None
+    page.main_band, page.feature_band, page.package_band = mi, fi, pi
 
     bs = got.get("body_start")
     page.body_start = bs if isinstance(bs, int) and 0 <= bs < len(cuts) else -1

@@ -116,13 +116,28 @@ def model_hero_pick(reply: str):
         return None
 
 
-def ask_model(key: str, parts, timeout: int = 240) -> str:
-    """모델에 한 번 물어본다. 어댑터는 단순형 것을 그대로 빌린다."""
+def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
+    """모델에 물어본다. **JSON 이 깨져 오면 한 번 더 부른다.**
+
+    다일레이터에서 모델이 `keys` 배열의 닫는 괄호를 빼먹고 보냈다. 그러면 답이
+    통째로 버려져 대표컷·키피쳐·패키지가 전부 빈칸이 된다. 고쳐 쓰려 들면
+    (괄호를 우리가 채워 넣으면) 무엇을 고쳤는지 모르게 되니, 그냥 다시 묻는다.
+    """
     url, headers, payload = _llm.build(key, parts, max_tokens=4000)
-    req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        got = json.loads(r.read())
-    text, _stop = _llm.extract(key, got)
+    text = ""
+    for n in range(tries):
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            got = json.loads(r.read())
+        text, _stop = _llm.extract(key, got)
+        m = re.search(r"\{[\s\S]*\}", text or "")
+        if m:
+            try:
+                json.loads(m.group(0))
+                return text
+            except json.JSONDecodeError:
+                pass
+        print(f"[basic] 모델 답의 JSON 이 깨졌다 — 다시 묻는다 ({n + 1}/{tries})", flush=True)
     return text
 
 
@@ -273,18 +288,11 @@ def api_basic_convert(req: ConvertReq):
             source_of_start = "AI"
             notes.append(f"{why} (AI 는 {page.body_start} 라고 했다)")
 
-        # 키가 없어 AI 를 안 불렀으면 **AI 픽만 없는 같은 흐름**으로 고른다.
-        # 대표컷만 고르고 키피쳐를 안 고르면 KEY FEATURE 가 통째로 빈다.
-        if page.main is None and cuts:
-            mi, fi, slot_notes = main.pick_slots(shots, kinds, hashes, blocked)
-            notes += slot_notes
-            page.main = cuts[mi] if 0 <= mi < len(cuts) else None
-            page.feature = cuts[fi] if 0 <= fi < len(cuts) else None
-            page.main_band, page.feature_band = mi, fi
-            page.main_grade = main.grade(shots[mi]) if mi in shots else ""
-            page.feature_grade = main.grade(shots[fi]) if fi in shots else ""
+        # **코드는 고르지 않는다.** 모델이 후보를 줘야 자리가 찬다.
+        # 키가 없으면 대표컷·키피쳐는 빈칸이다. 예전에는 여기서 코드가 페이지를
+        # 훑어 대신 골랐는데, 그 '대신 고르기' 가 6칸 격자를 대표컷으로 세웠다.
         if page.main is None:
-            notes.append("대표컷이 비었다 — 손으로 지정해야 한다")
+            notes.append("대표컷이 비었다 — 모델 후보가 없거나 셋 다 떨어졌다")
 
         # ⑤ 대표컷 다시 앉히기
         if page.main is not None:
@@ -333,9 +341,8 @@ def api_basic_convert(req: ConvertReq):
             "sections": len(secs), "crops": len(crops),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
             "hero": bool(page.main), "hero_band": page.main_band,
-            "hero_grade": page.main_grade,
             "feature": bool(page.feature), "feature_band": page.feature_band,
-            "feature_grade": page.feature_grade, "notes": notes,
+            "package_band": page.package_band, "notes": notes,
             "bytes": len(html.encode()), "url": f"/basic/out/{row.code}"}
 
 
@@ -451,8 +458,9 @@ $('#f').onchange = async e => {
             <div style="margin-top:6px">
               <span class="tag${fb}">body_start ${d2.body_start} · ${d2.body_start_from}</span>
               <span class="tag">예비 규칙 ${d2.fallback_body_start}</span>
-              <span class="tag">${d2.hero ? '대표컷 [' + d2.hero_band + '] ' + d2.hero_grade + '등급' : '대표컷 없음'}</span>
-              <span class="tag${d2.feature ? '' : ' tag--fb'}">${d2.feature ? '키피쳐 [' + d2.feature_band + '] ' + d2.feature_grade + '등급' : '키피쳐 없음'}</span>
+              <span class="tag${d2.hero ? '' : ' tag--fb'}">${d2.hero ? '대표컷 [' + d2.hero_band + ']' : '대표컷 없음'}</span>
+              <span class="tag${d2.feature ? '' : ' tag--fb'}">${d2.feature ? '키피쳐 [' + d2.feature_band + ']' : '키피쳐 없음'}</span>
+              <span class="tag">${d2.package_band >= 0 ? '패키지 [' + d2.package_band + ']' : '패키지 없음'}</span>
             </div>`;
           const det = document.createElement('details');
           const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');
