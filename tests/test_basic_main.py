@@ -97,180 +97,159 @@ def test_no_three_line_says_so():
     assert "못 찾았다" in note
 
 
-def shot(**kw) -> main.Shot:
-    """잰 값으로 후보 한 장. 안 준 것은 **흰 바탕 제품 단독컷**의 값."""
-    d = dict(rect=main.Rect(0, 0, 100, 100), white=0.8, color=0.02, ink=0.30,
-             letters=2, design=0.01, solo=0.98, area=10000, band=0,
-             bg_tint=0.0, has_text=False, subject=0.35)
+def facts(**kw) -> main.Facts:
+    """밴드 하나에 대해 모델이 말한 사실. 안 준 것은 **흰 바탕 제품 단독컷**."""
+    d = dict(products=1, white_bg=True, text=False, hand=False, box=False)
     d.update(kw)
-    return main.Shot(**d)
+    return main.Facts(**d)
 
 
-def slots(n: int, **kw):
-    """밴드 n 개짜리 페이지 하나 — (shots, kinds, hashes)."""
-    shots = {i: shot(band=i, **kw) for i in range(n)}
+def page(**bands):
+    """`b0=facts(...)` 꼴로 페이지 하나 — (facts, kinds, hashes)."""
+    got = {int(k[1:]): v for k, v in bands.items()}
+    n = max(got) + 1 if got else 0
     kinds = ["PHOTO"] * n
     # dHash 는 64비트다. 서로 다른 사진은 수십 비트가 다르다.
     hashes = [0x0F0F0F0F0F0F0F0F ^ (i * 0x1111111111111111) for i in range(n)]
-    return shots, kinds, hashes
+    return got, kinds, hashes
 
 
-# ── 거르기 — 기준은 셋뿐이다 ─────────────────────────────────────────────
+# ── 모델은 사실만, 고르는 것은 코드 ──────────────────────────────────────
 
-def test_only_three_reasons_to_reject():
-    """색 배경 · 글자 박힘 · 제품 여러 개. **이 셋 말고는 안 막는다.**"""
-    assert main.reject(shot()) == ""
-    assert "색 배경" in main.reject(shot(bg_tint=0.41))
-    assert "글자" in main.reject(shot(has_text=True))
-    assert "여러 개" in main.reject(shot(solo=0.20))
-    # 예전에 막던 것들은 이제 안 막는다 — 고르는 일은 모델이 한다
-    assert main.reject(shot(letters=90)) == ""      # 무늬가 잘게 갈린 제품
-    assert main.reject(shot(ink=0.001)) == ""       # 창백한 제품
-    assert main.reject(shot(design=0.95)) == ""     # 제품 자체가 색이다
+def test_parse_facts_reads_one_line_per_band():
+    got = main.parse_facts(["0:0,white,text,nohand,nobox",
+                            "7:1,white,notext,nohand,nobox",
+                            "9:6,color,notext,hand,box"])
+    assert got[0].products == 0 and got[0].text and not got[0].hand
+    assert got[7].products == 1 and got[7].white_bg and not got[7].text
+    assert got[9].products == 6 and not got[9].white_bg and got[9].hand and got[9].box
 
 
-def test_the_same_three_apply_to_every_slot():
-    """자리별 예외를 두지 않는다.
+def test_parse_facts_survives_a_broken_line():
+    """줄 하나가 깨져도 그 밴드만 잃는다 — 답 전체가 버려지지 않는다."""
+    got = main.parse_facts(["0:1,white,notext,nohand,nobox", "쓰레기", "", "2:1,white"])
+    assert set(got) == {0, 2}
 
-    패키지에만 검사를 안 걸었을 때 죠우무는 광고 배너를, 브루스는 파우치컷을
-    상자라고 세웠다. 대표컷에만 색 배경을 봤을 때 유컵스 키피쳐가 보라 배경이었다.
+
+def test_hero_is_white_notext_nohand_and_one_product():
+    f, kinds, hashes = page(b0=facts(white_bg=False), b1=facts(text=True),
+                            b2=facts(hand=True), b3=facts(products=0), b4=facts())
+    hero, _feat, _pkg, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 4
+
+
+def test_hero_accepts_all_options_in_one_shot():
+    """옵션이 여섯이면 **여섯이 다 보이는 컷**도 대표컷이다 (다일레이터).
+
+    여섯 중 셋만 모인 컷은 안 된다 — 손님이 구성을 잘못 읽는다.
     """
-    tinted = shot(bg_tint=0.55)
-    assert main.reject(tinted) != ""          # 어느 자리든 같은 답이다
-    shots, kinds, hashes = slots(3)
-    shots[0] = shot(band=0, bg_tint=0.55)
-    _h, _f, pkg, notes = main.pick_slots(shots, kinds, hashes,
-                                         ai_main=[1], ai_package=[0, 2])
-    assert pkg == 2, notes                    # 패키지도 색 배경이면 막힌다
-    assert any("패키지 [0] 막음" in n for n in notes)
+    f, kinds, hashes = page(b0=facts(products=3), b1=facts(products=6), b2=facts(products=1))
+    hero, _f, _p, _n = main.choose(f, kinds, hashes, options=6)
+    assert hero == 1                      # 셋짜리는 건너뛰고 여섯짜리를 쓴다
+    hero1, _f1, _p1, _n1 = main.choose(f, kinds, hashes, options=1)
+    assert hero1 == 2                     # 옵션이 하나면 하나짜리만 맞다
 
 
-def test_tint_threshold_sits_in_the_measured_gap():
-    """실측 — 흰 바탕 0.00~0.05 · 상자 0.16 ↔ 색 배경 0.31~1.00."""
-    for ok in (0.00, 0.03, 0.05, 0.16):       # 0.16 은 벨벳키스의 진짜 상자
-        assert main.reject(shot(bg_tint=ok)) == "", ok
-    for tint in (0.31, 0.37, 0.41, 0.46, 0.55, 0.63, 1.00):
-        assert main.reject(shot(bg_tint=tint)) != "", tint
-
-
-def test_first_pass_takes_the_first_that_survives():
-    """모델이 준 **순서대로** 검사해서 첫 통과를 쓴다. 코드가 순위를 뒤집지 않는다."""
-    shots, kinds, hashes = slots(4)
-    shots[0] = shot(band=0, bg_tint=0.60)      # 색 배경 — 막힌다
-    shots[1] = shot(band=1, has_text=True)     # 글자 — 막힌다
-    notes = []
-    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], "대표컷", notes)
-    assert got == 2, notes
-    assert any("[0] 막음" in n for n in notes) and any("[1] 막음" in n for n in notes)
-
-
-def test_bigger_is_not_better():
-    """넓이로 고르지 않는다 — 1번이 작아도 1번이다."""
-    shots, kinds, hashes = slots(2)
-    shots[0] = shot(band=0, area=100)
-    shots[1] = shot(band=1, area=999999)
-    got = main.first_pass([0, 1], shots, kinds, hashes, set(), [], "대표컷", [])
-    assert got == 0
-
-
-def test_all_three_rejected_leaves_blank_with_a_reason():
-    """셋 다 떨어지면 **빈칸**. 코드가 대신 고르지 않는다.
-
-    예전에는 여기서 페이지 전체를 훑어 대신 골랐고, 그 '대신 고르기' 가
-    6칸 격자와 파우치 컷을 대표컷으로 세웠다.
-    """
-    shots, kinds, hashes = slots(4, bg_tint=0.60)
-    notes = []
-    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], "대표컷", notes)
-    assert got == -1
-    assert any("빈칸" in n for n in notes)
-
-
-def test_feature_skips_the_hero_and_its_twin():
-    """키피쳐는 대표컷 자신과 **같은 사진**을 건너뛴다."""
-    shots, kinds, _ = slots(3)
-    hashes = [0b1010, 0b1010, 0xF0F0F0F0F0F0F0F0]      # 0 과 1 은 같은 사진
-    hero, feat, _pkg, notes = main.pick_slots(shots, kinds, hashes,
-                                              ai_main=[0], ai_feature=[1, 2])
-    assert hero == 0 and feat == 2, notes
-    assert any("같은 사진" in n for n in notes)
-
-
-def test_summary_plate_can_never_be_hero_or_feature():
-    """요약정보 표는 어떤 경우에도 못 쓴다."""
-    shots, kinds, hashes = slots(3)
-    hero, feat, _pkg, notes = main.pick_slots(shots, kinds, hashes, blocked={0},
-                                              ai_main=[0, 1], ai_feature=[0, 2])
-    assert hero == 1 and feat == 2
-    assert any("요약정보 표" in n for n in notes)
-
-
-def test_keyfeature_keeps_the_first_when_all_three_fail():
-    """키피쳐만은 비우지 않는다 — 그림 자리가 비면 글 카드만 남아 층이 무너진다.
-
-    대신 **왜 떨어진 것을 쓰는지 적는다.**
-    """
-    shots, kinds, hashes = slots(4, bg_tint=0.60)
-    shots[3] = shot(band=3)                      # 대표컷이 쓸 깨끗한 컷
-    hero, feat, pkg, notes = main.pick_slots(shots, kinds, hashes,
-                                             ai_main=[3], ai_feature=[0, 1],
-                                             ai_package=[2])
+def test_hero_takes_the_earlier_band_when_several_fit():
+    """여럿이면 **원본 순서상 앞의 것**. 넓이나 점수로 고르지 않는다."""
+    f, kinds, hashes = page(b3=facts(), b9=facts(), b20=facts())
+    hero, _f, _p, _n = main.choose(f, kinds, hashes, options=1)
     assert hero == 3
-    assert feat == 0, notes                      # 떨어졌어도 첫 번째를 쓴다
-    assert any("그대로 쓴다" in n for n in notes)
-    assert pkg == -1                             # 대표컷·패키지는 비운다
 
 
-def test_take_reads_the_flat_shape(tmp_path):
-    """답은 평평한 칸이다 — 중첩을 없앤 뒤 모델이 대괄호를 안 빠뜨린다."""
+def test_hero_blank_says_why():
+    f, kinds, hashes = page(b0=facts(white_bg=False), b1=facts(text=True))
+    hero, _f, _p, notes = main.choose(f, kinds, hashes, options=1)
+    assert hero == -1
+    assert any("대표컷 빈칸" in n for n in notes)
+
+
+def test_feature_skips_hero_and_allows_more_products():
+    f, kinds, hashes = page(b0=facts(), b1=facts(products=3), b2=facts())
+    hero, feat, _p, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 0 and feat == 1        # 키피쳐는 제품이 여럿이어도 된다
+
+
+def test_feature_allows_a_hand_only_when_nothing_else_is_left():
+    f, kinds, hashes = page(b0=facts(), b1=facts(hand=True))
+    hero, feat, _p, notes = main.choose(f, kinds, hashes, options=1)
+    assert hero == 0 and feat == 1
+    assert any("손이 나온 것을 썼다" in n for n in notes)
+
+
+def test_feature_skips_the_same_photo_as_hero():
+    f = {0: facts(), 1: facts(), 2: facts()}
+    kinds = ["PHOTO"] * 3
+    hashes = [0b1010, 0b1010, 0xF0F0F0F0F0F0F0F0]      # 0 과 1 은 같은 사진
+    hero, feat, _p, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 0 and feat == 2
+
+
+def test_package_is_chosen_before_feature():
+    """상자컷도 흰 바탕 제품컷이라 키피쳐가 먼저 집어 가면 상자 자리가 빈다.
+
+    벨벳키스에서 실제로 그랬다 — 상자가 하나뿐인데 키피쳐가 가져갔다.
+    """
+    f, kinds, hashes = page(b0=facts(), b1=facts(box=True))
+    hero, feat, pkg, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 0 and pkg == 1 and feat == -1
+
+
+def test_package_blank_when_no_box():
+    f, kinds, hashes = page(b0=facts(), b1=facts())
+    _h, _f, pkg, notes = main.choose(f, kinds, hashes, options=1)
+    assert pkg == -1
+    assert any("패키지 빈칸" in n for n in notes)
+
+
+def test_text_and_promo_bands_are_never_used():
+    f = {0: facts(), 1: facts(), 2: facts()}
+    kinds = ["TEXT", "PROMO", "PHOTO"]
+    hashes = [1, 2, 4]
+    hero, _feat, _pkg, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 2
+
+
+def test_take_reads_facts_and_chooses(tmp_path):
     cuts = [tmp_path / f"b{i}.jpg" for i in range(4)]
     for c in cuts:
         c.write_bytes(b"x")
-    shots, kinds, hashes = slots(4)
-    reply = json.dumps({"타입": "바이브레이터", "재질": "실리콘",
-                        "key1_t": "제목", "key1_d": "설명",
-                        "main": [0, 1], "feature": [2], "package": 3, "body_start": 2})
-    page, notes = main.take(reply, cuts, kinds, hashes, shots=shots, blocked=set())
-    assert page.spec["타입"] == "바이브레이터"
-    assert page.spec["치수"] == main.SIZE_FIXED
-    assert page.keys == [("제목", "설명")]
-    assert (page.main_band, page.feature_band, page.package_band) == (0, 2, 3)
-    assert page.body_start == 2
+    reply = json.dumps({"타입": "바이브레이터", "key1_t": "제목", "key1_d": "설명",
+                        "facts": ["0:0,white,text,nohand,nobox",
+                                  "1:1,color,notext,nohand,nobox",
+                                  "2:1,white,notext,nohand,nobox",
+                                  "3:1,white,notext,nohand,box"],
+                        "body_start": 2})
+    got, notes = main.take(reply, cuts, ["PHOTO"] * 4, [1, 2, 4, 8], options=1)
+    assert got.spec["타입"] == "바이브레이터" and got.spec["치수"] == main.SIZE_FIXED
+    assert got.keys == [("제목", "설명")]
+    assert (got.main_band, got.package_band) == (2, 3)
+    assert got.body_start == 2
 
 
-def test_take_still_reads_the_old_nested_shape(tmp_path):
-    """저장해 둔 옛 답도 읽힌다."""
+def test_take_without_facts_leaves_everything_blank(tmp_path):
     cuts = [tmp_path / "b0.jpg"]
     cuts[0].write_bytes(b"x")
-    shots, kinds, hashes = slots(1)
-    reply = json.dumps({"spec": {"타입": "옛 모양"}, "keys": [{"t": "제목", "d": "설명"}],
-                        "main": [0], "body_start": 0})
-    page, _ = main.take(reply, cuts, kinds, hashes, shots=shots, blocked=set())
-    assert page.spec["타입"] == "옛 모양" and page.keys == [("제목", "설명")]
-
-
-def test_take_survives_a_single_number(tmp_path):
-    """모델이 배열 대신 숫자 하나를 보내도 받는다."""
-    cuts = [tmp_path / "b0.jpg"]
-    cuts[0].write_bytes(b"x")
-    shots, kinds, hashes = slots(1)
-    page, _ = main.take(json.dumps({"main": 0}), cuts, kinds, hashes, shots=shots)
-    assert page.main_band == 0
+    got, notes = main.take(json.dumps({"body_start": 0}), cuts, ["PHOTO"], [1])
+    assert (got.main_band, got.feature_band, got.package_band) == (-1, -1, -1)
+    assert any("사실을 안 줬다" in n for n in notes)
 
 
 def test_take_rejects_body_start_out_of_range(tmp_path):
     cuts = [tmp_path / "b0.jpg"]
     cuts[0].write_bytes(b"x")
-    page, notes = main.take(json.dumps({"body_start": 99}), cuts, ["PHOTO"], [0])
-    assert page.body_start == -1                              # 예비 규칙으로 넘긴다
+    page_, notes = main.take(json.dumps({"body_start": 99}), cuts, ["PHOTO"], [0])
+    assert page_.body_start == -1                              # 예비 규칙으로 넘긴다
     assert any("범위 밖" in n for n in notes)
 
 
-def test_no_candidates_means_blank_not_a_code_pick():
-    """모델이 아무것도 안 주면 빈칸이다. **코드는 고르지 않는다.**"""
-    shots, kinds, hashes = slots(5)
-    hero, feat, pkg, _n = main.pick_slots(shots, kinds, hashes)
-    assert (hero, feat, pkg) == (-1, -1, -1)
+def test_prompt_asks_for_facts_not_judgement():
+    """모델은 사실만 말한다. 고르는 규칙은 코드에 있다."""
+    for want in ("<제품 개수>", "white|color", "text|notext", "hand|nohand", "box|nobox",
+                 "밴드 **전부**", "판단하지 마라"):
+        assert want in main.PROMPT, want
+    # 예전처럼 후보를 고르라고 하지 않는다
+    assert '"main":[' not in main.PROMPT
 
 
 def test_render_page_leaves_empty_slots_out():
@@ -293,31 +272,19 @@ def test_main_width_matches_body():
     assert "max-width:860px" in bodyrender.CSS
 
 
-def test_prompt_asks_for_five():
-    """자리마다 다섯을 받아야 앞의 둘이 걸러져도 쓸 것이 남는다.
+def test_option_count_ignores_bundles():
+    """묶음 옵션은 빼고 센다 — 유컵스 `퍼플+그린+블루` 는 제품 종류가 아니다."""
+    from basic import web
 
-    셋이었을 때 다일레이터는 모델이 원본 대표컷 둘(색 배경이라 걸러진다)을 앞에
-    놓아 셋 중 하나만 남았다.
-    """
-    assert main.PICKS == 5
-    assert '"main":[16,31,14,26,12]' in main.PROMPT
-    assert '"feature":[26,12,9,31,14]' in main.PROMPT
-    assert "다섯을 다 채워라" in main.PROMPT
+    class Row:
+        option_values = ["그린", "퍼플", "블루", "퍼플+그린+블루"]
 
+    assert web.option_count(Row()) == 3
 
-def test_prompt_lets_package_be_empty():
-    """빈 배열이 정답인 상품이 흔하다 — 억지로 채우면 링 접사가 상자로 올라간다."""
-    assert "상자가 확실하지 않으면 빈 배열" in main.PROMPT
+    class Empty:
+        option_values = []
 
-
-def test_five_candidates_are_tried(tmp_path):
-    """넷째·다섯째까지 검사한다 — 앞의 넷이 막혀도 다섯째를 쓴다."""
-    shots, kinds, hashes = slots(6)
-    for i in range(4):
-        shots[i] = shot(band=i, bg_tint=0.60)
-    notes = []
-    got = main.first_pass([0, 1, 2, 3, 4], shots, kinds, hashes, set(), [], "대표컷", notes)
-    assert got == 4, notes
+    assert web.option_count(Empty()) == 1
 
 
 

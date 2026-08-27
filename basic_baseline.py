@@ -95,12 +95,10 @@ def run_one(code: str, label: str, xlsx: str) -> dict:
         files.append(f)
 
     entries, cuts, kinds, hashes = web.cut_bands(files, assets)
-    shots = web.shots_by_band(files, entries)
-    blocked = boundary.summary_bands(entries)
     fallback, _why = boundary.find_body_start(entries)
 
     reply, fresh = reply_for(code, row, cuts, kinds)
-    page, notes = main.take(reply, cuts, kinds, hashes, shots=shots, blocked=blocked)
+    page, notes = main.take(reply, cuts, kinds, hashes, options=web.option_count(row))
     body_start = page.body_start if page.body_start >= 0 else fallback
 
     return {

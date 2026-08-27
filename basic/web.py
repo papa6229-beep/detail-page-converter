@@ -94,26 +94,28 @@ def plain_en(name: str) -> str:
     return t
 
 
+def option_count(row) -> int:
+    """옵션이 몇 개인 상품인가. **엑셀이 말해 주는 사실**이다.
+
+    그림에서 세지 않는다 — 엑셀 옵션 열에 답이 적혀 있는데 픽셀로 짐작할 이유가
+    없다. 대표컷이 "제품 1개 또는 옵션 수와 같음" 이어야 하는데, 다일레이터는
+    옵션이 여섯이라 여섯이 다 보이는 컷이거나 하나짜리 단독컷이어야 한다.
+    묶음 옵션은 빼고 센다. 유컵스 옵션 열은 `그린 · 퍼플 · 블루 · 퍼플+그린+블루`
+    로 넷인데, 마지막은 셋을 묶어 파는 것이라 **제품 종류는 셋**이다. 상세페이지에
+    나란히 놓인 것도 셋이다. 묶음까지 세면 "옵션 수와 같은 컷" 이 영영 없다.
+    옵션 열이 비면 1 로 본다.
+    """
+    single = {v.strip() for v in (getattr(row, "option_values", []) or [])
+              if v.strip() and "+" not in v}
+    return max(1, len(single))
+
+
 def typed_text(row) -> str:
     """원본에 직접 타이핑돼 있던 글. 모델에게 **읽는 근거**로 준다."""
     parsed = _source.parse(row.body)
     lines = [b.text for b in parsed.lead_blocks if b.text.strip()]
     lines += [p.caption for p in parsed.pieces if p.caption.strip()]
     return "\n".join(lines).strip()
-
-
-def model_hero_pick(reply: str):
-    """모델이 대표컷으로 뭘 골랐는지만 꺼낸다. 탈락 여부를 보고하려고.
-
-    답이 깨져 있어도 여기서 터지면 안 된다 — 그건 `take` 가 이미 다룬다.
-    """
-    m = re.search(r"\{[\s\S]*\}", reply or "")
-    if not m:
-        return None
-    try:
-        return json.loads(m.group(0)).get("main")
-    except (json.JSONDecodeError, AttributeError):
-        return None
 
 
 #: 같은 입력이면 같은 답이 나오게 못박는 값. `seed` 는 OpenAI 가 받는다.
@@ -232,24 +234,19 @@ def body_pieces(files: list[Path], entries: list[boundary.Entry], start: int, as
     return out
 
 
-def shots_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int, main.Shot]:
-    """밴드 번호 → 그 밴드를 잰 값. **밴드 폭 전체가 아니라 알맹이로 잰다.**
-
-    밴드는 늘 폭 전체라 그대로 재면 옆 여백이 값을 묽게 만들어, 컬러 배경이
-    깔린 컷도 깨끗해 보인다. `main.shots` 가 `_content_rect` 로 알맹이를 집는다.
-    """
-    got: dict[int, main.Shot] = {}
+def rects_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int, main.Rect]:
+    """밴드 번호 → 알맹이 자리. 자르는 데만 쓴다 — 재서 고르는 일은 없어졌다."""
+    got: dict[int, main.Rect] = {}
     off = 0
     for gi, f in enumerate(files):
         n = sum(1 for e in entries if e.image == gi)
-        for sh in main.shots(np.asarray(Image.open(f).convert("RGB")), offset=off):
-            got[sh.band] = sh
+        got.update(main.rects(np.asarray(Image.open(f).convert("RGB")), offset=off))
         off += n
     return got
 
 
 def crop_slot(cuts: list[Path], entries: list[boundary.Entry],
-              shots: dict[int, main.Shot], band: int, dest: Path) -> Path | None:
+              shots: dict[int, main.Rect], band: int, dest: Path) -> Path | None:
     """밴드에서 **알맹이만** 잘라 낸다. 세 자리 모두 같은 방식이다.
 
     밴드는 늘 폭 전체라 라벨 띠·배경 띠가 같이 딸려 온다. 죠우무의 패키지 자리에
@@ -259,11 +256,10 @@ def crop_slot(cuts: list[Path], entries: list[boundary.Entry],
     if band < 0 or band >= len(cuts):
         return None
     src = cuts[band]
-    sh = shots.get(band)
-    if sh is None:
+    r = shots.get(band)
+    if r is None:
         return src
     top = entries[band].band.y
-    r = sh.rect
     with Image.open(src) as im:
         im = im.convert("RGB").crop((r.x0, max(0, r.y0 - top), r.x1 + 1, r.y1 - top + 1))
         im.save(dest, quality=92)
@@ -305,20 +301,15 @@ def api_basic_convert(req: ConvertReq):
         _tags, name_kr, name_en = _apprender.split_name(row.name)
         page = main.Page(name_kr=name_kr or row.name, name_en=plain_en(name_en),
                          maker=row.brand or row.maker)
-        shots = shots_by_band(files, entries)
-        blocked = boundary.summary_bands(entries)
-        if blocked:
-            notes.append(f"요약정보 표가 든 밴드 {sorted(blocked)} — 대표컷·feature 에서 뺀다")
+        shots = rects_by_band(files, entries)
+        opts = option_count(row)
         if key:
             reply = ask_model(key, main.parts_for(row.name, page.maker, typed_text(row), cuts, kinds))
-            got, ai_notes = main.take(reply, cuts, kinds, hashes, shots=shots, blocked=blocked)
+            got, ai_notes = main.take(reply, cuts, kinds, hashes, options=opts)
             got.name_kr, got.name_en, got.maker = page.name_kr, page.name_en, page.maker
             head, page, notes = notes, got, ai_notes
             notes[:0] = head
             notes.insert(0, f"{_llm.label(key)} 1콜 — 밴드 {len(cuts)}장을 보냈다")
-            ai_pick = model_hero_pick(reply)
-            if isinstance(ai_pick, int) and ai_pick != page.main_band:
-                notes.append(f"AI 대표컷 픽 [{ai_pick}] 은 탈락 — 세운 것은 [{page.main_band}]")
         else:
             notes.append("키가 없어 AI 를 안 불렀다 — 메인 스펙·핵심특징은 비고, 경계는 예비 규칙으로 잡는다")
             page.body_start = -1

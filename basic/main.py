@@ -44,165 +44,6 @@ class Rect:
     y1: int
 
 
-@dataclass
-class Shot:
-    """대표컷 후보 한 장과, 그것을 두고 잰 값들."""
-
-    rect: Rect
-    white: float      #: 흰 바탕이 차지하는 비율
-    color: float      #: 유채색 화소 비율 — 컬러 배경·배너를 가른다
-    ink: float        #: 어두운 화소 비율 — 제품이 화면을 얼마나 채우는가
-    letters: int      #: 글자꼴 작은 덩어리 개수 — 검은 본문 글이 구워져 있는가
-    design: float     #: 유채색이 가장 빽빽한 가로 띠 — 분홍 제목·컬러 배경이 있는가
-    solo: float       #: 가장 큰 덩어리가 어두운 화소에서 차지하는 몫 — 제품이 하나인가
-    area: int
-    band: int = -1    #: 몇 번 밴드에서 나왔나
-    #: **테두리 한 겹에서 색이 있는 화소의 몫.** 배경에 색이 깔렸는가를 가른다.
-    #: 채도의 *중앙값* 으로 재던 것을 *비율* 로 바꿨다 — 죠우무의 파란 그라데이션 컷은
-    #: 좌우에 흰 여백이 있어 중앙값이 0 으로 나왔다(막지 못했다). 비율은 0.41 이다.
-    bg_tint: float = 0.0
-    #: 이 밴드에 **글자가 박혀 있는가.** 덩어리 개수(letters)는 무늬 있는 제품에서
-    #: 60~76 까지 뛰어 못 믿는다. 밴드 종류(MIXED)와 `sidetext` 가 직접 말해 준다.
-    has_text: bool = False
-    #: 배경이 아닌 화소의 몫. 넓이를 잴 때 쓴다 — `ink` 는 **어둡고 채도 낮은** 것만
-    #: 세어서 파란 제품을 거의 0 으로 본다(브루스). 색 있는 제품에는 이쪽이 맞다.
-    subject: float = 0.0
-
-    @property
-    def subject_pixels(self) -> float:
-        """제품이 찍힌 넓이 — 색을 안 가린다."""
-        return self.area * self.subject
-
-    @property
-    def size(self) -> tuple[int, int]:
-        return self.rect.x1 - self.rect.x0 + 1, self.rect.y1 - self.rect.y0 + 1
-
-    @property
-    def product_pixels(self) -> float:
-        """제품이 실제로 찍힌 넓이. **화면 크기가 아니라 제품 크기다.**
-
-        충전 케이블 컷은 726×774 로 크지만 제품이 흰 바탕에 조그맣게 놓여 있어
-        잉크가 8% 뿐이다. 제품 단독컷은 608×455 로 작아도 31% 를 채운다.
-        큰 것을 고르면 케이블을 대표컷으로 쓴다.
-        """
-        return self.area * self.ink
-
-
-def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
-    """조각 하나를 재기만 한다. 판정은 여기서 하지 않는다."""
-    crop = arr[r.y0 : r.y1 + 1, r.x0 : r.x1 + 1].astype(np.int32)
-    lum = (crop[..., 0] * 299 + crop[..., 1] * 587 + crop[..., 2] * 114) // 1000
-    sat = crop.max(2) - crop.min(2)
-    white = float((lum >= 232).mean())
-    tint = (sat >= 45) & (lum < 245)
-    color = float(tint.mean())
-    ink = float(((lum < 115) & (sat < 40)).mean())
-    letters, solo_dark = _blobs(lum)
-    # **한 덩어리인가**를 두 가지로 재서 **큰 쪽**을 쓴다. 둘 다 한 방향으로 틀린다 —
-    #   어두운 화소로 재면   인쇄된 상자·창백한 제품이 잘게 갈린다 (벨벳키스 상자 0.25,
-    #                        죠우무 살구색 제품 0.68) → 멀쩡한 것을 막는다
-    #   피사체로 재면        나란히 붙은 것들이 한 덩어리로 이어진다 (유컵스 나열 0.64)
-    # 큰 쪽을 쓰면 **둘 다 잘게 갈렸다고 할 때만** 막는다. 막는 것은 누가 봐도
-    # 여러 개인 것(다일레이터 6칸 격자 0.19)뿐이다 — 애매하면 통과시킨다.
-    fg = (lum < 232) | (sat >= 45)
-    solo = max(solo_dark, _largest_share(fg))
-    area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
-    # 배경은 **테두리 한 겹**으로 본다. 제품은 가운데에 있고 테두리는 바닥이다.
-    # 중앙값이 아니라 **색이 있는 화소의 몫**을 센다 — 한쪽에만 색이 깔린 컷을
-    # 중앙값으로는 못 잡는다.
-    t = max(2, min(6, crop.shape[0] // 8, crop.shape[1] // 8))
-    edge = np.concatenate([crop[:t].reshape(-1, 3), crop[-t:].reshape(-1, 3),
-                           crop[:, :t].reshape(-1, 3), crop[:, -t:].reshape(-1, 3)])
-    bg_tint = float(((edge.max(1) - edge.min(1)) >= 40).mean())
-    subject = float(((lum < 232) | (sat >= 45)).mean())
-    return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band,
-                bg_tint=bg_tint, subject=subject)
-
-
-def _largest_share(fg: np.ndarray) -> float:
-    """가장 큰 연결 덩어리가 전경에서 차지하는 몫. 0 이면 전경이 없다."""
-    if not fg.any():
-        return 0.0
-    step = max(1, max(fg.shape) // CC_SCALE)
-    sizes = B._components(fg[::step, ::step])
-    return max(sizes) / sum(sizes) if sizes else 0.0
-
-
-def _densest(mask: np.ndarray) -> float:
-    """유채색이 **가장 빽빽하게 몰린 가로 띠**의 밀도.
-
-    조각 전체 비율로는 못 잡는다. `03 제품 사이즈` 분홍 제목은 699×1823 조각에서
-    전체의 1.3% 밖에 안 되어 묽어지지만, 그 제목이 놓인 줄만 보면 32% 다.
-    **디자인 글은 넓게 흩어지지 않고 한 띠에 몰려 있다** — 그게 사진과 다른 점이다.
-    """
-    rows = mask.mean(1)
-    k = max(1, len(rows) // 60)  # 제목은 한 줄이 아니라 띠다. 조각 높이의 1/60 로 묶는다
-    if len(rows) < k:
-        return float(rows.max()) if len(rows) else 0.0
-    return float(np.convolve(rows, np.ones(k) / k, mode="valid").max())
-
-
-def _blobs(lum: np.ndarray) -> tuple[int, float]:
-    """어두운 덩어리를 세어 두 가지를 돌려준다.
-
-        글자꼴 개수   작은 덩어리가 몇 개인가 — 글이 구워져 있으면 수십 개다
-        한 덩어리 몫   가장 큰 덩어리가 어두운 화소의 얼마인가 — 제품이 하나인가
-
-    **글자를 높이나 비율로 가르면 안 된다.** 여러 줄짜리 문단은 사진만큼 높고,
-    가로로 긴 사진은 글줄만큼 납작하다. 개수는 그런 것에 안 흔들린다.
-    """
-    h, w = lum.shape
-    if min(h, w) < 8:
-        return 0, 0.0
-    step = max(1, max(h, w) // CC_SCALE)
-    small = lum[::step, ::step]
-    dark = small < 160
-    if not dark.any():
-        return 0, 0.0
-
-    parent: dict[int, int] = {}
-
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
-
-    def union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
-
-    prev: list[tuple[int, int, int]] = []
-    sizes: dict[int, int] = {}
-    nid = 0
-    for y in range(dark.shape[0]):
-        row = dark[y]
-        if not row.any():
-            prev = []
-            continue
-        edges = np.flatnonzero(np.diff(np.concatenate(([0], row.view(np.int8), [0]))))
-        cur = []
-        for s, e in zip(edges[::2], edges[1::2]):
-            parent[nid] = nid
-            sizes[nid] = int(e - s)
-            for ps, pe, pid in prev:
-                if s < pe and ps < e:  # 위 줄의 구간과 겹치면 같은 덩어리
-                    union(pid, nid)
-            cur.append((int(s), int(e), nid))
-            nid += 1
-        prev = cur
-
-    total: dict[int, int] = {}
-    for i, n in sizes.items():
-        total[find(i)] = total.get(find(i), 0) + n
-    if not total:
-        return 0, 0.0
-    biggest = max(total.values())
-    letters = sum(1 for n in total.values() if 2 <= n <= max(6, biggest * 0.12))
-    return letters, biggest / sum(total.values())
-
-
 #: 알맹이 둘레에 남길 여유. 피사체 크기에 대한 비율이다.
 #: 연한 그림자·바닥면은 배경과 거의 같은 밝기라 전경으로 안 잡힌다 — 딱 맞게
 #: 자르면 다일레이터 대표컷 밑의 그림자가 뭉텅 잘려 제품이 공중에 뜬다.
@@ -303,168 +144,151 @@ def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
     return Rect(x0, y + y0, x1, y + y1)
 
 
-def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
-    """통이미지 한 장에서 대표컷 후보를 전부 재서 돌려준다.
+def rects(arr: np.ndarray, offset: int = 0) -> dict[int, Rect]:
+    """밴드 번호 → 알맹이 자리. **재는 일은 여기서 끝났다.**
 
-    legacy 는 `slicer.slice_image` 를 썼다. 여기서는 밴드를 쓰고, 밴드 안의
-    알맹이 자리를 따로 찾아 잰다.
+    예전에는 밴드마다 열 가지 값을 재서 코드가 등급을 매기고 골랐다. 상품이 늘
+    때마다 잣대가 어긋났다 — 무늬 있는 제품에서 글자꼴이 60~76 개로 세어지고,
+    파란 제품에서 `ink` 가 0 이 되고, 페이지 바닥에 색이 깔리면 `design` 이 전부
+    1.0 에 붙었다. **픽셀로 "무엇이 찍혔는가" 를 재려던 것이 잘못이다.**
 
-    `offset` 은 이 이미지의 첫 밴드가 몇 번인가 — 상품 이미지가 여러 장이면
-    밴드 번호가 이미지를 넘어서 이어지므로, 돌려주는 `Shot.band` 도 그 번호여야 한다.
-
-    **작다고 건너뛰지 않는다.** 예전에는 폭의 1/4 보다 작은 밴드를 뺐다. 코드가
-    대표컷을 직접 고르던 시절의 잣대다. 지금은 모델이 고르므로, 모델이 고른 밴드를
-    안 재 놓으면 "너무 작아 후보로 안 쟀다" 는 **네 번째 거르기**가 몰래 생긴다
-    (유컵스에서 실제로 그랬다). 거르는 기준은 셋뿐이어야 한다.
+    지금은 모델이 밴드마다 **사실만** 말하고(제품 개수·흰 바탕인가·글자·손·상자),
+    코드는 그 사실로 고른다. 여기 남은 일은 **자리 찾기** 하나뿐이다.
     """
-    from . import sidetext
-
-    out = []
+    out: dict[int, Rect] = {}
     for i, b in enumerate(B.read(arr)):
         r = _content_rect(arr, b.y, b.height)
-        if r is None:
-            continue
-        sh = _stats(arr, r, offset + i)
-        # 글자가 박혀 있는가 — **잘라 낸 알맹이에게** 묻는다. 밴드째 물으면 옆에
-        # 붙은 캡션까지 세어, 알맹이는 깨끗한데 글자가 있다고 막는다(죠우무 상자).
-        sh.has_text = sidetext.split(arr[r.y0:r.y1 + 1, r.x0:r.x1 + 1]) is not None
-        out.append(sh)
+        if r is not None:
+            out[offset + i] = r
     return out
 
 
-# ── 대표컷·키피쳐 고르기 ────────────────────────────────────────────────
+# ── 대표컷·키피쳐·패키지 고르기 ─────────────────────────────────────────
 #
-# **코드는 고르지 않는다. 거르기만 한다.**
+# **모델은 사실만 말하고, 고르는 것은 코드다.**
 #
-# 모델이 자리마다 후보를 순서대로 준다. 코드는 그 순서대로 검사해서 첫 통과를
-# 쓴다. 예전에는 코드가 등급(A·B·C)을 매겨 직접 골랐는데, 상품이 하나 늘 때마다
-# 임계값이 늘고 결과는 오히려 나빠졌다 — 무늬 있는 제품에서는 글자꼴이 60~76 개로
-# 세어지고, 파란 제품에서는 `ink` 가 0 이 되고, 페이지 바닥에 색이 깔리면
-# `design` 이 전부 1.0 에 붙었다. 픽셀로 "무엇이 어울리는가" 를 재려던 것이 잘못이다.
+# 모델이 밴드마다 다섯 가지를 답한다 — 제품이 몇 개 보이는가 · 배경이 흰가 ·
+# 글자가 박혔는가 · 손이나 몸이 나오는가 · 상자가 보이는가. 판단이 아니라 사실이다.
+# 그 사실로 자리를 고르는 규칙은 코드에 있고, 읽으면 그대로 이해된다.
 #
-# 거르는 기준은 **셋뿐이다.** 늘리지 않는다.
+#     대표컷  흰 바탕 · 글자 없음 · 손 없음 · 제품이 1개이거나 옵션 수와 같음
+#     키피쳐  대표컷 빼고 · 흰 바탕 · 글자 없음 · 제품 1개 이상
+#             그런 것이 없으면 손이 나와도 쓴다
+#     패키지  상자가 보임. 없으면 빈칸
 #
-#     ① 유채색 배경이 깔림   (대표컷만 — 키피쳐는 연출컷도 쓴다)
-#     ② 글자가 박힘
-#     ③ 제품이 여러 개
-#
-# 숫자는 7개 상품(핑거위글·브루스·글랜스·다일레이터·벨벳키스·유컵스·죠우무)의
-# 후보 밴드 100장을 재서 골랐다. **веto 다.** 애매하면 통과시킨다 — 고르는 일은
-# 모델 몫이고, 여기서 막는 것은 누가 봐도 아닌 것뿐이다.
+# 여럿이면 **원본 순서상 앞의 것**을 쓴다. 넓이나 점수로 고르지 않는다 —
+# 그렇게 고르던 시절에 파우치컷이 제품 단독컷을 이겼다.
 
-#: 자리마다 받을 후보 수. 셋이면 모자란다 — 다일레이터는 모델이 원본 대표컷
-#: 둘(색 배경이라 걸러진다)을 앞에 놓아 셋 중 하나만 남았고, 그 하나가 여섯 중
-#: 셋만 모인 컷이었다. 다섯으로 늘리면 걸러진 뒤에도 고를 것이 남는다.
-#: **규칙이 느는 게 아니라 숫자 하나가 바뀌는 것이다.**
-PICKS = 5
-
-#: ① 테두리에서 색이 있는 화소의 몫이 이보다 크면 유채색 배경이다. 실측 —
-#:     흰 바탕 제품컷   0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.03 · 0.04 · 0.05
-#:     색 배경         0.31 · 0.37 · 0.41 · 0.46 · 0.47 · 0.53 · 0.55 · 0.59 · 0.63 · 0.95 · 1.00
-#: **0.05 와 0.31 사이가 통째로 비어 있다.**
-#: 상자컷을 넣고 다시 재니 벨벳키스의 진짜 상자가 0.16 이었다 — 상자는 네모라
-#: 제 인쇄색이 테두리에 그대로 닿는다. 배경이 색인 것이 아니라 **피사체가 네모난
-#: 것**이다. 그래서 선을 0.25 로 옮겼다. 막아야 할 것들(0.31~1.00)과는 여전히 멀다.
-TINTED_BG = 0.25
-
-#: 같은 사진으로 볼 dHash 거리. `bands.DUP_HAMMING`(10) 은 이 자리에 너무 헐겁다 —
-#: 글랜스의 상자컷과 접사컷이 10 이라 상자가 "이미 쓴 사진" 으로 막혔다. 실측 —
-#:     정말 같은 컷(배경만 다름)   1
-#:     서로 다른 컷              10 · 10 · 11 · 12 · 12 · 12 · 12 · 12
-#: 1 과 10 사이가 비어 있다. 8×8 dHash 는 흰 바탕 검은 제품끼리 곧잘 붙는다.
+#: 같은 사진으로 볼 dHash 거리. 대표컷과 키피쳐가 같은 사진이면 두 번 실린다.
+#: 실측 — 정말 같은 컷 1 ↔ 서로 다른 컷 10·10·11·12·12·12·12·12.
 SAME_PHOTO = 5
 
-#: ③ 가장 큰 덩어리가 어두운 화소에서 차지하는 몫. 이보다 작으면 제품이 여러 개다.
-#: 실측(두 잣대의 큰 쪽) — 6칸 격자 0.19 ↔ 상자·단독컷 0.90 이상.
-#: 낮게 잡는다. 여기서 막는 것은 **누가 봐도 여러 개**인 것뿐이다.
-MULTI_SOLO = 0.40
+
+@dataclass
+class Facts:
+    """밴드 하나에 대해 모델이 말한 사실."""
+
+    products: int = 0      #: 제품이 몇 개 보이는가 (0 이면 제품이 안 보인다)
+    white_bg: bool = False
+    text: bool = False
+    hand: bool = False     #: 손·신체가 나오는가
+    box: bool = False      #: 판매용 상자가 보이는가
 
 
-def reject(s: Shot) -> str:
-    """못 쓰는 까닭 한 줄. 쓸 수 있으면 빈 글자.
+def parse_facts(raw) -> dict[int, Facts]:
+    """모델이 준 밴드별 사실을 읽는다.
 
-    **세 자리에 똑같이 건다.** 자리별 예외를 두지 않는다 — 예외를 하나 두면
-    그 자리만 다른 길로 새고, 그 길에서 결함이 나온다. 패키지에만 검사를 안 걸었을
-    때 죠우무는 광고 배너를, 브루스는 파우치컷을 상자라고 세웠다.
+    모양은 **글자 한 줄**이다 — `"7:1,white,notext,nohand,nobox"`. 중첩을 안 쓰는
+    이유는 모델이 배열의 닫는 대괄호를 자꾸 빠뜨려 답이 통째로 버려졌기 때문이다
+    (글랜스·다일레이터). 줄 하나가 깨져도 그 밴드만 잃는다.
     """
-    if s.bg_tint > TINTED_BG:
-        return f"색 배경이 깔렸다 (테두리 색비율 {s.bg_tint:.2f})"
-    if s.has_text:
-        return "글자가 박혔다"
-    if s.solo < MULTI_SOLO:
-        return f"제품이 여러 개다 (한 덩어리 몫 {s.solo:.2f})"
-    return ""
+    got: dict[int, Facts] = {}
+    if isinstance(raw, dict):
+        raw = [f"{k}:{v}" for k, v in raw.items()]
+    if isinstance(raw, str):
+        raw = raw.replace(";", "\n").splitlines()
+    for line in raw or []:
+        text = str(line).strip()
+        if not text or ":" not in text:
+            continue
+        head, _, tail = text.partition(":")
+        try:
+            n = int(re.sub(r"[^0-9]", "", head))
+        except ValueError:
+            continue
+        words = [w.strip().lower() for w in re.split(r"[,\s]+", tail) if w.strip()]
+        f = Facts()
+        for w in words:
+            if w.isdigit():
+                f.products = int(w)
+            elif w in ("white", "흰바탕", "흰색"):
+                f.white_bg = True
+            elif w in ("text", "글자"):
+                f.text = True
+            elif w in ("hand", "손"):
+                f.hand = True
+            elif w in ("box", "상자"):
+                f.box = True
+        got[n] = f
+    return got
 
 
-def first_pass(picks, shots: dict[int, Shot], kinds: list[str], hashes: list[int],
-               blocked, used: list[int], slot: str, notes: list[str],
-               keep_first: bool = False) -> int:
-    """모델이 준 순서대로 검사해서 **첫 통과**를 쓴다. 없으면 -1.
+def _usable(n: int, kinds: list[str], facts: dict[int, Facts]) -> bool:
+    """밴드 자체가 그림으로 쓸 수 있는 것인가."""
+    return 0 <= n < len(kinds) and kinds[n] not in ("TEXT", "PROMO") and n in facts
 
-    막을 때마다 왜 막았는지 적는다. 셋 다 떨어지면 빈칸으로 두고 그 사실도 적는다 —
-    조용히 비워 두면 화면만 보고는 모델이 안 골랐는지 우리가 막았는지 알 수 없다.
 
-    `keep_first` 는 키피쳐 자리에만 켠다. 대표컷·패키지는 없으면 안 그리면 그만이지만,
-    KEY FEATURE 는 그림 자리가 비면 글 카드만 남아 층이 무너진다. 그래서 셋 다
-    떨어져도 첫 번째를 쓰되 **왜 떨어진 것을 쓰는지 적는다.**
+def choose(facts: dict[int, Facts], kinds: list[str], hashes: list[int],
+           options: int = 1) -> tuple[int, int, int, list[str]]:
+    """(대표컷, 키피쳐, 패키지, 메모). **사실만 보고 코드가 고른다.**
+
+    `options` 는 엑셀 옵션 열에서 온 옵션 수다. 그림에서 세지 않는다 — 엑셀이
+    말해 주는 사실이 있는데 픽셀로 짐작할 이유가 없다.
     """
-    if not isinstance(picks, list):
-        picks = [picks]
-    picks = picks[:PICKS]
-    rejected: list[int] = []
-    for v in picks:
-        if not isinstance(v, int) or not (0 <= v < len(kinds)):
-            continue
-        kind = kinds[v]
-        if kind in ("TEXT", "PROMO"):
-            notes.append(f"{slot} [{v}] 막음 — {kind} 밴드다")
-            continue
-        if v in blocked:
-            notes.append(f"{slot} [{v}] 막음 — 원본 요약정보 표가 든 밴드다")
-            continue
-        if v in used:
-            notes.append(f"{slot} [{v}] 막음 — 이미 다른 자리에 썼다")
-            continue
-        if any(B.hamming(hashes[v] if v < len(hashes) else 0,
-                         hashes[u] if u < len(hashes) else 0) <= SAME_PHOTO
-               for u in used):
-            notes.append(f"{slot} [{v}] 막음 — 이미 쓴 것과 같은 사진이다")
-            continue
-        sh = shots.get(v)
-        if sh is None:
-            notes.append(f"{slot} [{v}] 막음 — 너무 작아 후보로 재지 않았다")
-            continue
-        why = reject(sh)
-        if why:
-            notes.append(f"{slot} [{v}] 막음 — {why}")
-            rejected.append(v)
-            continue
-        used.append(v)
-        return v
-    if keep_first and rejected:
-        v = rejected[0]
-        used.append(v)
-        notes.append(f"{slot} 후보가 다 떨어져 첫 번째 [{v}] 를 그대로 쓴다 — 비우면 층이 무너진다")
-        return v
-    notes.append(f"{slot} 빈칸 — 모델이 준 후보가 다 떨어졌거나 없다")
-    return -1
-
-
-def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
-               blocked: set[int] | frozenset = frozenset(),
-               ai_main=None, ai_feature=None,
-               ai_package=None) -> tuple[int, int, int, list[str]]:
-    """(대표컷, 키피쳐, 패키지, 메모). 셋 다 모델이 준 순서대로 검사한 결과다."""
     notes: list[str] = []
-    used: list[int] = []
-    # 세 자리를 **한 흐름**으로 지난다. 자리별 예외는 프롬프트 한 줄뿐이다.
-    # `or []` 를 쓰면 안 된다 — 0번 밴드는 거짓이라 통째로 사라진다.
-    hero = first_pass([] if ai_main is None else ai_main,
-                      shots, kinds, hashes, blocked, used, "대표컷", notes)
-    feat = first_pass([] if ai_feature is None else ai_feature,
-                      shots, kinds, hashes, blocked, used, "키피쳐", notes, keep_first=True)
-    pkg = first_pass([] if ai_package is None else ai_package,
-                     shots, kinds, hashes, blocked, used, "패키지", notes)
+    order = sorted(n for n in facts if _usable(n, kinds, facts))
+
+    def same_photo(a: int, b: int) -> bool:
+        ha = hashes[a] if a < len(hashes) else 0
+        hb = hashes[b] if b < len(hashes) else 0
+        return B.hamming(ha, hb) <= SAME_PHOTO
+
+    def first(test) -> int:
+        return next((n for n in order if test(facts[n])), -1)
+
+    hero = first(lambda f: f.white_bg and not f.text and not f.hand
+                 and (f.products == 1 or (options > 1 and f.products == options)))
+    if hero < 0:
+        notes.append(f"대표컷 빈칸 — 흰 바탕·글자 없음·손 없음·제품 1개 또는 {options}개인 밴드가 없다")
+
+    # 패키지를 **키피쳐보다 먼저** 고른다. 상자컷도 흰 바탕 제품컷이라 키피쳐
+    # 조건에 걸리는데, 키피쳐가 먼저 집어 가면 상자 자리가 빈다(벨벳키스에서 그랬다).
+    # 상자로 쓸 수 있는 밴드는 흔치 않고, 키피쳐로 쓸 밴드는 대개 여럿이다.
+    pkg = next((n for n in order if facts[n].box and n != hero), -1)
+    if pkg < 0:
+        notes.append("패키지 빈칸 — 상자가 보이는 밴드가 없다")
+
+    def feature_ok(n: int, allow_hand: bool) -> bool:
+        f = facts[n]
+        if n in (hero, pkg) or (hero >= 0 and same_photo(n, hero)):
+            return False
+        return f.white_bg and not f.text and f.products >= 1 and (allow_hand or not f.hand)
+
+    feat = next((n for n in order if feature_ok(n, False)), -1)
+    if feat < 0:
+        feat = next((n for n in order if feature_ok(n, True)), -1)
+        if feat >= 0:
+            notes.append(f"키피쳐 [{feat}] — 손 없는 컷이 없어 손이 나온 것을 썼다")
+    if feat < 0:
+        notes.append("키피쳐 빈칸 — 흰 바탕 제품컷이 대표컷 말고는 없다")
+
+    notes.append(f"옵션 {options}개 · 사실을 받은 밴드 {len(order)}개")
+    for slot, n in (("대표컷", hero), ("키피쳐", feat), ("패키지", pkg)):
+        if n >= 0:
+            f = facts[n]
+            notes.append(f"{slot} = 밴드 [{n}] (제품 {f.products}개"
+                         f"{' · 흰 바탕' if f.white_bg else ' · 색 바탕'}"
+                         f"{' · 손' if f.hand else ''}{' · 상자' if f.box else ''})")
     return hero, feat, pkg, notes
 
 
@@ -689,41 +513,28 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
    3줄이 모자라면 요약정보나 설명 글에서 보탠다. **없는 사실을 지어내지 마라.**
    제목은 한눈에 읽히게 짧게, 설명은 한 줄로.
 
-3. **그림 고르기** — 자리마다 **좋은 순서대로 다섯**을 준다. 하나만 주지 마라.
-   앞엣것이 막히면 뒤엣것을 쓴다. 그러니 **1번이 가장 좋은 것**이어야 한다.
+3. **밴드마다 사실을 적는다** — 고르는 것은 우리가 한다. 너는 **본 것만** 말하라.
+   판단하지 마라. "대표컷으로 좋다" 같은 말은 필요 없다.
 
-   네가 준 뒤에 **코드가 한 번 더 거른다.** 아래 셋에 걸리면 그 후보는 버려진다 —
-   버려질 것을 앞에 두면 자리 셋을 헛되이 쓰는 것이다.
+   밴드 **전부**에 대해 한 줄씩, 아래 모양 그대로 적는다.
 
-       · 배경에 색이 깔린 밴드      (원본 맨 위의 대표컷은 대개 여기 걸린다)
-       · 글자가 박힌 밴드
-       · 제품이 여러 개로 흩어진 밴드
+       "<번호>:<제품 개수>,<white|color>,<text|notext>,<hand|nohand>,<box|nobox>"
 
-   그러니 **원본의 첫 대표컷을 그대로 1번에 놓지 마라.** 그건 색 배경 위에 있어
-   거의 언제나 버려진다. 페이지 아래쪽의 흰 바탕 제품컷을 찾아라.
-   **다섯을 다 채워라.** 앞의 둘이 버려져도 뒤에서 쓸 것이 남아야 한다.
+       제품 개수   그 밴드에 **제품이 몇 개 보이는가**. 같은 제품이 여러 각도로
+                   찍혔으면 보이는 개수 그대로. 제품이 안 보이면 0.
+                   (글자만 있는 띠, 배너, 표 → 0)
+       white       배경이 **흰색·거의 흰색**이면 white, 색이 깔렸으면 color.
+       text        밴드 안에 **글자**가 박혀 있으면 text, 없으면 notext.
+                   제품·상자에 인쇄된 상표는 글자로 치지 않는다. 설명·라벨·치수만.
+       hand        **사람의 손이나 몸**이 나오면 hand, 아니면 nohand.
+       box         **판매용 종이·플라스틱 상자**가 화면에서 **뚜렷하게** 보이면 box.
+                   상자가 화면의 한 귀퉁이에 살짝 걸쳐 있거나 제품 뒤로 조금
+                   비치는 정도면 **nobox** 다. 상자가 주인공인 컷만 box 다.
+                   **천 파우치·주머니·케이블·설명서는 상자가 아니다** — nobox.
+                   상자 사진이 아예 없는 원본이 흔하다. 없으면 다 nobox 로 둬라.
 
-    main      대표컷 후보 셋. **흰 바탕에 제품만 놓인 컷**을 찾아라.
-              사람(모델)이 나온 컷 · 색 배너 · 글자 띠는 **절대 넣지 마라.**
-              그런 컷밖에 없어도 넣지 말고, 흰 바탕 제품컷을 다시 찾아라.
-              **손·신체·소품이 없어야 한다** — 손이 잡은 컷, 몸에 댄 컷,
-              거치대·파우치·케이블이 같이 찍힌 컷은 대표컷이 아니다(키피쳐로 미뤄라).
-              **옵션이 여러 개인 상품이면 먼저 옵션이 몇 개인지 세라.**
-              요약정보의 무게·치수가 `130g/140g/190g/220g/235g/245g` 처럼 여러 개면
-              그 수가 옵션 수다. 그 수가 **다 보이는** 컷이 1번이다. 그런 컷이
-              없으면 옵션 **하나만** 찍힌 단독컷이 1번이다.
-              **여섯 중 셋처럼 일부만 모인 컷은 어떤 경우에도 main 에 넣지 마라** —
-              손님이 구성을 잘못 읽는다. 그런 컷은 feature 로 미뤄라.
-              흰 바탕 컷이 여럿이면 제품이 크게 찍힌 순서로.
-    feature   대표컷과 **다른** 제품컷 후보 셋. 손이 잡고 있어도, 거치대에
-              얹혀 있어도, 배경에 옅은 색이 깔려 있어도 된다.
-              설계도·단면도·치수 도해보다 **실제 제품 사진**이 앞이다.
-    package   원본에 `PACKAGE` · `Package Design` 라벨이 붙은 밴드, 또는
-              **판매용 상자**가 보이는 밴드.
-              **상자가 확실하지 않으면 빈 배열 `[]` 로 둬라. 빈 배열이 정답인
-              상품이 흔하다** — 상세페이지에 상자 사진을 안 넣는 원본이 많다.
-              제품만 찍힌 컷, 접사컷, 파우치·케이블만 있는 컷, 모델 광고컷은
-              상자가 아니다. 억지로 채우지 마라.
+   보기 — `"16:1,white,notext,nohand,nobox"` 는 16번 밴드에 제품 하나가 흰
+   바탕에 놓였고 글자도 손도 상자도 없다는 뜻이다.
 
 4. **메인과 본문의 경계** — `body_start` 에 숫자 하나.
 
@@ -755,15 +566,18 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
  "key1_t":"제목","key1_d":"한 줄 설명",
  "key2_t":"","key2_d":"",
  "key3_t":"","key3_d":"",
- "main":[16,31,14,26,12],"feature":[26,12,9,31,14],"package":[4],
+ "facts":["0:0,white,text,nohand,nobox",
+          "1:1,color,notext,nohand,nobox",
+          "2:6,white,notext,nohand,nobox"],
  "body_start":7,
- "notes":["깨끗한 누끼컷이 없어 차선을 썼다"]}
+ "notes":[]}
 ```
 
-**칸은 이 열여섯 개가 전부다. 안에 또 중괄호나 대괄호를 만들지 마라** —
-`notes` 와 `main`·`feature` 만 배열이고, 그 안에는 값만 들어간다.
-`main` · `feature` 는 **반드시 배열이고 다섯 칸**이다. 숫자 하나만 주지 마라.
-`package` 는 상자가 확실할 때만 채우고, 아니면 `"package":[]` 로 비워라.
+`facts` 에는 **밴드를 하나도 빼지 말고 전부** 넣는다. 번호는 0 부터 차례대로다.
+빠뜨린 밴드는 우리가 아예 못 쓴다.
+
+**중괄호를 또 만들지 마라.** `facts` 와 `notes` 만 배열이고, 그 안에는
+**글자 한 줄씩**만 들어간다. 배열 안에 `{` 를 쓰지 마라.
 """
 
 #: 라벨을 못 받았을 때의 기본값. 차단하지 않는다.
@@ -804,17 +618,10 @@ def parts_for(name: str, brand: str, typed: str, cuts: list[Path],
 
 def take(reply: str, cuts: list[Path], kinds: list[str],
          hashes: list[int] | None = None,
-         shots: dict[int, Shot] | None = None,
-         blocked: set[int] | frozenset = frozenset()) -> tuple[Page, list[str]]:
-    """모델이 돌려준 것을 받는다. **코드는 고르지 않고 거르기만 한다.**
+         options: int = 1) -> tuple[Page, list[str]]:
+    """모델이 돌려준 것을 받는다. **모델은 사실만 말하고 고르는 것은 코드다.**
 
-    모델이 자리마다 후보를 순서대로 주면(`main`·`feature` 는 셋), `pick_slots` 가
-    그 순서대로 검사해 첫 통과를 쓴다. 막는 것은 `reject` 의 셋 + 못 쓰는 밴드
-    (TEXT·PROMO·요약정보 표·이미 쓴 것·같은 사진)뿐이다.
-
-    셋 다 떨어지면 **비운다.** 예전에는 대표컷이 비면 코드가 페이지 전체를 훑어
-    다시 골랐는데, 그 '다시 고르기' 가 6칸 격자나 파우치 컷을 대표컷으로 세웠다.
-    잘못 세우는 것보다 비우고 왜 비었는지 말하는 편이 낫다.
+    `options` 는 엑셀 옵션 열에서 온 옵션 수다(없으면 1). 그림에서 세지 않는다.
     """
     m = re.search(r"\{[\s\S]*\}", reply or "")
     if not m:
@@ -827,33 +634,22 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
     notes = [str(x) for x in got.get("notes") or []]
     hashes = hashes or []
 
-    # 답은 **평평한 칸 열여섯**이다. 중첩을 없앤 이유는 모델이 자꾸 `keys` 배열의
-    # 닫는 대괄호를 빠뜨려 답 전체가 버려졌기 때문이다(글랜스·다일레이터).
-    # 옛 모양(`spec`·`keys` 중첩)도 받아 준다 — 저장해 둔 답이 아직 그 모양일 수 있다.
-    nested = got.get("spec") or got.get("summary") or {}
-    spec = {k: str(v).strip() for k, v in nested.items() if str(v).strip()}
+    spec = {k: str(v).strip() for k, v in (got.get("spec") or {}).items() if str(v).strip()}
     for k in ("타입", "재질", "무게", "전원", "특징"):
         if str(got.get(k, "")).strip():
             spec[k] = str(got[k]).strip()
     spec["치수"] = SIZE_FIXED
 
-    keys = [
-        (str(k.get("t") or k.get("title") or "").strip(),
-         str(k.get("d") or k.get("desc") or "").strip())
-        for k in (got.get("keys") or got.get("keyFeatures") or [])
-        if isinstance(k, dict) and str(k.get("t") or k.get("title") or "").strip()
-    ][:3]
-    if not keys:
-        keys = [(str(got.get(f"key{n}_t", "")).strip(), str(got.get(f"key{n}_d", "")).strip())
-                for n in (1, 2, 3)]
-        keys = [(t, d) for t, d in keys if t][:3]
+    keys = [(str(got.get(f"key{n}_t", "")).strip(), str(got.get(f"key{n}_d", "")).strip())
+            for n in (1, 2, 3)]
+    keys = [(t, d) for t, d in keys if t][:3]
 
     page = Page(spec=spec, keys=keys)
-    mi, fi, pi, slot_notes = pick_slots(
-        shots or {}, kinds, hashes, blocked,
-        ai_main=got.get("main"), ai_feature=got.get("feature"),
-        ai_package=got.get("package"))
-    notes += slot_notes
+    facts = parse_facts(got.get("facts"))
+    if not facts:
+        notes.append("모델이 밴드 사실을 안 줬다 — 세 자리가 다 빈다")
+    mi, fi, pi, pick_notes = choose(facts, kinds, hashes, options)
+    notes += pick_notes
     page.main = cuts[mi] if 0 <= mi < len(cuts) else None
     page.feature = cuts[fi] if 0 <= fi < len(cuts) else None
     page.package = cuts[pi] if 0 <= pi < len(cuts) else None
