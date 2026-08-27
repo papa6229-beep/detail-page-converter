@@ -48,7 +48,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from . import bands as B
-from . import body, boundary, main, read_text, render, sidetext
+from . import body, boundary, main, read_text, render
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -203,123 +203,37 @@ def choose_never_blank(facts, kinds, hashes, options):
     return hero, feat, pkg, notes
 
 
-#: 글줄 네모를 그릴 때 쓰는 빨강과 굵기. 모델에게 "여기를 읽어라" 라고 짚어 주는 표시다.
-#: 번호는 크게 그린다 — 작게 그렸더니 모델이 옆 네모의 번호로 잘못 읽어 글이 한 칸씩
-#: 밀렸다. 번호를 못 읽으면 자리를 짚어 주는 뜻이 없다.
-MARK_RED, MARK_PEN, MARK_TAG = (220, 0, 0), 3, 26
-
-
-def _tag_font():
-    from PIL import ImageFont
-
-    for name in ("malgunbd.ttf", "arialbd.ttf", "arial.ttf"):
-        try:
-            return ImageFont.truetype(name, MARK_TAG)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def mark_sheet(band: Path, boxes: list, dest_dir: Path) -> Path:
-    """글줄마다 **빨간 네모와 번호**를 그린 그림. 모델에게 이것을 보여 준다."""
-    from PIL import ImageDraw
-
-    im = Image.open(band).convert("RGB")
-    d = ImageDraw.Draw(im)
-    font = _tag_font()
-    for n, (x0, y0, x1, y1) in enumerate(boxes, 1):
-        d.rectangle([x0 - 1, y0 - 1, x1, y1], outline=MARK_RED, width=MARK_PEN)
-        # 번호표는 네모 **왼쪽 바깥**에 붙인다. 글자 위에 겹치면 그 글자를 가린다.
-        tx, ty = max(0, x0 - MARK_TAG - 6), max(0, y0 - 2)
-        d.rectangle([tx, ty, tx + MARK_TAG + 4, ty + MARK_TAG + 4], fill=(255, 255, 255),
-                    outline=MARK_RED, width=2)
-        d.text((tx + 4, ty + 1), str(n), fill=MARK_RED, font=font)
-    f = dest_dir / f"{band.stem}_ask.jpg"
-    im.save(f, quality=92)
-    return f
-
-
-def lay_back(band: Path, boxes: list, said: dict, dest_dir: Path):
-    """읽힌 네모만 덮고, **덮은 그 자리**를 글 덩어리로 돌려준다. 못 하면 None.
-
-    안 읽힌 네모는 손대지 않는다 — 덮어 놓고 못 읽으면 그 글이 사라진다.
-    """
-    want = [(n, boxes[n - 1]) for n in sorted(said) if 1 <= n <= len(boxes)]
-    if not want:
-        return None
-    arr = np.asarray(Image.open(band).convert("RGB"))
-    got = sidetext.cover(arr, [b for _n, b in want])
-    if got is None:
-        return None
-    flat, where = got
-    h, w = arr.shape[:2]
-    marks = [body.Mark(round(bx[0] / w * 100), round(bx[1] / h * 100),
-                       max(1, round((bx[2] - bx[0]) / w * 100)),
-                       max(1, round((bx[3] - bx[1]) / h * 100)), said[n])
-             for (n, _b), bx in zip(want, where) if bx is not None]
-    if not marks:
-        return None
-    f = dest_dir / f"{band.stem}_flat.jpg"
-    Image.fromarray(flat).save(f, quality=92)
-    return f, marks
-
-
 def refine(key: str, body_files: list[Path], kinds_of: dict, texts_of: dict,
            assets: Path, notes: list[str]):
-    """모델 답을 한 번 더 다듬는다.
+    """모델 답을 한 번 더 다듬는다. 하는 일은 **하나**뿐이다 —
+    `title` 이라고 해 놓고 글을 안 준 밴드를 다시 묻는다. 그래도 없으면
+    `pieces_from` 이 그림으로 싣는다.
 
-    **사진에 글이 박혀 있으면 자리가 어디든 한 가지로 다룬다** — 글자 픽셀을
-    배경색으로 덮고, 덮은 그 자리에 읽은 글을 얹는다. 자리별로 다른 연장을 쓰던
-    것(아래는 가로로 자르고, 옆은 세로로 자르고, 위는 손대지 않고)을 없앴다.
-    자르면 핑거위글의 버튼 도해처럼 **지시선이 사진과 갈라진다.** 자리를 알면
-    자를 이유가 없다.
+    **사진에 글이 박힌 밴드는 손대지 않는다.** 자르지도 덮지도 않고 통째로 싣는다.
+    여기서 세 가지를 해 봤고 셋 다 원본보다 나빴다.
 
-    **자리는 모델에게 물어보지 않는다.** 물어봤더니 브루스에서 네 밴드 중 세 곳이
-    빗나갔고, 빗나간 자리를 덮으면 제품에 구멍이 나고 원본 글은 그대로 남아
-    **같은 글이 두 번** 나왔다. 자리는 픽셀이 이미 안다(`sidetext._line_boxes` —
-    글줄을 고르는 거르개는 예전 것 그대로다). 그래서 **찾은 글줄에 빨간 네모와
-    번호를 그려 보내고, 그 번호의 글을 읽힌다.** 모델은 읽고, 코드는 놓는다.
+        가로 되자르기   글이 사진 밑에 붙은 밴드를 촘촘한 여백으로 갈랐다.
+                      갈리지 않는 밴드가 더 많았고, 갈린 곳은 지시선이 끊겼다.
+        세로 되자르기   글이 사진 옆에 있는 밴드를 세로로 갈랐다.
+                      핑거위글 버튼 도해가 반으로 갈려 분홍 지시선과 라벨이 갈라졌다.
+        덮고 다시 얹기  글자 픽셀을 배경색으로 덮고 그 자리에 읽은 글을 얹었다.
+                      문단은 글줄이 세로로 이어져 한 덩어리가 되는데, 글줄을 고르는
+                      거르개가 높이 70을 넘는 덩어리를 버려서 **문단이 통째로 안
+                      잡혔다.** 남은 것은 제품 위 부스러기 둘뿐이었고, 거기를 덮고
+                      거기에 5px 짜리 글을 얹었다 — 본문은 그대로인데 사진만
+                      지저분해졌다.
 
-    덮기가 손을 떼면(색 깔린 배경 따위) 그 밴드는 **통째로 그대로** 싣는다.
-    안 읽힌 네모도 그대로 둔다. 원본 밴드는 하나도 안 버린다.
-
-    나머지 하나 — `title` 인데 글이 없는 밴드는 다시 묻는다.
+    셋 다 공통점이 있다. **원본은 사진과 글을 한 덩어리로 짜 놓은 디자인**인데,
+    우리가 그 덩어리를 반쯤 뜯으면 뜯긴 자국만 남는다. 통째로 실으면 손님은 원본
+    그대로를 본다. 그 글이 우리 글이 아니라는 것 말고는 잃는 것이 없다.
     """
-    files = list(body_files)
-    kinds = {i: kinds_of.get(i, body.PHOTO) for i in range(len(files))}
-    texts = dict(texts_of)
-    marks: dict[int, list] = {}
+    ask = [n for n, k in kinds_of.items()
+           if k == body.TITLE and not texts_of.get(n, "").strip()]
+    if not ask:
+        return list(body_files), dict(kinds_of), dict(texts_of)
 
-    found = {}
-    for n, kind in kinds.items():
-        if kind != body.SHOT:
-            continue
-        boxes = sidetext._line_boxes(np.asarray(Image.open(files[n]).convert("RGB")))
-        if boxes:
-            found[n] = boxes
-
-    if found and key:
-        sheets = [(n, mark_sheet(files[n], boxes, assets)) for n, boxes in found.items()]
-        said = read_text.read_marks(key, sheets)
-        flat = kept = 0
-        for n, boxes in found.items():
-            made = lay_back(files[n], boxes, said.get(n, {}), assets)
-            if made is None:
-                kept += 1
-                continue
-            files[n], marks[n] = made
-            flat += 1
-        if flat:
-            notes.append(f"사진에 박혀 있던 글 {sum(len(v) for v in marks.values())}줄을 "
-                         f"밴드 {flat}장에서 덮고 제자리에 다시 얹었다")
-        if kept:
-            notes.append(f"밴드 {kept}장은 못 읽거나 덮기가 손을 뗐다 — 통째로 그대로 싣는다")
-    elif found:
-        notes.append(f"글이 박힌 밴드 {len(found)}장은 안 물어봤다 — 키가 없다")
-
-    ask = [n for n, k in kinds.items()
-           if k == body.TITLE and not texts.get(n, "").strip()]
-    if ask and key:
+    kinds, texts = dict(kinds_of), dict(texts_of)
+    if key:
         notes.append(f"글 없는 제목 {len(ask)}장을 다시 물었다")
         k2, t2 = read_text.read(key, [body_files[n] for n in ask])
         for j, n in enumerate(ask):
@@ -327,10 +241,9 @@ def refine(key: str, body_files: list[Path], kinds_of: dict, texts_of: dict,
                 kinds[n] = k2[j]
             if j in t2:
                 texts[n] = t2[j]
-    elif ask:
+    else:
         notes.append(f"글 없는 제목 {len(ask)}장은 다시 못 물었다 — 키가 없다")
-
-    return files, kinds, texts, marks
+    return list(body_files), kinds, texts
 
 
 def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
@@ -533,9 +446,9 @@ def api_basic_convert(req: ConvertReq):
             if body_files:
                 notes.append(f"본문 밴드 {len(body_files)}장은 안 물어봤다 — 그대로 싣는다")
 
-        body_files, kinds_of, texts_of, marks_of = refine(
+        body_files, kinds_of, texts_of = refine(
             key, body_files, kinds_of, texts_of, assets, notes)
-        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files], marks_of)
+        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files])
         seen = Counter(p.kind for p in pieces)
         notes.append("본문 종류 — " + " · ".join(
             f"{k} {seen[k]}" for k in ("title", "body", "photo", "shot", "decor") if seen[k]))

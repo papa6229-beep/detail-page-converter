@@ -44,8 +44,8 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
        → 그렇다면 shot 이다. 분홍 알약 라벨 하나만 얹혀 있어도 shot 이다.
     ③ 그 밖의 사진 → photo. 글자 없는 알약·구분선·푸터뿐이면 decor.
 
-shot 밴드의 글은 여기서 읽지 않는다. **그 글은 따로 물어본다** — 우리가 글줄 자리를
-짚어 보여 주고 그 안의 글만 읽힌다. 여기서는 shot 이라고 말해 주기만 하면 된다.
+shot 밴드의 글은 읽지 않는다. **그런 밴드는 자르지도 덮지도 않고 통째로 싣는다** —
+그 글은 그림 안에서 제자리를 지킨다. 여기서는 shot 이라고 말해 주기만 하면 된다.
 
 **종류 다섯 — 하나만 고른다**
 
@@ -78,7 +78,8 @@ shot 밴드의 글은 여기서 읽지 않는다. **그 글은 따로 물어본�
     원본에 강조가 없으면 감싸지 마라. 네가 고르지 마라.
   · 제목에 큰 번호(01, 02 …)나 영문 부제(`PRODUCT FEATURES`)가 같이 있으면
     **한글 제목만** 적는다. 번호는 우리가 따로 붙인다.
-  · **shot·photo·decor 는 `texts` 를 비운다.** shot 의 글은 따로 물어본다.
+  · **shot·photo·decor 는 `texts` 를 비운다.** 그 글은 그림 안에 그대로 있어서,
+    우리가 또 쓰면 **같은 글이 두 번 나온다.**
   · **title 이라고 했으면 글을 반드시 적어라.** 글 없는 title 은 우리가 못 쓴다 —
     번호만 붙은 빈 제목이 되어 구간 번호가 꼬인다. 못 읽겠으면 title 이라 하지 마라.
 
@@ -91,33 +92,6 @@ shot 밴드의 글은 여기서 읽지 않는다. **그 글은 따로 물어본�
 
 `kinds` 에는 **밴드를 하나도 빼지 말고 전부** 넣는다. 번호는 0 부터 차례대로다.
 `kinds` 는 짧은 글 배열이고 `texts` 는 번호→글 이다. **그 안에 또 중괄호를 만들지 마라.**
-"""
-
-MARK_PROMPT = """사진에 글이 박힌 밴드다. **글줄마다 빨간 네모와 번호**를 그려 두었다.
-네모 **안의 글만 그대로 읽어라.**
-
-우리는 이 그림을 자르지 않는다. 네모 안의 글자 픽셀을 배경색으로 덮고, 덮은 그
-자리에 네가 읽은 글을 다시 얹는다. 그래서 **네모 하나에 글 하나**여야 한다.
-
-  · 네모 밖은 읽지 마라. 옆 네모의 글을 끌어오지 마라.
-  · **네모 하나에 글줄이 둘 이상 들어 있으면 전부 읽고 줄바꿈을 살려라.**
-    한 줄만 읽고 넘어가면 나머지 줄이 우리 페이지에서 사라진다.
-  · 글자를 고치거나 보태거나 요약하지 마라. 오타도 그대로 둔다.
-  · **네모가 글을 온전히 감싸고 있을 때만 읽어라.** 글자의 일부만 걸쳐 있거나,
-    네모 안이 글이 아니면(제품 무늬·워터마크·지시선·색 배지) **그 번호를 빼고**
-    답한다. 지어내지 마라 — 빠진 자리는 우리가 원본 그대로 둔다.
-  · 강조: 원본에서 **글자색이 다르거나 굵은** 낱말만 `**이렇게**` 감싼다.
-  · 빨간 네모와 번호는 우리가 그린 것이다. 그건 읽지 마라.
-
-**돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
-
-```json
-{"lines":["0-1|전원 버튼을 길게 누르면 전원이 켜지고","0-2|버튼을 한번 더 길게 누르면",
-          "1-1|무게: 약 97g"]}
-```
-
-한 줄은 `밴드번호-네모번호|글` 이다. 밴드번호는 우리가 `[3]` 처럼 붙여 보낸 번호,
-네모번호는 그림에 그려 둔 번호다. **그 안에 또 중괄호를 만들지 마라.**
 """
 
 TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
@@ -181,53 +155,6 @@ def parse(reply: str) -> tuple[dict[int, str], dict[int, str]]:
             texts[int(digits)] = str(v)
     return kinds, texts
 
-
-def parse_marks(reply: str) -> dict[int, dict[int, str]]:
-    """모델 답 → {밴드: {네모번호: 글}}. 안 준 네모는 없는 채로 둔다."""
-    m = re.search(r"\{[\s\S]*\}", reply or "")
-    if not m:
-        return {}
-    try:
-        got = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {}
-    out: dict[int, dict[int, str]] = {}
-    for line in got.get("lines") or []:
-        head, _, text = str(line).partition("|")
-        nums = re.findall(r"\d+", head)
-        if len(nums) == 2 and text.strip():
-            out.setdefault(int(nums[0]), {})[int(nums[1])] = text.strip()
-    return out
-
-
-def read_marks(key: str, shots: list[tuple[int, Path]], timeout: int = 240,
-               tries: int = 2) -> dict[int, dict[int, str]]:
-    """**네모를 그려 둔** 밴드를 보내고 네모마다 글을 받는다.
-
-    자리를 모델에게 물어보지 않는다 — 자리는 우리가 픽셀에서 이미 알고 있고, 그것을
-    그림에 그려서 보여 준다. 모델이 하는 일은 **그 네모 안을 읽는 것**뿐이다.
-    """
-    llm = _llm()
-    parts: list[tuple[str, str]] = [("text", MARK_PROMPT)]
-    parts.append(("text", f"글줄 네모를 그려 둔 밴드 {len(shots)}장을 보냅니다."))
-    for n, path in shots:
-        parts.append(("text", f"[{n}]"))
-        parts.append(("image", _shrunk_b64(path)))
-
-    url, headers, payload = llm.build(key, parts, max_tokens=8000)
-    from .web import _pin
-
-    payload = _pin(payload)
-    for n in range(tries):
-        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            got = json.loads(r.read())
-        text, _stop = llm.extract(key, got)
-        lines = parse_marks(text)
-        if lines:
-            return lines
-        print(f"[basic] 네모 글을 못 읽었다 — 다시 묻는다 ({n + 1}/{tries})", flush=True)
-    return {}
 
 
 def read(key: str, bands: list[Path], timeout: int = 240,

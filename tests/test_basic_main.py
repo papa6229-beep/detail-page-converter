@@ -400,83 +400,38 @@ def test_section_numbers_have_no_holes():
     assert [s.number for s in secs] == [1, 2, 3]
 
 
-def test_mark_texts_are_read_by_box_number():
-    """자리는 우리가 짚어 주고, 모델은 **그 번호의 글**만 읽는다."""
-    from basic import read_text
-    got = read_text.parse_marks(json.dumps({
-        "lines": ["0-1|전원 버튼을 길게 누르면", "0-2|한번 더 누르면 꺼집니다",
-                  "5-1|무게: 약 97g", "깨진 줄", "9-2|"]}))
-    assert got == {0: {1: "전원 버튼을 길게 누르면", 2: "한번 더 누르면 꺼집니다"},
-                   5: {1: "무게: 약 97g"}}
 
 
-def test_marks_ride_on_images_not_on_text():
-    from basic import body
-    got = body.pieces_from({0: "shot", 1: "body"}, {1: "글"}, ["a.jpg", "b.jpg"],
-                           {0: [(1, 2, 30, 10, "박힌 글")], 1: [(0, 0, 9, 9, "엉뚱")]})
-    assert [m.text for m in got[0].marks] == ["박힌 글"]
-    assert got[1].marks == []
 
 
-def test_a_mark_is_laid_where_it_was(tmp_path):
-    """덮은 그 자리에 그 크기로 얹는다 — 사진 기준 백분율 그대로."""
+
+
+
+def test_a_shot_is_carried_whole(tmp_path):
+    """사진에 글이 박힌 밴드는 **자르지도 덮지도 않는다.** 그림 하나로 실린다."""
     from PIL import Image
 
     from basic import body, render
     Image.new("RGB", (800, 400), "white").save(tmp_path / "band_000.jpg")
-    sec = body.Section(1, items=[body.Piece(body.SHOT, 0, file="band_000.jpg",
-                                            marks=[body.Mark(4, 3, 38, 17, "왼쪽 설명")])])
+    sec = body.Section(1, items=[body.Piece(body.SHOT, 0, file="band_000.jpg")])
     html = render.render([sec], tmp_path, embed=False)
-    assert 'class="lay" style="width:800px"' in html      # 폭은 바깥에서 준다
-    assert "left:4%;top:3%;width:38%" in html and "왼쪽 설명" in html
-    assert "cqw" in html                                  # 좁은 화면에서 같이 줄어든다
+    assert html.count("<img") == 1 and "band_000.jpg" in html
+    assert 'class="lay"' not in html and "position:absolute" not in render.CSS
 
 
-def test_a_taller_box_gets_bigger_letters():
-    """글자 크기는 상자가 정한다. 원본 글자 크기를 짐작하지 않는다."""
-    from basic import body, render
-    small = render._fit(body.Mark(0, 0, 20, 5, "가나다"), 800, 400)
-    big = render._fit(body.Mark(0, 0, 40, 20, "가나다"), 800, 400)
-    assert big > small
+def test_refine_only_asks_about_titles_without_text(tmp_path):
+    """다듬기가 하는 일은 하나뿐이다. 밴드는 그대로 돌려준다."""
+    from basic import body, web
+    files = [tmp_path / "band_000.jpg", tmp_path / "band_001.jpg"]
+    got, kinds, texts = web.refine("", files, {0: body.SHOT, 1: body.TITLE}, {}, tmp_path, [])
+    assert got == files and kinds == {0: body.SHOT, 1: body.TITLE}
 
 
-def test_letters_shrink_when_the_text_has_more_lines():
-    from basic import body, render
-    one = render._fit(body.Mark(0, 0, 40, 20, "가나다"), 800, 400)
-    four = render._fit(body.Mark(0, 0, 40, 20, "가\n나\n다\n라"), 800, 400)
-    assert four < one
-
-
-def test_a_band_that_cannot_be_covered_is_left_whole(tmp_path):
-    """덮기가 손을 떼면 그 밴드는 통째로. 글도 안 얹는다 — 얹으면 두 번 나온다."""
-    import numpy as np
-    from PIL import Image
-
-    from basic import sidetext
-    im = np.full((60, 200, 3), (30, 90, 200), np.uint8)      # 색 깔린 배경
-    assert sidetext.cover(im, [(5, 5, 100, 40)]) is None
-
-
-def test_an_unread_box_is_never_covered(tmp_path):
-    """안 읽힌 네모는 덮지 않는다. 덮어 놓고 못 읽으면 그 글이 사라진다."""
-    from PIL import Image, ImageDraw
-
-    from basic import web
-    f = tmp_path / "band_000.jpg"
-    im = Image.new("RGB", (400, 120), "white")
-    d = ImageDraw.Draw(im)
-    d.text((20, 20), "AAAAAAAAAAAAAAAA", fill=(0, 0, 0))
-    d.text((20, 70), "BBBBBBBBBBBBBBBB", fill=(0, 0, 0))
-    im.save(f)
-    boxes = [(15, 15, 200, 40), (15, 65, 200, 90)]
-    got = web.lay_back(f, boxes, {1: "읽힌 글"}, tmp_path)     # 2번은 안 읽혔다
-    assert got is not None
-    made, marks = got
-    assert [m.text for m in marks] == ["읽힌 글"]
-    # 안 읽힌 자리의 잉크는 그대로 남아 있어야 한다
-    import numpy as np
-    arr = np.asarray(Image.open(made).convert("RGB"))
-    assert (arr[65:90, 15:200] < 128).any()
+def test_shot_text_never_becomes_our_text():
+    """그림 안의 글을 우리가 또 쓰면 같은 글이 두 번 나온다."""
+    from basic import body
+    got = body.pieces_from({0: body.SHOT}, {0: "그림에 이미 있는 글"}, ["a.jpg"])
+    assert got[0].text == ""
 
 
 def test_a_title_without_text_stays_as_a_picture():

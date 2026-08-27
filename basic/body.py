@@ -8,8 +8,8 @@
 **지키는 것은 셋뿐이다.**
 
     ㉠ 원본 밴드는 하나도 버리지 않는다. 글자로 바뀐 것 말고는 전부 사진으로 싣는다.
-    ㉡ 사진에 박힌 글은 **자리째** 옮긴다 — 글자 픽셀을 배경색으로 덮고 그 자리에
-       읽은 글을 얹는다. 사진은 안 자른다. 자리는 모델이 백분율로 말해 준다.
+    ㉡ 사진에 글이 박혀 있으면 **자르지도 덮지도 않고 통째로** 싣는다. 그 글은
+       그림 안에서 제자리를 지킨다. 손대면 잃는 것이 얻는 것보다 컸다.
     ㉢ 섹션은 원본대로. 제목이 새 섹션을 연다. 사진도 설명도 없는 섹션은 만들지 않는다.
 
 **예전에는 여기서 픽셀로 판정했다.** 밴드의 어두운 덩어리를 세어 제목인지 설명인지
@@ -33,20 +33,6 @@ IMAGES = (PHOTO, SHOT, DECOR)
 CONTENT = (BODY, PHOTO, SHOT)
 
 
-@dataclass
-class Mark:
-    """사진에 박혀 있던 글 덩어리 하나. **자리는 그 사진 기준 백분율이다.**
-
-    글자 픽셀은 배경색으로 덮고, 덮은 그 자리에 이 글을 다시 얹는다. 그래서 사진은
-    안 잘리고 지시선·점은 그대로 남는다 — 자리를 알면 자를 이유가 없다.
-    """
-
-    x: int
-    y: int
-    w: int
-    h: int
-    text: str
-
 
 @dataclass
 class Piece:
@@ -56,7 +42,6 @@ class Piece:
     band: int              #: 본문 안에서 몇 번째 밴드인가 (0 부터)
     file: str = ""         #: 밴드 그림 파일 이름
     text: str = ""         #: 제목·설명이면 모델이 읽은 글
-    marks: list[Mark] = field(default_factory=list)   #: 사진 위에 도로 얹을 글 덩어리들
 
 
 @dataclass
@@ -79,14 +64,12 @@ class Section:
         return any(p.kind in CONTENT for p in self.items)
 
 
-def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str],
-                marks: dict[int, list] | None = None) -> list[Piece]:
+def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
     """모델이 말한 것을 조각으로. **밴드는 하나도 안 버린다.**
 
     말 안 해 준 밴드는 사진으로 둔다. 빠뜨린 밴드를 버리면 원본에 있던 그림이
     조용히 사라진다. 사진으로 두면 최악이라도 원본이 실린다.
     """
-    got = marks or {}
     out = []
     for i, f in enumerate(files):
         kind = kinds.get(i, PHOTO)
@@ -97,14 +80,8 @@ def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str],
         # 꼬인다. 다시 물어도 글이 없으면 **그림으로** 싣는다 — 버리지 않는다.
         if kind == TITLE and not text.strip():
             kind = DECOR
-        out.append(Piece(kind, i, file=f, text=text,
-                         marks=_marks(got.get(i)) if kind in IMAGES else []))
+        out.append(Piece(kind, i, file=f, text=text))
     return out
-
-
-def _marks(got) -> list[Mark]:
-    """읽은 그대로의 다섯 토막(`x,y,w,h,글`)을 `Mark` 로. 이미 `Mark` 면 그대로."""
-    return [m if isinstance(m, Mark) else Mark(*m) for m in (got or [])]
 
 
 def sections(pieces: list[Piece]) -> list[Section]:
