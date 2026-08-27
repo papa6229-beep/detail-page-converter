@@ -293,10 +293,31 @@ def test_main_width_matches_body():
     assert "max-width:860px" in bodyrender.CSS
 
 
-def test_prompt_asks_for_three():
-    """자리마다 셋을 받아야 첫 통과 규칙이 뜻을 갖는다."""
-    assert '"main":[16,31,14]' in main.PROMPT
-    assert '"feature":[26,12,9]' in main.PROMPT
+def test_prompt_asks_for_five():
+    """자리마다 다섯을 받아야 앞의 둘이 걸러져도 쓸 것이 남는다.
+
+    셋이었을 때 다일레이터는 모델이 원본 대표컷 둘(색 배경이라 걸러진다)을 앞에
+    놓아 셋 중 하나만 남았다.
+    """
+    assert main.PICKS == 5
+    assert '"main":[16,31,14,26,12]' in main.PROMPT
+    assert '"feature":[26,12,9,31,14]' in main.PROMPT
+    assert "다섯을 다 채워라" in main.PROMPT
+
+
+def test_prompt_lets_package_be_empty():
+    """빈 배열이 정답인 상품이 흔하다 — 억지로 채우면 링 접사가 상자로 올라간다."""
+    assert "상자가 확실하지 않으면 빈 배열" in main.PROMPT
+
+
+def test_five_candidates_are_tried(tmp_path):
+    """넷째·다섯째까지 검사한다 — 앞의 넷이 막혀도 다섯째를 쓴다."""
+    shots, kinds, hashes = slots(6)
+    for i in range(4):
+        shots[i] = shot(band=i, bg_tint=0.60)
+    notes = []
+    got = main.first_pass([0, 1, 2, 3, 4], shots, kinds, hashes, set(), [], "대표컷", notes)
+    assert got == 4, notes
 
 
 
