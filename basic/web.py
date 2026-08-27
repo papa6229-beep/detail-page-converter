@@ -44,6 +44,8 @@ from app import llm as _llm
 from app import render as _apprender
 from app import source as _source
 
+from collections import Counter
+
 from . import bands as B
 from . import body, boundary, main, read_text, render
 
@@ -213,27 +215,6 @@ def cut_bands(files: list[Path], assets: Path):
     return entries, cuts, kinds, hashes
 
 
-def body_pieces(files: list[Path], entries: list[boundary.Entry], start: int, assets: Path) -> list:
-    """`start` 번 밴드부터를 본문으로 보고 조각을 낸다.
-
-    밴드 번호를 (이미지, y) 로 바꿔서 자른다. `body.read_image` 는 밴드를 다시
-    읽어 배지를 떼고 글줄을 붙이므로 **조각 번호와 밴드 번호가 다르다.** 그래서
-    번호가 아니라 **자리(y)** 로 가른다 — 조각의 y 는 밴드의 y 와 같은 자다.
-    """
-    if start >= len(entries):
-        return []
-    edge_img, edge_y = entries[start].image, entries[start].band.y
-    out = []
-    for gi, f in enumerate(files):
-        if gi < edge_img:
-            continue
-        pieces = body.read_image(f, assets, prefix=f"i{gi}_")
-        if gi == edge_img:
-            pieces = [p for p in pieces if p.y >= edge_y]
-        out += pieces
-    return out
-
-
 def rects_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int, main.Rect]:
     """밴드 번호 → 알맹이 자리. 자르는 데만 쓴다 — 재서 고르는 일은 없어졌다."""
     got: dict[int, main.Rect] = {}
@@ -337,28 +318,40 @@ def api_basic_convert(req: ConvertReq):
         if cut_main is not None:
             page.main = main.reframe(cut_main, assets / "hero.jpg")
 
-        # ⑥ 본문 — body_start 이후 밴드만
-        pieces = body_pieces(files, entries, page.body_start, assets)
-        crops = [p for p in pieces if p.crop and p.kind != body.BADGE]
+        # ⑥ 본문 — body_start 이후 밴드. **자르기는 이미 끝났다.**
+        body_files = [cuts[n] for n in range(page.body_start, len(cuts))]
 
-        # ⑦ 【2콜】 본문 글자 읽기 — 메인 것은 이미 1콜에서 나왔다
-        if key and crops:
-            texts = read_text.read(key, [assets / p.crop for p in crops])
-            notes.append(f"{_llm.label(key)} 2콜 — 본문 글자 조각 {len(crops)}개를 읽었다")
+        # ⑦ 【2콜】 본문 밴드마다 **무엇인지와 글**을 받는다
+        if key and body_files:
+            kinds_of, texts_of = read_text.read(key, body_files)
+            if kinds_of:
+                notes.append(f"{_llm.label(key)} 2콜 — 본문 밴드 {len(body_files)}장의 "
+                             "종류와 글을 받았다")
+            else:
+                notes.append("본문 답을 못 읽었다 — 밴드를 사진으로 두고 그대로 싣는다")
         else:
-            texts = {}
-            if crops:
-                notes.append(f"본문 글자 조각 {len(crops)}개는 안 읽었다 — 원본 조각을 그대로 둔다")
-        for i, p in enumerate(crops):
-            p.text = texts.get(str(i), texts.get(p.crop, ""))
+            kinds_of, texts_of = {}, {}
+            if body_files:
+                notes.append(f"본문 밴드 {len(body_files)}장은 안 물어봤다 — 그대로 싣는다")
+
+        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files])
+        seen = Counter(p.kind for p in pieces)
+        notes.append("본문 종류 — " + " · ".join(
+            f"{k} {seen[k]}" for k in ("title", "body", "photo", "shot", "decor") if seen[k]))
 
         # ⑧ 한 파일 — 메인 + 본문. 둘 다 폭 860.
-        secs = body.sections(pieces)
+        if body.mostly_shots(pieces):
+            notes.append("본문의 3분의 2 넘게 **글자가 박힌 사진**이다 — "
+                         "자르지 않고 원본을 통째로 싣는다")
+            body_html = render.render_whole(files)
+            secs = []
+        else:
+            secs = body.sections(pieces)
+            body_html = render.render(secs, assets)
         html = ('<!doctype html><meta charset="utf-8">'
                 '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/'
                 'pretendard@v1.3.9/dist/web/static/pretendard.min.css">'
-                + main.render_page(page)
-                + render.render(secs, assets))
+                + main.render_page(page) + body_html)
         (out / "index.html").write_text(html, encoding="utf-8", newline="\n")
     except HTTPException:
         raise
@@ -367,7 +360,7 @@ def api_basic_convert(req: ConvertReq):
         raise HTTPException(500, f"변환 실패: {e}") from e
 
     log = [f"밴드 {len(cuts)}개 · body_start {page.body_start}({source_of_start})"
-           f" → 본문 조각 {len(pieces)}개 · 섹션 {len(secs)}개"]
+           f" → 본문 밴드 {len(pieces)}개 · 섹션 {len(secs)}개"]
     log += [f"  [{i:3}] img{e.image} y={e.band.y:6d} h={e.band.height:5d} {k:8}"
             f"{'  ← 본문 시작' if i == page.body_start else ''}"
             for i, (e, k) in enumerate(zip(entries, kinds))]
@@ -377,7 +370,7 @@ def api_basic_convert(req: ConvertReq):
             "used": urls, "skipped": skipped,
             "bands": len(cuts), "body_start": page.body_start,
             "body_start_from": source_of_start, "fallback_body_start": fallback,
-            "sections": len(secs), "crops": len(crops),
+            "sections": len(secs), "crops": sum(1 for x in pieces if x.text.strip()),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
             "hero": bool(page.main), "hero_band": page.main_band,
             "feature": bool(page.feature), "feature_band": page.feature_band,

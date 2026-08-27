@@ -320,49 +320,93 @@ def test_option_count_ignores_bundles():
 
 
 
-# ── 본문 섹션 급 ─────────────────────────────────────────────────────────
+# ── 본문 — 모델이 말한 대로 놓기만 한다 ────────────────────────────────
 
-def piece(kind: str, y: int = 0) -> "object":
+def bp(kind: str, text: str = "", n: int = 0):
     from basic import body
-    return body.Piece(kind, y, 40, crop="c.png", text="글")
+    return body.Piece(kind, n, file=f"band_{n:03d}.jpg", text=text)
 
 
-def test_only_the_strongest_tier_opens_sections():
-    """①이 있으면 ①만 연다. ③은 소제목으로 내려간다."""
+def test_body_kinds_are_read_one_line_each():
+    from basic import read_text
+    kinds, texts = read_text.parse(json.dumps({
+        "kinds": ["0:title", "1:body", "2:photo", "3:shot", "4:decor", "5:쓰레기"],
+        "texts": {"0": "제품특징", "1": "설명 글"}}))
+    assert kinds == {0: "title", 1: "body", 2: "photo", 3: "shot", 4: "decor"}
+    assert texts == {0: "제품특징", 1: "설명 글"}
+
+
+def test_unspoken_bands_become_photos():
+    """모델이 빠뜨린 밴드는 **사진으로 둔다.**
+
+    버리면 원본에 있던 그림이 조용히 사라진다. 사진으로 두면 최악이라도 원본이
+    실린다 — 글이 그림으로 실릴 뿐 없어지지는 않는다.
+    """
     from basic import body
-    ps = [piece(body.HEAD, 0), piece(body.TITLE, 1), piece(body.BODY, 2),
-          piece(body.HEAD, 3), piece(body.TITLE, 4)]
-    secs = body.sections(ps)
-    assert body.tier_of(ps) is None or True          # tier_of 는 위에서 이미 계산됐다
-    assert len(secs) == 2                            # 머리띠 둘만 연다
-    assert ps[1].kind == body.SUB and ps[4].kind == body.SUB
+    got = body.pieces_from({0: "title"}, {0: "제목"}, ["a.jpg", "b.jpg", "c.jpg"])
+    assert [p.kind for p in got] == ["title", "photo", "photo"]
+    assert got[0].text == "제목"
 
 
-def test_title_opens_when_no_head():
+def test_only_titles_and_bodies_carry_text():
     from basic import body
-    ps = [piece(body.TITLE, 0), piece(body.BODY, 1), piece(body.TITLE, 2)]
-    assert body.tier_of(ps) == body.TITLE
-    assert len(body.sections(ps)) == 2
+    got = body.pieces_from({0: "photo", 1: "shot"}, {0: "새는 글", 1: "새는 글"}, ["a", "b"])
+    assert all(not p.text for p in got)
 
 
-def test_badge_outranks_title():
-    """②가 있으면 ③은 소제목으로 내려간다. 빈 섹션은 안 만든다."""
+def test_title_opens_a_section():
     from basic import body
-    ps = [piece(body.BADGE, 0), piece(body.TITLE, 1), piece(body.BODY, 2),
-          piece(body.BADGE, 3), piece(body.BODY, 4)]
-    assert body.tier_of(ps) == body.BADGE
-    secs = body.sections(ps)
-    assert len(secs) == 2
-    assert ps[1].kind == body.SUB          # 굵은 제목은 소제목으로
+    secs = body.sections([bp(body.TITLE, "가", 0), bp(body.BODY, "글", 1),
+                          bp(body.PHOTO, n=2), bp(body.TITLE, "나", 3), bp(body.PHOTO, n=4)])
+    assert [s.number for s in secs] == [1, 2]
+    assert secs[0].title.text == "가" and secs[1].title.text == "나"
 
 
-def test_intro_before_first_head_still_opens():
-    """①보다 앞에 나온 ③은 첫 섹션을 연다 — 도입부가 갈 곳이 없어진다."""
+def test_decor_is_dropped():
     from basic import body
-    ps = [piece(body.TITLE, 0), piece(body.BODY, 1), piece(body.HEAD, 2)]
-    secs = body.sections(ps)
-    assert len(secs) == 2
-    assert secs[0].title is ps[0] and ps[0].kind == body.TITLE
+    secs = body.sections([bp(body.DECOR, n=0), bp(body.PHOTO, n=1)])
+    assert len(secs) == 1 and len(secs[0].items) == 1
+
+
+def test_photo_after_body_opens_only_when_no_title():
+    """제목이 하나도 없는 페이지면 "설명 뒤 사진" 이 연다."""
+    from basic import body
+    none = [bp(body.BODY, "글", 0), bp(body.PHOTO, n=1), bp(body.BODY, "글", 2), bp(body.PHOTO, n=3)]
+    assert len(body.sections(none)) == 3       # 설명 뒤 사진이 나올 때마다 연다
+    # 제목이 하나라도 있으면 그 규칙은 안 쓴다 — 사진이 섹션을 열지 않는다
+    withtitle = [bp(body.TITLE, "가", 0)] + none
+    assert len(body.sections(withtitle)) == 1
+
+
+def test_mostly_shots_means_do_not_cut():
+    """글자 박힌 사진이 3분의 2를 넘으면 본문을 통째로 싣는다."""
+    from basic import body
+    many = [bp(body.SHOT, n=i) for i in range(6)] + [bp(body.PHOTO, n=6)]
+    assert body.mostly_shots(many)
+    few = [bp(body.SHOT, n=0)] + [bp(body.PHOTO, n=i) for i in range(1, 6)]
+    assert not body.mostly_shots(few)
+
+
+def test_render_has_no_dashed_box():
+    """점선 네모는 없앤다 — 테두리는 우리가 그린 것이지 원본에 있던 것이 아니다."""
+    from basic import render
+    assert "dashed" not in render.CSS
+
+
+def test_render_falls_back_to_the_original_band(tmp_path):
+    """글을 못 받았으면 **원본 밴드를 그대로** 싣는다."""
+    from basic import body, render
+    (tmp_path / "band_000.jpg").write_bytes(b"x")
+    html = render.render([body.Section(1, title=bp(body.TITLE, "", 0))], tmp_path, embed=False)
+    assert 'class="asis"' in html and "band_000.jpg" in html
+
+
+def test_render_keeps_line_breaks_inside_a_paragraph():
+    """표처럼 항목이 나열된 글은 줄이 곧 뜻이다 — 붙이면 어느 값이 어느 옵션인지 모른다."""
+    from basic import body, render
+    sec = body.Section(1, items=[bp(body.BODY, "A타입 10cm\nB타입 9cm", 0)])
+    html = render.render([sec], Path("."), embed=False)
+    assert "A타입 10cm<br>B타입 9cm" in html
 
 
 def test_plain_en_strips_outer_parens():

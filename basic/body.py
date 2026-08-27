@@ -1,239 +1,74 @@
-"""본문 밴드들을 섹션으로 묶는다. 판정은 최소로, 순서는 원본 그대로.
+"""본문 밴드를 섹션으로 **놓는다**. 판정은 여기 없다.
 
-    섹션 = 번호 + (제목) + 사진들(각각 캡션 가능) + 설명
+    섹션 = 번호 + 제목 + (설명·사진들)
 
-새 섹션이 시작되는 자리:
-    · 배지(남색 알약 라벨)나 제목 밴드가 나오면
-    · 제목이 한 번도 없는 페이지면, 설명 뒤에 다시 사진이 나오는 자리
-그 밖의 밴드는 열려 있는 섹션에 붙는다. 사진 19장이면 19장 다 실린다 — 고르지 않는다.
+밴드가 무엇인지는 모델이 말해 준다(`read_text`). 여기서 하는 일은 그 말대로
+줄 세우는 것뿐이다 — 제목이 나오면 새 섹션을 열고, 설명은 문단으로, 사진은
+그대로, 글자 박힌 사진은 통째로, 장식은 버린다.
+
+**예전에는 여기서 픽셀로 판정했다.** 밴드의 어두운 덩어리를 세어 제목인지 설명인지
+가르고(`_role`), 알약 배지를 떼어내고(`_split_badge`), 사진 옆 글자를 잘라내고
+(`sidetext`), 페이지마다 제목의 급을 매겼다(머리띠 > 배지 > 굵은 한 줄). 상품이
+하나 늘 때마다 그 잣대가 어긋났고, 어긋나는 방식이 매번 달랐다. 전부 지웠다.
+
+`sidetext` 모듈은 남아 있지만 본문은 안 쓴다 — 메인이 알맹이를 자를 때 라벨이
+있는지 물어보는 데 쓴다(`main._content_rect`).
 """
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from pathlib import Path
 
-import numpy as np
-from PIL import Image
-
-from . import bands as B
-from . import sidetext
-
-BADGE, TITLE, BODY, PHOTO, FOOT = "badge", "title", "body", "photo", "foot"
-#: 큰 번호 머리띠(`01 | 제품특징`). 제목 중에서도 **한 급 위**다 — 아래 sections() 참고.
-HEAD = "head"
-#: 섹션을 못 연 제목. 열려 있는 섹션 안의 소제목(h3)으로 들어간다.
-SUB = "sub"
-
-#: 제목이라 부를 최대 높이. 글줄 하나~둘. 본문 설명은 이보다 길다.
-TITLE_MAX_H = 100
+#: 모델이 말해 주는 종류. `read_text` 와 같은 이름을 쓴다.
+TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
 
 
 @dataclass
 class Piece:
-    kind: str                 #: badge | title | body | photo
-    y: int
-    h: int
-    file: str = ""            #: 사진 파일 (photo)
-    crop: str = ""            #: 글자 조각 파일 (title/body/캡션) — 읽기 대상
-    text: str = ""            #: 읽은 글 (읽기 전엔 빈 칸)
-    band_kind: str = ""
-    why: str = ""
+    """본문 밴드 하나."""
+
+    kind: str
+    band: int              #: 본문 안에서 몇 번째 밴드인가 (0 부터)
+    file: str = ""         #: 밴드 그림 파일 이름
+    text: str = ""         #: 제목·설명이면 모델이 읽은 글
 
 
 @dataclass
 class Section:
     number: int
     title: Piece | None = None
-    items: list[Piece] = field(default_factory=list)   #: 사진·설명을 원본 순서대로
+    items: list[Piece] = field(default_factory=list)   #: 설명·사진을 원본 순서대로
 
     @property
     def photos(self):
-        return [p for p in self.items if p.kind == PHOTO]
+        return [p for p in self.items if p.kind in (PHOTO, SHOT)]
 
     @property
     def bodies(self):
         return [p for p in self.items if p.kind == BODY]
 
 
-def _dark_box(crop: np.ndarray):
-    """어두운 픽셀의 상자·채움 비율·글줄들의 높이. 배지(꽉 찬 알약)·제목(굵은 한 줄)·설명(여러 줄)을 가른다."""
-    lum = crop.astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    dark = lum < 170
-    if not dark.any():
-        return None
-    ys, xs = np.where(dark)
-    bw, bh = xs.max() - xs.min() + 1, ys.max() - ys.min() + 1
-    rows = dark.any(axis=1)
-    runs, start = [], None
-    for y, r in enumerate(rows):
-        if r and start is None:
-            start = y
-        if not r and start is not None:
-            runs.append(y - start); start = None
-    if start is not None:
-        runs.append(len(rows) - start)
-    return bw, bh, float(dark.sum() / (bw * bh)), runs
+def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
+    """모델이 말한 것을 조각으로. 말 안 해 준 밴드는 **사진으로 둔다.**
 
-
-def _is_color_header(crop: np.ndarray) -> bool:
-    """색 글씨로 된 낮은 머리띠(큰 번호 + 제목)인가. 핑거위글의 `01 | 제품특징` 이 이것이다.
-
-    사진과의 차이: 잉크가 폭의 일부에만 있고, 높이가 낮고, 잉크의 채도가 높다(색 글씨).
-    검은 제품 사진은 채도가 낮고, 살색 사진은 높이가 훨씬 크다.
+    빠뜨린 밴드를 버리면 원본에 있던 그림이 조용히 사라진다. 사진으로 두면
+    최악이라도 원본이 실린다 — 글이 그림으로 실릴 뿐 없어지지는 않는다.
     """
-    h, w = crop.shape[:2]
-    if h > 130:
-        return False
-    f = crop.astype(np.int32)
-    lum = f @ np.array([299, 587, 114]) // 1000
-    sat = f.max(2) - f.min(2)
-    ink = (lum < 225) | (sat >= 40)
-    if ink.mean() < 0.01:
-        return False
-    ys, xs = np.where(ink)
-    bw = xs.max() - xs.min() + 1
-    if bw > 0.6 * w:
-        return False
-    colored = (sat[ink] >= 60).mean()
-    return colored >= 0.15
-
-
-def _role(b: B.Band, crop: np.ndarray) -> str:
-    """밴드 하나의 역할. 종류(PHOTO/TEXT…)는 이미 붙어 있고, 여기선 자리를 정한다."""
-    W = crop.shape[1]
-    box = _dark_box(crop)
-    if b.white < 0.12 and b.height < 160:
-        return FOOT                               # 어두운 띠(푸터·저작권) — 버린다
-    if box and box[1] <= 70 and box[0] < 0.5 * W and box[2] > 0.55:
-        return BADGE                              # 좁고 꽉 찬 어두운 상자 = 라벨 알약
-    if b.kind == B.TEXT:
-        return BODY
-    if _is_color_header(crop):
-        return HEAD                               # `01 | 제품특징` 같은 색 번호 머리띠
-    if box and b.white > 0.6 and b.color < 0.2 and box[2] < 0.5:
-        lines = [r for r in box[3] if r >= 6]
-        if lines and max(lines) <= 100:            # 글줄 높이 안쪽(큰 번호 제목까지) — 사진은 한 덩이가 훨씬 크다
-            if len(lines) == 1 and lines[0] >= 22 and b.height <= TITLE_MAX_H:
-                return TITLE                      # 굵은 한 줄
-            return BODY
-    return PHOTO
-
-
-def _split_badge(arr: np.ndarray, b: B.Band) -> list[B.Band]:
-    """밴드 맨 위에 라벨 알약이 붙어 있으면 떼어 낸다 (배지↔제목 간격이 여백 기준보다 좁은 원본)."""
-    crop = arr[b.y:b.y + b.height]
-    lum = crop.astype(np.float32) @ np.array([0.299, 0.587, 0.114], dtype=np.float32)
-    rows = (lum < 170).any(axis=1)
-    if not rows.any() or rows[0]:
-        pass
-    ys = np.where(rows)[0]
-    if not len(ys):
-        return [b]
-    top = ys[0]
-    end = top
-    while end < len(rows) and rows[end]:
-        end += 1
-    if end - top > 70 or end - top < 14 or end >= b.height - 8:
-        return [b]
-    head = crop[top:end]
-    box = _dark_box(head)
-    if not (box and box[0] < 0.5 * crop.shape[1] and box[2] > 0.55):
-        return [b]
-    cut = end
-    while cut < b.height and not rows[cut]:
-        cut += 1
-    a = B.measure(arr, b.y, cut); a.kind, a.why = B.classify(a)
-    c = B.measure(arr, b.y + cut, b.height - cut); c.kind, c.why = B.classify(c)
-    return [a, c]
-
-
-def _merge_text(pieces_raw):
-    """글줄 사이에서 갈린 글자 밴드를 도로 붙인다. 붙은 것은 body 다."""
     out = []
-    for b, crop, role in pieces_raw:
-        if out and role == BODY and out[-1][2] == BODY:
-            pb, pc, pr = out[-1]
-            gap = b.y - (pb.y + pb.height)
-            if gap <= 60:
-                merged = np.concatenate([pc, np.full((gap, pc.shape[1], 3), 255, np.uint8), crop])
-                nb = B.Band(pb.y, b.y + b.height - pb.y, pb.width, pb.white, pb.color, pb.ink,
-                            pb.mean_sat, pb.max_row_dark, pb.largest_cc, pb.small_cc + b.small_cc,
-                            pb.ncomp, pb.fill_ratio, pb.dhash, kind=pb.kind, why=pb.why)
-                out[-1] = (nb, merged, BODY)
-                continue
-        out.append((b, crop, role))
+    for i, f in enumerate(files):
+        kind = kinds.get(i, PHOTO)
+        out.append(Piece(kind, i, file=f, text=texts.get(i, "") if kind in (TITLE, BODY) else ""))
     return out
 
 
-def _save(arr: np.ndarray, out: Path, name: str, upscale: int = 1) -> str:
-    im = Image.fromarray(arr)
-    if upscale > 1:
-        im = im.resize((im.width * upscale, im.height * upscale), Image.LANCZOS)
-    im.save(out / name, quality=92)
-    return name
-
-
-def read_image(path: Path, out: Path, prefix: str = "") -> list[Piece]:
-    """이미지 한 장 → 조각 목록(원본 순서)."""
-    arr = np.asarray(Image.open(path).convert("RGB"))
-    out.mkdir(parents=True, exist_ok=True)
-    pieces: list[Piece] = []
-    raw = []
-    for b in B.read(arr):
-        for bb in _split_badge(arr, b):
-            crop = arr[bb.y:bb.y + bb.height]
-            raw.append((bb, crop, _role(bb, crop)))
-    for i, (b, crop, role) in enumerate(_merge_text(raw)):
-        if role == FOOT:
-            continue
-        nm = f"{prefix}{i:02d}"
-        if role == BADGE:
-            pieces.append(Piece(BADGE, b.y, b.height, crop=_save(crop, out, f"{nm}_badge.png", 2),
-                                band_kind=b.kind, why=b.why))
-        elif role in (HEAD, TITLE, BODY):
-            pieces.append(Piece(role, b.y, b.height, crop=_save(crop, out, f"{nm}_{role}.png", 2),
-                                band_kind=b.kind, why=b.why))
-        else:
-            sp = sidetext.split(crop)
-            if sp is None:
-                pieces.append(Piece(PHOTO, b.y, b.height, file=_save(crop, out, f"{nm}_photo.jpg"),
-                                    band_kind=b.kind, why=b.why))
-            else:
-                pieces.append(Piece(PHOTO, b.y, b.height, file=_save(sp.photo, out, f"{nm}_photo.jpg"),
-                                    crop=_save(sp.text, out, f"{nm}_caption.png", 2),
-                                    band_kind=b.kind, why=b.why + " · 옆글자 떼어냄"))
-    return pieces
-
-
-#: 섹션을 열 수 있는 신호. **세기 순**이다.
-#:
-#:     ① HEAD   큰 번호 머리띠 (`01 | 제품특징`)
-#:     ② BADGE  알약 라벨
-#:     ③ TITLE  굵은 한 줄 제목
-#:     ④ (없음) 설명 뒤에 다시 나오는 사진
-OPENERS = (HEAD, BADGE, TITLE)
-
-
-def tier_of(pieces: list[Piece]) -> str | None:
-    """이 페이지가 쓸 급 하나. 없으면 None (④ 로 간다)."""
-    return next((k for k in OPENERS if any(p.kind == k for p in pieces)), None)
-
-
 def sections(pieces: list[Piece]) -> list[Section]:
-    """조각들을 섹션으로 묶는다. **페이지마다 한 급만 쓴다.**
+    """조각들을 섹션으로 묶는다.
 
-    한 페이지 안에서 머리띠와 굵은 제목이 둘 다 섹션을 열면 층이 뒤섞인다 —
-    핑거위글은 머리띠가 넷(제품특징·포인트·사이즈·전원)인데 그 안의 굵은 제목·
-    색 문장까지 섹션을 열어 여섯 조각으로 흩어졌다. 그래서 **가장 센 급 하나만**
-    섹션을 열고, 못 연 급은 열려 있는 섹션의 소제목(h3)으로 들어간다.
-
-    예외 하나 — ① 로 여는 페이지에서 **첫 머리띠보다 앞에 나온** ②·③ 은 첫
-    섹션을 연다. 머리띠 앞의 도입부가 갈 곳이 없어지기 때문이다.
+    제목이 새 섹션을 연다. **제목이 하나도 없는 페이지**면 "설명 뒤에 다시 나오는
+    사진" 이 연다 — 그 자리가 사람 눈에도 구간이 바뀌는 자리다.
     """
-    tier = tier_of(pieces)
+    has_title = any(p.kind == TITLE for p in pieces)
     secs: list[Section] = []
     cur: Section | None = None
-    seen_tier = False
 
     def new() -> Section:
         s = Section(len(secs) + 1)
@@ -241,33 +76,30 @@ def sections(pieces: list[Piece]) -> list[Section]:
         return s
 
     for p in pieces:
-        if p.kind in OPENERS:
-            # 급이 맞으면 연다. ① 페이지의 머리띠 앞 도입부도 연다.
-            opens = p.kind == tier or (tier == HEAD and not seen_tier)
-            if p.kind == tier:
-                seen_tier = True
-            if not opens:
-                if p.kind == BADGE:
-                    continue            # 배지에는 글이 없다. 소제목으로 못 쓴다
-                if cur is None:
-                    cur = new()
-                p.kind = SUB            # 급이 낮다 — 섹션 안의 소제목으로
-                cur.items.append(p)
-                continue
-            if p.kind == BADGE:
-                cur = new()             # 배지는 시작 신호. 글은 안 쓴다(상품명 반복)
-                continue
-            if cur is not None and cur.title is not None and not cur.items:
-                p.kind = SUB            # 제목 바로 뒤의 제목 = 부제. 섹션을 또 열지 않는다
-                cur.items.append(p)
-                continue
+        if p.kind == DECOR:
+            continue
+        if p.kind == TITLE:
             if cur is None or cur.title is not None or cur.items:
                 cur = new()
             cur.title = p
             continue
         if cur is None:
             cur = new()
-        if tier is None and p.kind == PHOTO and cur.bodies:
-            cur = new()                 # ④ 제목이 없는 페이지: 설명 뒤 사진 = 다음 섹션
+        if not has_title and p.kind in (PHOTO, SHOT) and cur.bodies:
+            cur = new()
         cur.items.append(p)
     return [s for s in secs if s.title or s.items]
+
+
+#: 글자 박힌 사진이 본문의 이만큼을 넘으면 **자르지 않는다.**
+#: 그런 원본은 디자이너가 사진과 글을 한 덩어리로 짜 놓은 것이라, 밴드로 갈라
+#: 다시 세우면 얻는 것보다 잃는 것이 많다(유컵스). 통째로 싣고 그 사실을 적는다.
+MOSTLY_SHOT = 2 / 3
+
+
+def mostly_shots(pieces: list[Piece]) -> bool:
+    """본문이 통째로 실려야 하는 원본인가."""
+    usable = [p for p in pieces if p.kind != DECOR]
+    if not usable:
+        return False
+    return sum(1 for p in usable if p.kind == SHOT) / len(usable) >= MOSTLY_SHOT
