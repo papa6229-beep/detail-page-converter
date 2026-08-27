@@ -36,7 +36,13 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
          한 줄짜리 머리글이면 title, 문단이면 body.
     ② 사진이 있는데 그 위나 옆에 **설명·라벨·번호·치수가 박혀 있는가?**
        → 그렇다면 shot 이다. 분홍 알약 라벨 하나만 얹혀 있어도 shot 이다.
-    ③ 그 밖의 사진 → photo. 알약 배지·구분선·푸터뿐이면 decor.
+    ③ 그 밖의 사진 → photo. 글자 없는 알약·구분선·푸터뿐이면 decor.
+
+    ④ 그리고 밴드마다 하나 더 — **위는 사진, 아래는 글**로 뚜렷이 나뉘는가?
+       사진 아래에 제목이나 설명이 빈 줄 없이 바짝 붙어 한 밴드가 된 것.
+       그렇다면 종류 뒤에 `+split` 을 붙여라 — `"3:shot+split"`.
+       우리가 그 자리를 다시 잘라 위는 사진으로, 아래는 글로 쓴다.
+       사진 **위에 글이 얹힌** 것은 split 이 아니다. 위아래로 갈리는 것만이다.
 
 **종류 다섯 — 하나만 고른다**
 
@@ -51,7 +57,10 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
             애매하면 shot 으로 둬라. photo 로 잘못 부르면 **그 글이 우리 페이지에서
             영영 안 읽히고**, body 로 잘못 부르면 그림이 사라진다. shot 은 통째로
             실리니 잃는 것이 없다.
-    decor   **장식**이다 — 알약 배지, 구분선, 푸터, 상품명 반복 띠. 버릴 것.
+    decor   **장식**이다 — 빈 알약, 구분선, 푸터, 상품명 반복 띠. 버릴 것.
+            **띠나 배지 안에 글이 있으면 장식이 아니라 제목이다.** 분홍 띠에
+            `프리티 러브 브루스의 포인트!` 라고 쓰여 있으면 그건 title 이다.
+            글이 한 글자라도 읽히면 decor 가 아니다.
 
 **글 읽기 — title·body 만**
 
@@ -64,11 +73,13 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
   · 제목에 큰 번호(01, 02 …)나 영문 부제(`PRODUCT FEATURES`)가 같이 있으면
     **한글 제목만** 적는다. 번호는 우리가 따로 붙인다.
   · photo·shot·decor 는 글을 적지 마라. 빈칸으로 둔다.
+  · **title 이라고 했으면 글을 반드시 적어라.** 글 없는 title 은 우리가 못 쓴다 —
+    번호만 붙은 빈 제목이 되어 구간 번호가 꼬인다. 못 읽겠으면 title 이라 하지 마라.
 
 **돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
 
 ```json
-{"kinds":["0:title","1:body","2:photo","3:shot","4:decor"],
+{"kinds":["0:title","1:body","2:photo","3:shot+split","4:decor"],
  "texts":{"0":"제품특징","1":"본문 설명 글"}}
 ```
 
@@ -127,8 +138,11 @@ def parse(reply: str) -> tuple[dict[int, str], dict[int, str]]:
         head, _, tail = text.partition(":")
         digits = re.sub(r"[^0-9]", "", head)
         word = tail.strip().lower()
+        split = word.endswith("+split")
+        if split:
+            word = word[: -len("+split")]
         if digits and word in KINDS:
-            kinds[int(digits)] = word
+            kinds[int(digits)] = word + ("+split" if split else "")
 
     texts: dict[int, str] = {}
     for k, v in (got.get("texts") or {}).items():

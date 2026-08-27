@@ -47,6 +47,19 @@ class Section:
         return [p for p in self.items if p.kind == BODY]
 
 
+SPLIT = "+split"
+
+
+def wants_split(kind: str) -> bool:
+    """모델이 "위는 사진 아래는 글" 이라고 말한 밴드인가."""
+    return str(kind).endswith(SPLIT)
+
+
+def bare(kind: str) -> str:
+    """`shot+split` → `shot`."""
+    return str(kind)[: -len(SPLIT)] if wants_split(kind) else str(kind)
+
+
 def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
     """모델이 말한 것을 조각으로. 말 안 해 준 밴드는 **사진으로 둔다.**
 
@@ -55,8 +68,14 @@ def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) 
     """
     out = []
     for i, f in enumerate(files):
-        kind = kinds.get(i, PHOTO)
-        out.append(Piece(kind, i, file=f, text=texts.get(i, "") if kind in (TITLE, BODY) else ""))
+        kind = bare(kinds.get(i, PHOTO))
+        text = texts.get(i, "") if kind in (TITLE, BODY) else ""
+        # **글 없는 제목은 제목이 아니다.** 번호만 붙은 빈 제목이 되어 구간 번호가
+        # 꼬인다(죠우무 `포인트`·`상세사진`, 벨벳키스 `SIZE & INFO` 가 그랬다).
+        # 다시 물어도 글이 없으면 장식으로 버린다.
+        if kind == TITLE and not text.strip():
+            kind = DECOR
+        out.append(Piece(kind, i, file=f, text=text))
     return out
 
 

@@ -76,7 +76,14 @@ def blank_rows(arr: np.ndarray) -> np.ndarray:
     return white | uniform
 
 
-def split_bands(arr: np.ndarray) -> list[tuple[int, int]]:
+#: 한 밴드를 **한 번 더** 가를 때 쓰는 여백 기준. 기본(24)보다 촘촘하다.
+#: 사진과 글이 빈 줄 없이 바짝 붙어 한 밴드가 된 원본이 있다(브루스·죠우무).
+#: 기본 기준으로는 안 갈리므로, **모델이 "위 사진 아래 글" 이라고 말한 밴드만**
+#: 이 기준으로 다시 본다. 모든 밴드에 쓰면 글줄 사이가 갈려 문단이 부서진다.
+TIGHT_GAP = 8
+
+
+def split_bands(arr: np.ndarray, min_gap_px: int = MIN_GAP) -> list[tuple[int, int]]:
     """통이미지를 밴드로 가른다. `(위, 높이)` 목록을 위에서 아래 순서로.
 
     연속된 빈 행이 `MIN_GAP` 이상이면 그 **런의 한가운데**에서 끊는다.
@@ -86,7 +93,7 @@ def split_bands(arr: np.ndarray) -> list[tuple[int, int]]:
     h = arr.shape[0]
     blank = blank_rows(arr)
     # 여백 기준은 폭에 비례한다. 800px 원본에서 24px 이던 것이 364px 원본에선 11px 다.
-    min_gap = max(10, round(arr.shape[1] * MIN_GAP / 800))
+    min_gap = max(4, round(arr.shape[1] * min_gap_px / 800))
 
     cuts: list[int] = []
     start = -1

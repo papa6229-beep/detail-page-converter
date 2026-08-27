@@ -665,6 +665,10 @@ def take(reply: str, cuts: list[Path], kinds: list[str],
         if str(got.get(k, "")).strip():
             spec[k] = str(got[k]).strip()
     spec["치수"] = SIZE_FIXED
+    #: 원본에 전원 항목이 없으면 건전지도 충전도 아니라는 뜻이다 — 손으로 쓰는 물건이다.
+    #: 빈칸으로 두면 칸이 아예 안 그려져 손님이 "정보가 없다" 로 읽는다.
+    #: 모델이 빈칸 대신 `-` 를 적어 보내기도 한다(벨벳키스). 그것도 없는 것으로 본다.
+    spec["전원"] = (spec.get("전원") or "").strip(" -–—없음") and spec["전원"].strip() or "수동"
 
     keys = [(str(got.get(f"key{n}_t", "")).strip(), str(got.get(f"key{n}_d", "")).strip())
             for n in (1, 2, 3)]

@@ -142,6 +142,141 @@ def _pin(payload: bytes) -> bytes:
     return json.dumps(body).encode()
 
 
+def _facts_of(reply: str):
+    """모델 답에서 `facts` 만 꺼낸다. 빈칸을 메울 때 다시 고르려고."""
+    m = re.search(r"\{[\s\S]*\}", reply or "")
+    if not m:
+        return []
+    try:
+        return json.loads(m.group(0)).get("facts") or []
+    except json.JSONDecodeError:
+        return []
+
+
+#: 대표컷·키피쳐가 빈칸이면 이 순서로 조건을 하나씩 푼다.
+#: 다 만족하는 밴드가 없다고 빈칸으로 두면, 모델 답이 조금만 달라져도 페이지가
+#: 통째로 무너진다(다일레이터가 실제로 그랬다). **자리는 반드시 찬다.**
+RELAX = ("옵션 수", "전체 보임", "손 없음")
+
+
+def _loosen(facts: dict[int, "main.Facts"], step: str) -> dict[int, "main.Facts"]:
+    """조건 하나를 푼 사실 사본. **원본은 안 건드린다.**
+
+    `main.py` 는 얼려 둔 파일이라 `choose` 에 손대지 않는다. 대신 **사실을 풀어서**
+    같은 `choose` 를 다시 부른다 — 옵션 수를 풀려면 제품 개수를 1로, 전체 보임을
+    풀려면 full 을 참으로, 손 없음을 풀려면 hand 를 거짓으로 적어 준다.
+    고르는 규칙은 그대로 두고 **입력만** 느슨해지는 셈이다.
+    """
+    import copy
+
+    got = copy.deepcopy(facts)
+    for f in got.values():
+        if step == "옵션 수" and f.products >= 1:
+            f.products = 1
+        elif step == "전체 보임":
+            f.full = True
+        elif step == "손 없음":
+            f.hand = False
+    return got
+
+
+def choose_never_blank(facts, kinds, hashes, options):
+    """(대표컷, 키피쳐, 패키지, 메모). **대표컷·키피쳐는 빈칸으로 두지 않는다.**"""
+    hero, feat, pkg, notes = main.choose(facts, kinds, hashes, options)
+    loose = facts
+    for step in RELAX:
+        if hero >= 0 and feat >= 0:
+            break
+        loose = _loosen(loose, step)
+        h2, f2, _p2, _n2 = main.choose(loose, kinds, hashes, options)
+        if hero < 0 and h2 >= 0:
+            hero = h2
+            notes.append(f"대표컷 — 조건 「{step}」 을 풀고 다시 골랐다 → 밴드 [{hero}]")
+        if feat < 0 and f2 >= 0 and f2 != hero:
+            feat = f2
+            notes.append(f"키피쳐 — 조건 「{step}」 을 풀고 다시 골랐다 → 밴드 [{feat}]")
+    if hero < 0:
+        notes.append("대표컷 — 조건을 다 풀어도 쓸 밴드가 없다")
+    if feat < 0:
+        notes.append("키피쳐 — 조건을 다 풀어도 쓸 밴드가 없다")
+    return hero, feat, pkg, notes
+
+
+def resplit(band: Path, dest_dir: Path, stem: str) -> list[Path]:
+    """"위는 사진 아래는 글" 인 밴드를 **촘촘한 여백 기준으로 한 번 더** 자른다.
+
+    사진과 글이 빈 줄 없이 바짝 붙어 한 밴드가 된 원본이 있다(브루스의 분홍 띠,
+    죠우무의 제목). 기본 기준(24)으로는 안 갈린다. 모델이 그렇다고 말한 밴드만
+    기준을 8 로 낮춰 다시 본다 — 모든 밴드에 쓰면 글줄 사이가 갈려 문단이 부서진다.
+
+    안 갈리면 빈 목록을 준다. 그러면 부르는 쪽이 통째로 쓴다.
+    """
+    arr = np.asarray(Image.open(band).convert("RGB"))
+    parts = B.split_bands(arr, min_gap_px=B.TIGHT_GAP)
+    if len(parts) < 2:
+        return []
+    out = []
+    for n, (top, height) in enumerate(parts):
+        f = dest_dir / f"{stem}_s{n}.jpg"
+        Image.fromarray(arr[top:top + height]).save(f, quality=90)
+        out.append(f)
+    return out
+
+
+def refine(key: str, body_files: list[Path], kinds_of: dict, texts_of: dict,
+           assets: Path, notes: list[str]):
+    """모델 답을 한 번 더 다듬는다 — **되자르기와 제목 재질문.** AI 는 많아야 1콜 더.
+
+    ① `+split` 이라고 답한 밴드는 촘촘한 여백 기준으로 다시 자른다. 위는 사진,
+       **아래 조각만** 다시 물어 제목인지 설명인지 듣는다. 안 갈리면 통째로 둔다.
+    ② `title` 이라고 해 놓고 글을 안 준 밴드도 다시 묻는다. 그래도 글이 없으면
+       `pieces_from` 이 장식으로 버린다 — 글 없는 제목은 번호만 꼬이게 한다.
+    """
+    files: list[Path] = []
+    kinds: dict[int, str] = {}
+    texts: dict[int, str] = {}
+    ask: list[tuple[int, Path]] = []          # (새 자리, 다시 물을 그림)
+
+    def put(f: Path, kind: str, text: str = "") -> int:
+        n = len(files)
+        files.append(f)
+        kinds[n] = kind
+        if text:
+            texts[n] = text
+        return n
+
+    cut = 0
+    for i, f in enumerate(body_files):
+        raw = kinds_of.get(i, body.PHOTO)
+        text = texts_of.get(i, "")
+        if body.wants_split(raw):
+            parts = resplit(f, assets, f.stem)
+            if len(parts) >= 2:
+                cut += 1
+                for up in parts[:-1]:
+                    put(up, body.bare(raw))
+                ask.append((put(parts[-1], body.BODY), parts[-1]))
+                continue
+        n = put(f, body.bare(raw), text)
+        if body.bare(raw) == body.TITLE and not text.strip():
+            ask.append((n, f))
+
+    if cut:
+        notes.append(f"위 사진·아래 글로 붙어 있던 밴드 {cut}개를 촘촘한 기준으로 다시 잘랐다")
+    if ask and key:
+        again = [f for _n, f in ask]
+        notes.append(f"밴드 {len(again)}개를 다시 물었다 (되자른 글·글 없는 제목)")
+        k2, t2 = read_text.read(key, again)
+        for j, (n, _f) in enumerate(ask):
+            if j in k2:
+                kinds[n] = body.bare(k2[j])
+            if j in t2:
+                texts[n] = t2[j]
+    elif ask:
+        notes.append(f"밴드 {len(ask)}개는 다시 못 물었다 — 키가 없다")
+    return files, kinds, texts
+
+
 def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
     """모델에 물어본다. **JSON 이 깨져 오면 한 번 더 부른다.**
 
@@ -287,6 +422,14 @@ def api_basic_convert(req: ConvertReq):
         if key:
             reply = ask_model(key, main.parts_for(row.name, page.maker, typed_text(row), cuts, kinds))
             got, ai_notes = main.take(reply, cuts, kinds, hashes, options=opts)
+            if got.main_band < 0 or got.feature_band < 0:
+                h, fe, _pk, more = choose_never_blank(
+                    main.parse_facts(_facts_of(reply)), kinds, hashes, opts)
+                got.main_band = h if got.main_band < 0 else got.main_band
+                got.feature_band = fe if got.feature_band < 0 else got.feature_band
+                got.main = cuts[got.main_band] if 0 <= got.main_band < len(cuts) else None
+                got.feature = cuts[got.feature_band] if 0 <= got.feature_band < len(cuts) else None
+                ai_notes += [n for n in more if "조건" in n]
             got.name_kr, got.name_en, got.maker = page.name_kr, page.name_en, page.maker
             head, page, notes = notes, got, ai_notes
             notes[:0] = head
@@ -334,6 +477,7 @@ def api_basic_convert(req: ConvertReq):
             if body_files:
                 notes.append(f"본문 밴드 {len(body_files)}장은 안 물어봤다 — 그대로 싣는다")
 
+        body_files, kinds_of, texts_of = refine(key, body_files, kinds_of, texts_of, assets, notes)
         pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files])
         seen = Counter(p.kind for p in pieces)
         notes.append("본문 종류 — " + " · ".join(
