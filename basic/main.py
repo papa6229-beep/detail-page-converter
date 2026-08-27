@@ -192,7 +192,13 @@ class Facts:
     white_bg: bool = False
     text: bool = False
     hand: bool = False     #: 손·신체가 나오는가
-    box: bool = False      #: 판매용 상자가 보이는가
+    #: 제품 **전체**가 보이는가. 일부를 크게 찍은 접사면 False.
+    #: 글랜스 대표컷이 원형 접사로 잡히던 것이 이 사실이 없어서였다.
+    full: bool = False
+    #: 상자가 어떻게 보이는가 — `"main"` 주인공 · `"bg"` 배경에 있음 · `"no"` 없음.
+    #: 유컵스는 제품이 앞에 있고 `Universal` 상자가 뒤에 있다. 상자가 보이는 것은
+    #: 사실이지만 상자컷은 아니다. 참·거짓 둘로는 그 둘을 못 가른다.
+    box: str = "no"
 
 
 def parse_facts(raw) -> dict[int, Facts]:
@@ -227,8 +233,12 @@ def parse_facts(raw) -> dict[int, Facts]:
                 f.text = True
             elif w in ("hand", "손"):
                 f.hand = True
-            elif w in ("box", "상자"):
-                f.box = True
+            elif w in ("full", "전체"):
+                f.full = True
+            elif w in ("boxmain", "box", "상자주인공"):
+                f.box = "main"
+            elif w in ("boxbg", "상자배경"):
+                f.box = "bg"
         got[n] = f
     return got
 
@@ -256,15 +266,21 @@ def choose(facts: dict[int, Facts], kinds: list[str], hashes: list[int],
     def first(test) -> int:
         return next((n for n in order if test(facts[n])), -1)
 
-    hero = first(lambda f: f.white_bg and not f.text and not f.hand
+    # 상자가 **주인공인** 컷은 패키지 자리 것이다. 상자 앞면에 제품 그림이 박혀
+    # 있어 "제품 1개 · 전체" 로도 읽히는데, 그것을 대표컷으로 세우면 손님이 상자
+    # 사진을 제품 사진으로 본다(핑거위글에서 실제로 그랬다).
+    hero = first(lambda f: f.white_bg and not f.text and not f.hand and f.full
+                 and f.box != "main"
                  and (f.products == 1 or (options > 1 and f.products == options)))
     if hero < 0:
-        notes.append(f"대표컷 빈칸 — 흰 바탕·글자 없음·손 없음·제품 1개 또는 {options}개인 밴드가 없다")
+        notes.append("대표컷 빈칸 — 흰 바탕·글자 없음·손 없음·제품 전체 보임·"
+                     f"상자컷 아님·제품 1개 또는 {options}개인 밴드가 없다")
 
     # 패키지를 **키피쳐보다 먼저** 고른다. 상자컷도 흰 바탕 제품컷이라 키피쳐
     # 조건에 걸리는데, 키피쳐가 먼저 집어 가면 상자 자리가 빈다(벨벳키스에서 그랬다).
     # 상자로 쓸 수 있는 밴드는 흔치 않고, 키피쳐로 쓸 밴드는 대개 여럿이다.
-    pkg = next((n for n in order if facts[n].box and n != hero), -1)
+    # 상자가 **주인공인** 컷만 패키지다. 제품 뒤에 상자가 걸쳐 있는 것은 아니다.
+    pkg = next((n for n in order if facts[n].box == "main" and n != hero), -1)
     if pkg < 0:
         notes.append("패키지 빈칸 — 상자가 보이는 밴드가 없다")
 
@@ -287,8 +303,10 @@ def choose(facts: dict[int, Facts], kinds: list[str], hashes: list[int],
         if n >= 0:
             f = facts[n]
             notes.append(f"{slot} = 밴드 [{n}] (제품 {f.products}개"
+                         f"{' · 전체' if f.full else ' · 일부'}"
                          f"{' · 흰 바탕' if f.white_bg else ' · 색 바탕'}"
-                         f"{' · 손' if f.hand else ''}{' · 상자' if f.box else ''})")
+                         f"{' · 손' if f.hand else ''}"
+                         f"{' · 상자 주인공' if f.box == 'main' else ' · 상자 배경' if f.box == 'bg' else ''})")
     return hero, feat, pkg, notes
 
 
@@ -518,7 +536,7 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 
    밴드 **전부**에 대해 한 줄씩, 아래 모양 그대로 적는다.
 
-       "<번호>:<제품 개수>,<white|color>,<text|notext>,<hand|nohand>,<box|nobox>"
+       "<번호>:<제품 개수>,<white|color>,<text|notext>,<hand|nohand>,<full|crop>,<boxmain|boxbg|nobox>"
 
        제품 개수   그 밴드에 **제품이 몇 개 보이는가**. 같은 제품이 여러 각도로
                    찍혔으면 보이는 개수 그대로. 제품이 안 보이면 0.
@@ -527,14 +545,22 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
        text        밴드 안에 **글자**가 박혀 있으면 text, 없으면 notext.
                    제품·상자에 인쇄된 상표는 글자로 치지 않는다. 설명·라벨·치수만.
        hand        **사람의 손이나 몸**이 나오면 hand, 아니면 nohand.
-       box         **판매용 종이·플라스틱 상자**가 화면에서 **뚜렷하게** 보이면 box.
-                   상자가 화면의 한 귀퉁이에 살짝 걸쳐 있거나 제품 뒤로 조금
-                   비치는 정도면 **nobox** 다. 상자가 주인공인 컷만 box 다.
+       full        **제품 전체**가 다 보이면 full. 제품의 **일부만 크게** 찍은
+                   접사·부분컷이면 crop. 구멍 속, 표면 무늬, 버튼 부분처럼
+                   "무엇의 어디" 인지 알려면 다른 컷을 봐야 하는 것이 crop 이다.
+       box         상자가 **주인공**이면 boxmain — 상자를 찍은 컷이다.
+                   상자가 **배경이나 뒤쪽에** 있고 제품이 주인공이면 boxbg.
+                   상자가 아예 없으면 nobox.
                    **천 파우치·주머니·케이블·설명서는 상자가 아니다** — nobox.
-                   상자 사진이 아예 없는 원본이 흔하다. 없으면 다 nobox 로 둬라.
+                   상자 사진이 없는 원본이 흔하다. 없으면 다 nobox 로 둬라.
 
-   보기 — `"16:1,white,notext,nohand,nobox"` 는 16번 밴드에 제품 하나가 흰
-   바탕에 놓였고 글자도 손도 상자도 없다는 뜻이다.
+   보기 —
+       `"16:1,white,notext,nohand,full,nobox"`
+           16번 밴드에 제품 하나가 흰 바탕에 통째로 놓였고 글자·손·상자가 없다.
+       `"11:1,white,notext,nohand,crop,nobox"`
+           11번은 제품의 **일부만** 크게 찍은 접사다.
+       `"27:1,white,notext,nohand,full,boxbg"`
+           27번은 제품이 주인공이고 상자는 **뒤에** 있다.
 
 4. **메인과 본문의 경계** — `body_start` 에 숫자 하나.
 
@@ -566,9 +592,9 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
  "key1_t":"제목","key1_d":"한 줄 설명",
  "key2_t":"","key2_d":"",
  "key3_t":"","key3_d":"",
- "facts":["0:0,white,text,nohand,nobox",
-          "1:1,color,notext,nohand,nobox",
-          "2:6,white,notext,nohand,nobox"],
+ "facts":["0:0,white,text,nohand,crop,nobox",
+          "1:1,color,notext,nohand,full,nobox",
+          "2:6,white,notext,nohand,full,nobox"],
  "body_start":7,
  "notes":[]}
 ```

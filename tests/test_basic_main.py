@@ -99,7 +99,7 @@ def test_no_three_line_says_so():
 
 def facts(**kw) -> main.Facts:
     """밴드 하나에 대해 모델이 말한 사실. 안 준 것은 **흰 바탕 제품 단독컷**."""
-    d = dict(products=1, white_bg=True, text=False, hand=False, box=False)
+    d = dict(products=1, white_bg=True, text=False, hand=False, full=True, box="no")
     d.update(kw)
     return main.Facts(**d)
 
@@ -117,17 +117,19 @@ def page(**bands):
 # ── 모델은 사실만, 고르는 것은 코드 ──────────────────────────────────────
 
 def test_parse_facts_reads_one_line_per_band():
-    got = main.parse_facts(["0:0,white,text,nohand,nobox",
-                            "7:1,white,notext,nohand,nobox",
-                            "9:6,color,notext,hand,box"])
-    assert got[0].products == 0 and got[0].text and not got[0].hand
-    assert got[7].products == 1 and got[7].white_bg and not got[7].text
-    assert got[9].products == 6 and not got[9].white_bg and got[9].hand and got[9].box
+    got = main.parse_facts(["0:0,white,text,nohand,crop,nobox",
+                            "7:1,white,notext,nohand,full,nobox",
+                            "9:6,color,notext,hand,full,boxmain",
+                            "27:1,white,notext,nohand,full,boxbg"])
+    assert got[0].products == 0 and got[0].text and not got[0].full
+    assert got[7].products == 1 and got[7].white_bg and got[7].full and got[7].box == "no"
+    assert got[9].products == 6 and not got[9].white_bg and got[9].hand and got[9].box == "main"
+    assert got[27].box == "bg"          # 상자가 뒤에 있는 것과 상자컷은 다르다
 
 
 def test_parse_facts_survives_a_broken_line():
     """줄 하나가 깨져도 그 밴드만 잃는다 — 답 전체가 버려지지 않는다."""
-    got = main.parse_facts(["0:1,white,notext,nohand,nobox", "쓰레기", "", "2:1,white"])
+    got = main.parse_facts(["0:1,white,notext,nohand,full,nobox", "쓰레기", "", "2:1,white"])
     assert set(got) == {0, 2}
 
 
@@ -190,9 +192,39 @@ def test_package_is_chosen_before_feature():
 
     벨벳키스에서 실제로 그랬다 — 상자가 하나뿐인데 키피쳐가 가져갔다.
     """
-    f, kinds, hashes = page(b0=facts(), b1=facts(box=True))
+    f, kinds, hashes = page(b0=facts(), b1=facts(box="main"))
     hero, feat, pkg, _n = main.choose(f, kinds, hashes, options=1)
     assert hero == 0 and pkg == 1 and feat == -1
+
+
+def test_hero_needs_the_whole_product():
+    """제품 **일부만** 크게 찍은 접사는 대표컷이 아니다.
+
+    글랜스 대표컷이 원형 접사로 잡히던 것이 이 사실이 없어서였다.
+    접사는 키피쳐로는 쓴다.
+    """
+    f, kinds, hashes = page(b0=facts(full=False), b1=facts(full=True))
+    hero, feat, _p, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 1 and feat == 0
+
+
+def test_hero_is_never_a_box_shot():
+    """상자컷은 패키지 자리 것이다.
+
+    상자 앞면에 제품 그림이 박혀 있어 "제품 1개 · 전체" 로도 읽히는데, 그것을
+    대표컷으로 세우면 손님이 상자 사진을 제품 사진으로 본다(핑거위글).
+    """
+    f, kinds, hashes = page(b0=facts(box="main"), b1=facts())
+    hero, _feat, pkg, _n = main.choose(f, kinds, hashes, options=1)
+    assert hero == 1 and pkg == 0
+
+
+def test_package_ignores_a_box_in_the_background():
+    """제품이 주인공이고 상자가 뒤에 있으면 상자컷이 아니다 (유컵스)."""
+    f, kinds, hashes = page(b0=facts(), b1=facts(box="bg"))
+    _h, _f, pkg, notes = main.choose(f, kinds, hashes, options=1)
+    assert pkg == -1
+    assert any("패키지 빈칸" in n for n in notes)
 
 
 def test_package_blank_when_no_box():
@@ -215,10 +247,10 @@ def test_take_reads_facts_and_chooses(tmp_path):
     for c in cuts:
         c.write_bytes(b"x")
     reply = json.dumps({"타입": "바이브레이터", "key1_t": "제목", "key1_d": "설명",
-                        "facts": ["0:0,white,text,nohand,nobox",
-                                  "1:1,color,notext,nohand,nobox",
-                                  "2:1,white,notext,nohand,nobox",
-                                  "3:1,white,notext,nohand,box"],
+                        "facts": ["0:0,white,text,nohand,crop,nobox",
+                                  "1:1,color,notext,nohand,full,nobox",
+                                  "2:1,white,notext,nohand,full,nobox",
+                                  "3:1,white,notext,nohand,full,boxmain"],
                         "body_start": 2})
     got, notes = main.take(reply, cuts, ["PHOTO"] * 4, [1, 2, 4, 8], options=1)
     assert got.spec["타입"] == "바이브레이터" and got.spec["치수"] == main.SIZE_FIXED
@@ -245,8 +277,8 @@ def test_take_rejects_body_start_out_of_range(tmp_path):
 
 def test_prompt_asks_for_facts_not_judgement():
     """모델은 사실만 말한다. 고르는 규칙은 코드에 있다."""
-    for want in ("<제품 개수>", "white|color", "text|notext", "hand|nohand", "box|nobox",
-                 "밴드 **전부**", "판단하지 마라"):
+    for want in ("<제품 개수>", "white|color", "text|notext", "hand|nohand",
+                 "full|crop", "boxmain|boxbg|nobox", "밴드 **전부**", "판단하지 마라"):
         assert want in main.PROMPT, want
     # 예전처럼 후보를 고르라고 하지 않는다
     assert '"main":[' not in main.PROMPT
