@@ -118,30 +118,39 @@ def slots(n: int, **kw):
 # ── 거르기 — 기준은 셋뿐이다 ─────────────────────────────────────────────
 
 def test_only_three_reasons_to_reject():
-    """유채색 배경 · 글자 박힘 · 제품 여러 개. **이 셋 말고는 안 막는다.**"""
-    assert main.reject(shot(), hero=True) == ""
-    assert "유채색 배경" in main.reject(shot(bg_tint=0.41), hero=True)
-    assert "글자" in main.reject(shot(has_text=True), hero=True)
-    assert "여러 개" in main.reject(shot(solo=0.20), hero=True)
+    """색 배경 · 글자 박힘 · 제품 여러 개. **이 셋 말고는 안 막는다.**"""
+    assert main.reject(shot()) == ""
+    assert "색 배경" in main.reject(shot(bg_tint=0.41))
+    assert "글자" in main.reject(shot(has_text=True))
+    assert "여러 개" in main.reject(shot(solo=0.20))
     # 예전에 막던 것들은 이제 안 막는다 — 고르는 일은 모델이 한다
-    assert main.reject(shot(letters=90), hero=True) == ""      # 무늬가 잘게 갈린 제품
-    assert main.reject(shot(ink=0.001), hero=True) == ""       # 창백한 제품
-    assert main.reject(shot(design=0.95), hero=True) == ""     # 제품 자체가 색이다
+    assert main.reject(shot(letters=90)) == ""      # 무늬가 잘게 갈린 제품
+    assert main.reject(shot(ink=0.001)) == ""       # 창백한 제품
+    assert main.reject(shot(design=0.95)) == ""     # 제품 자체가 색이다
 
 
-def test_tinted_background_is_hero_only():
-    """키피쳐는 옅은 배경·연출컷을 쓴다. 대표컷만 흰 바탕을 따진다."""
+def test_the_same_three_apply_to_every_slot():
+    """자리별 예외를 두지 않는다.
+
+    패키지에만 검사를 안 걸었을 때 죠우무는 광고 배너를, 브루스는 파우치컷을
+    상자라고 세웠다. 대표컷에만 색 배경을 봤을 때 유컵스 키피쳐가 보라 배경이었다.
+    """
     tinted = shot(bg_tint=0.55)
-    assert main.reject(tinted, hero=True) != ""
-    assert main.reject(tinted, hero=False) == ""
+    assert main.reject(tinted) != ""          # 어느 자리든 같은 답이다
+    shots, kinds, hashes = slots(3)
+    shots[0] = shot(band=0, bg_tint=0.55)
+    _h, _f, pkg, notes = main.pick_slots(shots, kinds, hashes,
+                                         ai_main=[1], ai_package=[0, 2])
+    assert pkg == 2, notes                    # 패키지도 색 배경이면 막힌다
+    assert any("패키지 [0] 막음" in n for n in notes)
 
 
 def test_tint_threshold_sits_in_the_measured_gap():
-    """실측 — 흰 바탕 0.00~0.05 ↔ 색 배경 0.31~1.00. 그 사이가 비어 있다."""
-    for white in (0.00, 0.03, 0.04, 0.05):
-        assert main.reject(shot(bg_tint=white), hero=True) == "", white
+    """실측 — 흰 바탕 0.00~0.05 · 상자 0.16 ↔ 색 배경 0.31~1.00."""
+    for ok in (0.00, 0.03, 0.05, 0.16):       # 0.16 은 벨벳키스의 진짜 상자
+        assert main.reject(shot(bg_tint=ok)) == "", ok
     for tint in (0.31, 0.37, 0.41, 0.46, 0.55, 0.63, 1.00):
-        assert main.reject(shot(bg_tint=tint), hero=True) != "", tint
+        assert main.reject(shot(bg_tint=tint)) != "", tint
 
 
 def test_first_pass_takes_the_first_that_survives():
@@ -150,7 +159,7 @@ def test_first_pass_takes_the_first_that_survives():
     shots[0] = shot(band=0, bg_tint=0.60)      # 색 배경 — 막힌다
     shots[1] = shot(band=1, has_text=True)     # 글자 — 막힌다
     notes = []
-    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], True, "대표컷", notes)
+    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], "대표컷", notes)
     assert got == 2, notes
     assert any("[0] 막음" in n for n in notes) and any("[1] 막음" in n for n in notes)
 
@@ -160,7 +169,7 @@ def test_bigger_is_not_better():
     shots, kinds, hashes = slots(2)
     shots[0] = shot(band=0, area=100)
     shots[1] = shot(band=1, area=999999)
-    got = main.first_pass([0, 1], shots, kinds, hashes, set(), [], True, "대표컷", [])
+    got = main.first_pass([0, 1], shots, kinds, hashes, set(), [], "대표컷", [])
     assert got == 0
 
 
@@ -172,7 +181,7 @@ def test_all_three_rejected_leaves_blank_with_a_reason():
     """
     shots, kinds, hashes = slots(4, bg_tint=0.60)
     notes = []
-    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], True, "대표컷", notes)
+    got = main.first_pass([0, 1, 2], shots, kinds, hashes, set(), [], "대표컷", notes)
     assert got == -1
     assert any("빈칸" in n for n in notes)
 
@@ -196,16 +205,20 @@ def test_summary_plate_can_never_be_hero_or_feature():
     assert any("요약정보 표" in n for n in notes)
 
 
-def test_package_is_not_filtered_by_the_three():
-    """패키지에는 셋을 안 댄다.
+def test_keyfeature_keeps_the_first_when_all_three_fail():
+    """키피쳐만은 비우지 않는다 — 그림 자리가 비면 글 카드만 남아 층이 무너진다.
 
-    상자컷은 으레 상자와 제품이 같이 놓여 '제품이 여러 개' 에 걸린다 —
-    벨벳키스의 진짜 상자컷(한 덩어리 몫 0.25)이 그렇게 죽었다.
+    대신 **왜 떨어진 것을 쓰는지 적는다.**
     """
-    shots, kinds, hashes = slots(2)
-    shots[1] = shot(band=1, solo=0.25, bg_tint=0.9)
-    _h, _f, pkg, _n = main.pick_slots(shots, kinds, hashes, ai_main=[0], ai_package=1)
-    assert pkg == 1
+    shots, kinds, hashes = slots(4, bg_tint=0.60)
+    shots[3] = shot(band=3)                      # 대표컷이 쓸 깨끗한 컷
+    hero, feat, pkg, notes = main.pick_slots(shots, kinds, hashes,
+                                             ai_main=[3], ai_feature=[0, 1],
+                                             ai_package=[2])
+    assert hero == 3
+    assert feat == 0, notes                      # 떨어졌어도 첫 번째를 쓴다
+    assert any("그대로 쓴다" in n for n in notes)
+    assert pkg == -1                             # 대표컷·패키지는 비운다
 
 
 def test_take_reads_the_flat_shape(tmp_path):

@@ -225,6 +225,28 @@ def shots_by_band(files: list[Path], entries: list[boundary.Entry]) -> dict[int,
     return got
 
 
+def crop_slot(cuts: list[Path], entries: list[boundary.Entry],
+              shots: dict[int, main.Shot], band: int, dest: Path) -> Path | None:
+    """밴드에서 **알맹이만** 잘라 낸다. 세 자리 모두 같은 방식이다.
+
+    밴드는 늘 폭 전체라 라벨 띠·배경 띠가 같이 딸려 온다. 죠우무의 패키지 자리에
+    광고 배너의 좌우 색띠가 통째로 들어간 것이 이것 때문이었다. 대표컷만 `reframe`
+    이 알맹이를 찾아 다시 앉히고 있었고, 키피쳐·패키지는 밴드째 쓰고 있었다.
+    """
+    if band < 0 or band >= len(cuts):
+        return None
+    src = cuts[band]
+    sh = shots.get(band)
+    if sh is None:
+        return src
+    top = entries[band].band.y
+    r = sh.rect
+    with Image.open(src) as im:
+        im = im.convert("RGB").crop((r.x0, max(0, r.y0 - top), r.x1 + 1, r.y1 - top + 1))
+        im.save(dest, quality=92)
+    return dest
+
+
 @router.post("/api/basic/convert")
 def api_basic_convert(req: ConvertReq):
     sheet = SHEETS.get(req.sheet)
@@ -294,9 +316,12 @@ def api_basic_convert(req: ConvertReq):
         if page.main is None:
             notes.append("대표컷이 비었다 — 모델 후보가 없거나 셋 다 떨어졌다")
 
-        # ⑤ 대표컷 다시 앉히기
-        if page.main is not None:
-            page.main = main.reframe(page.main, assets / "hero.jpg")
+        # ⑤ 세 자리 모두 알맹이만 자른다. 대표컷은 그 위에 HERO 자리 재배치까지.
+        page.feature = crop_slot(cuts, entries, shots, page.feature_band, assets / "feature.jpg")
+        page.package = crop_slot(cuts, entries, shots, page.package_band, assets / "package.jpg")
+        cut_main = crop_slot(cuts, entries, shots, page.main_band, assets / "main_cut.jpg")
+        if cut_main is not None:
+            page.main = main.reframe(cut_main, assets / "hero.jpg")
 
         # ⑥ 본문 — body_start 이후 밴드만
         pieces = body_pieces(files, entries, page.body_start, assets)

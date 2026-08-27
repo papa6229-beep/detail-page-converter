@@ -97,7 +97,15 @@ def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
     tint = (sat >= 45) & (lum < 245)
     color = float(tint.mean())
     ink = float(((lum < 115) & (sat < 40)).mean())
-    letters, solo = _blobs(lum)
+    letters, solo_dark = _blobs(lum)
+    # **한 덩어리인가**를 두 가지로 재서 **큰 쪽**을 쓴다. 둘 다 한 방향으로 틀린다 —
+    #   어두운 화소로 재면   인쇄된 상자·창백한 제품이 잘게 갈린다 (벨벳키스 상자 0.25,
+    #                        죠우무 살구색 제품 0.68) → 멀쩡한 것을 막는다
+    #   피사체로 재면        나란히 붙은 것들이 한 덩어리로 이어진다 (유컵스 나열 0.64)
+    # 큰 쪽을 쓰면 **둘 다 잘게 갈렸다고 할 때만** 막는다. 막는 것은 누가 봐도
+    # 여러 개인 것(다일레이터 6칸 격자 0.19)뿐이다 — 애매하면 통과시킨다.
+    fg = (lum < 232) | (sat >= 45)
+    solo = max(solo_dark, _largest_share(fg))
     area = (r.x1 - r.x0 + 1) * (r.y1 - r.y0 + 1)
     # 배경은 **테두리 한 겹**으로 본다. 제품은 가운데에 있고 테두리는 바닥이다.
     # 중앙값이 아니라 **색이 있는 화소의 몫**을 센다 — 한쪽에만 색이 깔린 컷을
@@ -109,6 +117,15 @@ def _stats(arr: np.ndarray, r: Rect, band: int = -1) -> Shot:
     subject = float(((lum < 232) | (sat >= 45)).mean())
     return Shot(r, white, color, ink, letters, _densest(tint), solo, area, band,
                 bg_tint=bg_tint, subject=subject)
+
+
+def _largest_share(fg: np.ndarray) -> float:
+    """가장 큰 연결 덩어리가 전경에서 차지하는 몫. 0 이면 전경이 없다."""
+    if not fg.any():
+        return 0.0
+    step = max(1, max(fg.shape) // CC_SCALE)
+    sizes = B._components(fg[::step, ::step])
+    return max(sizes) / sum(sizes) if sizes else 0.0
 
 
 def _densest(mask: np.ndarray) -> float:
@@ -255,23 +272,34 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
 #: ① 테두리에서 색이 있는 화소의 몫이 이보다 크면 유채색 배경이다. 실측 —
 #:     흰 바탕 제품컷   0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.00 · 0.03 · 0.04 · 0.05
 #:     색 배경         0.31 · 0.37 · 0.41 · 0.46 · 0.47 · 0.53 · 0.55 · 0.59 · 0.63 · 0.95 · 1.00
-#: **0.05 와 0.31 사이가 통째로 비어 있다.** 어디에 그어도 답이 같다.
-TINTED_BG = 0.15
+#: **0.05 와 0.31 사이가 통째로 비어 있다.**
+#: 상자컷을 넣고 다시 재니 벨벳키스의 진짜 상자가 0.16 이었다 — 상자는 네모라
+#: 제 인쇄색이 테두리에 그대로 닿는다. 배경이 색인 것이 아니라 **피사체가 네모난
+#: 것**이다. 그래서 선을 0.25 로 옮겼다. 막아야 할 것들(0.31~1.00)과는 여전히 멀다.
+TINTED_BG = 0.25
+
+#: 같은 사진으로 볼 dHash 거리. `bands.DUP_HAMMING`(10) 은 이 자리에 너무 헐겁다 —
+#: 글랜스의 상자컷과 접사컷이 10 이라 상자가 "이미 쓴 사진" 으로 막혔다. 실측 —
+#:     정말 같은 컷(배경만 다름)   1
+#:     서로 다른 컷              10 · 10 · 11 · 12 · 12 · 12 · 12 · 12
+#: 1 과 10 사이가 비어 있다. 8×8 dHash 는 흰 바탕 검은 제품끼리 곧잘 붙는다.
+SAME_PHOTO = 5
 
 #: ③ 가장 큰 덩어리가 어두운 화소에서 차지하는 몫. 이보다 작으면 제품이 여러 개다.
-#: 실측 — 격자·나열컷 0.167 · 0.193 · 0.260 ↔ 단독컷 0.37 이상.
-#: 낮게 잡는다. 창백한 제품(죠우무 살구색)은 단독컷인데도 덩어리가 잘게 갈려
-#: 0.37 까지 내려간다 — 높이 잡으면 멀쩡한 단독컷을 막는다.
+#: 실측(두 잣대의 큰 쪽) — 6칸 격자 0.19 ↔ 상자·단독컷 0.90 이상.
+#: 낮게 잡는다. 여기서 막는 것은 **누가 봐도 여러 개**인 것뿐이다.
 MULTI_SOLO = 0.40
 
 
-def reject(s: Shot, hero: bool) -> str:
+def reject(s: Shot) -> str:
     """못 쓰는 까닭 한 줄. 쓸 수 있으면 빈 글자.
 
-    `hero` 면 유채색 배경까지 본다. 키피쳐는 손·소품·옅은 배경을 허용한다.
+    **세 자리에 똑같이 건다.** 자리별 예외를 두지 않는다 — 예외를 하나 두면
+    그 자리만 다른 길로 새고, 그 길에서 결함이 나온다. 패키지에만 검사를 안 걸었을
+    때 죠우무는 광고 배너를, 브루스는 파우치컷을 상자라고 세웠다.
     """
-    if hero and s.bg_tint > TINTED_BG:
-        return f"유채색 배경이 깔렸다 (테두리 색비율 {s.bg_tint:.2f})"
+    if s.bg_tint > TINTED_BG:
+        return f"색 배경이 깔렸다 (테두리 색비율 {s.bg_tint:.2f})"
     if s.has_text:
         return "글자가 박혔다"
     if s.solo < MULTI_SOLO:
@@ -280,16 +308,22 @@ def reject(s: Shot, hero: bool) -> str:
 
 
 def first_pass(picks, shots: dict[int, Shot], kinds: list[str], hashes: list[int],
-               blocked, used: list[int], hero: bool, slot: str,
-               notes: list[str]) -> int:
+               blocked, used: list[int], slot: str, notes: list[str],
+               keep_first: bool = False) -> int:
     """모델이 준 순서대로 검사해서 **첫 통과**를 쓴다. 없으면 -1.
 
     막을 때마다 왜 막았는지 적는다. 셋 다 떨어지면 빈칸으로 두고 그 사실도 적는다 —
     조용히 비워 두면 화면만 보고는 모델이 안 골랐는지 우리가 막았는지 알 수 없다.
+
+    `keep_first` 는 키피쳐 자리에만 켠다. 대표컷·패키지는 없으면 안 그리면 그만이지만,
+    KEY FEATURE 는 그림 자리가 비면 글 카드만 남아 층이 무너진다. 그래서 셋 다
+    떨어져도 첫 번째를 쓰되 **왜 떨어진 것을 쓰는지 적는다.**
     """
     if not isinstance(picks, list):
         picks = [picks]
-    for v in picks[:3]:
+    picks = picks[:3]
+    rejected: list[int] = []
+    for v in picks:
         if not isinstance(v, int) or not (0 <= v < len(kinds)):
             continue
         kind = kinds[v]
@@ -303,7 +337,7 @@ def first_pass(picks, shots: dict[int, Shot], kinds: list[str], hashes: list[int
             notes.append(f"{slot} [{v}] 막음 — 이미 다른 자리에 썼다")
             continue
         if any(B.hamming(hashes[v] if v < len(hashes) else 0,
-                         hashes[u] if u < len(hashes) else 0) <= B.DUP_HAMMING
+                         hashes[u] if u < len(hashes) else 0) <= SAME_PHOTO
                for u in used):
             notes.append(f"{slot} [{v}] 막음 — 이미 쓴 것과 같은 사진이다")
             continue
@@ -311,11 +345,17 @@ def first_pass(picks, shots: dict[int, Shot], kinds: list[str], hashes: list[int
         if sh is None:
             notes.append(f"{slot} [{v}] 막음 — 너무 작아 후보로 재지 않았다")
             continue
-        why = reject(sh, hero)
+        why = reject(sh)
         if why:
             notes.append(f"{slot} [{v}] 막음 — {why}")
+            rejected.append(v)
             continue
         used.append(v)
+        return v
+    if keep_first and rejected:
+        v = rejected[0]
+        used.append(v)
+        notes.append(f"{slot} 후보가 다 떨어져 첫 번째 [{v}] 를 그대로 쓴다 — 비우면 층이 무너진다")
         return v
     notes.append(f"{slot} 빈칸 — 모델이 준 후보가 셋 다 떨어졌거나 없다")
     return -1
@@ -328,25 +368,14 @@ def pick_slots(shots: dict[int, Shot], kinds: list[str], hashes: list[int],
     """(대표컷, 키피쳐, 패키지, 메모). 셋 다 모델이 준 순서대로 검사한 결과다."""
     notes: list[str] = []
     used: list[int] = []
+    # 세 자리를 **한 흐름**으로 지난다. 자리별 예외는 프롬프트 한 줄뿐이다.
     # `or []` 를 쓰면 안 된다 — 0번 밴드는 거짓이라 통째로 사라진다.
     hero = first_pass([] if ai_main is None else ai_main,
-                      shots, kinds, hashes, blocked, used, True, "대표컷", notes)
+                      shots, kinds, hashes, blocked, used, "대표컷", notes)
     feat = first_pass([] if ai_feature is None else ai_feature,
-                      shots, kinds, hashes, blocked, used, False, "키피쳐", notes)
-    # **패키지에는 셋을 안 댄다.** 상자 사진은 으레 상자와 제품이 같이 놓여 있어
-    # "제품이 여러 개" 에 걸린다 — 벨벳키스의 진짜 상자컷(한 덩어리 몫 0.25)이
-    # 그렇게 죽었다. 못 쓰는 밴드(TEXT·PROMO·요약정보 표·중복)만 막는다.
-    pkg = -1
-    if isinstance(ai_package, int) and 0 <= ai_package < len(kinds):
-        if kinds[ai_package] in ("TEXT", "PROMO"):
-            notes.append(f"패키지 [{ai_package}] 막음 — {kinds[ai_package]} 밴드다")
-        elif ai_package in blocked:
-            notes.append(f"패키지 [{ai_package}] 막음 — 원본 요약정보 표가 든 밴드다")
-        elif ai_package in used:
-            notes.append(f"패키지 [{ai_package}] 막음 — 이미 다른 자리에 썼다")
-        else:
-            used.append(ai_package)
-            pkg = ai_package
+                      shots, kinds, hashes, blocked, used, "키피쳐", notes, keep_first=True)
+    pkg = first_pass([] if ai_package is None else ai_package,
+                     shots, kinds, hashes, blocked, used, "패키지", notes)
     return hero, feat, pkg, notes
 
 
@@ -582,9 +611,10 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
     feature   대표컷과 **다른** 제품컷 후보 셋. 손이 잡고 있어도, 거치대에
               얹혀 있어도, 배경에 옅은 색이 깔려 있어도 된다.
               설계도·단면도·치수 도해보다 **실제 제품 사진**이 앞이다.
-    package   **판매용 상자**가 찍힌 컷 하나. 상자가 없으면 null.
-              상자 옆에 제품이 같이 놓여 있어도 된다 — 상자가 보이면 그것이다.
-              제품만 찍힌 컷, 글자만 있는 띠는 여기 넣지 마라.
+    package   원본에 `PACKAGE` · `Package Design` 라벨이 붙은 밴드, 또는
+              **판매용 상자**가 보이는 밴드. 후보 셋. 없으면 빈 배열 `[]`.
+              제품만 찍힌 컷, 파우치·케이블만 있는 컷, 모델 광고컷은 넣지 마라.
+              상자가 없는 원본이면 억지로 채우지 말고 비워라.
 
 4. **메인과 본문의 경계** — `body_start` 에 숫자 하나.
 
@@ -616,14 +646,15 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
  "key1_t":"제목","key1_d":"한 줄 설명",
  "key2_t":"","key2_d":"",
  "key3_t":"","key3_d":"",
- "main":[16,31,14],"feature":[26,12,9],"package":4,
+ "main":[16,31,14],"feature":[26,12,9],"package":[4],
  "body_start":7,
  "notes":["깨끗한 누끼컷이 없어 차선을 썼다"]}
 ```
 
 **칸은 이 열여섯 개가 전부다. 안에 또 중괄호나 대괄호를 만들지 마라** —
 `notes` 와 `main`·`feature` 만 배열이고, 그 안에는 값만 들어간다.
-`main` 과 `feature` 는 **반드시 배열**이다. 숫자 하나만 주지 마라.
+`main` · `feature` · `package` 는 **반드시 배열**이다. 숫자 하나만 주지 마라.
+상자가 없으면 `"package":[]` 로 비워라.
 """
 
 #: 라벨을 못 받았을 때의 기본값. 차단하지 않는다.
