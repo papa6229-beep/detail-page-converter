@@ -203,22 +203,82 @@ def _blobs(lum: np.ndarray) -> tuple[int, float]:
     return letters, biggest / sum(total.values())
 
 
-def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
-    """밴드 안에서 **알맹이가 놓인 자리**만 집는다.
+#: 알맹이 둘레에 남길 여유. 피사체 크기에 대한 비율이다.
+#: 연한 그림자·바닥면은 배경과 거의 같은 밝기라 전경으로 안 잡힌다 — 딱 맞게
+#: 자르면 다일레이터 대표컷 밑의 그림자가 뭉텅 잘려 제품이 공중에 뜬다.
+#: 여유는 **밴드 원본 픽셀로 채운다** — 흰 바탕이면 흰색이 따라온다.
+MARGIN = 0.06
 
-    밴드는 늘 폭 전체다. 그대로 재면 옆 여백이 값을 묽게 만들어, 제품이 작게
-    놓인 컷과 크게 놓인 컷이 같아 보인다. legacy 의 분할기는 내용에 딱 맞게
-    잘라 줬으므로, 여기서는 그 자리를 우리가 찾는다.
+
+#: 배경색에서 이만큼 벗어나야 전경으로 본다.
+BG_NEAR = 60
+#: 테두리에서 이만큼을 차지하면 그것도 배경색이다.
+BG_SHARE = 0.12
+
+
+def _off_background(crop: np.ndarray, ring: np.ndarray) -> np.ndarray:
+    """화소마다 **가장 가까운 배경색과의 거리**. 배경 위면 작다.
+
+    배경을 색 **하나**로 보면 안 된다. 죠우무의 패키지 밴드는 테두리 절반이 파란
+    사선 띠, 절반이 흰 여백이라 중앙값이 그 사이(215·219·253)에 떨어졌다. 그러면
+    흰 여백조차 배경에서 75 만큼 벗어난 것이 되어 **밴드 전체가 한 덩어리**가 됐다.
+    테두리에서 제 몫을 차지하는 색은 **전부** 배경으로 본다.
     """
-    crop = arr[y : y + height].astype(np.int32)
-    lum = (crop[..., 0] * 299 + crop[..., 1] * 587 + crop[..., 2] * 114) // 1000
-    sat = crop.max(2) - crop.min(2)
-    solid = (lum < 232) | (sat >= 45)
-    if not solid.any():
+    q = (ring.astype(np.int32) // 24) * 24
+    uniq, counts = np.unique(q.reshape(-1, 3), axis=0, return_counts=True)
+    keep = uniq[counts >= BG_SHARE * len(q)]
+    if not len(keep):
+        keep = np.median(ring.astype(np.int32), axis=0)[None, :]
+    px = crop.astype(np.int32)
+    best = None
+    for c in keep:
+        d = np.abs(px - c).sum(axis=2)
+        best = d if best is None else np.minimum(best, d)
+    return best
+
+
+def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
+    """밴드 안에서 **배경색이 아닌 제일 큰 덩어리**의 자리를 집는다.
+
+    배경은 흰색이라고 못박지 않는다. 테두리 한 겹의 중앙값을 배경으로 보고, 거기서
+    벗어난 화소를 전경으로 센다. 그래야 **색 배경 위에 놓인 상자**도 상자만 잡힌다 —
+    죠우무의 패키지 밴드는 상자 왼쪽에 파란 사선 띠, 오른쪽에 캡션이 같이 있어서,
+    전부를 감싸면 테두리 색비율이 0.31 이 되어 상자가 통째로 떨어졌다.
+
+    둘레에 `MARGIN` 만큼 여유를 준다. 자른 자리는 밴드에서 그대로 떠 오므로
+    배경이 희면 흰색이, 색이면 그 색이 따라온다.
+    """
+    import cv2
+
+    crop = arr[y : y + height]
+    h, w = crop.shape[:2]
+    if h < 4 or w < 4:
         return None
-    ys = np.where(solid.any(1))[0]
-    xs = np.where(solid.any(0))[0]
-    return Rect(int(xs[0]), y + int(ys[0]), int(xs[-1]), y + int(ys[-1]))
+    t = max(2, min(6, h // 8, w // 8))
+    ring = np.concatenate([crop[:t].reshape(-1, 3), crop[-t:].reshape(-1, 3),
+                           crop[:, :t].reshape(-1, 3), crop[:, -t:].reshape(-1, 3)])
+    fg = (_off_background(crop, ring) > BG_NEAR).astype(np.uint8)
+    if not fg.any():
+        return None
+
+    # 큰 덩어리 하나만 남긴다. 잔글씨·얇은 띠가 붙어 오지 않게 살짝 이어 붙여 센다.
+    step = max(1, max(h, w) // 400)
+    small = fg[::step, ::step]
+    small = cv2.morphologyEx(small, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    n, _lab, st, _c = cv2.connectedComponentsWithStats(small)
+    if n <= 1:
+        return None
+    i = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
+    x0, y0, bw, bh = (int(st[i, cv2.CC_STAT_LEFT]), int(st[i, cv2.CC_STAT_TOP]),
+                      int(st[i, cv2.CC_STAT_WIDTH]), int(st[i, cv2.CC_STAT_HEIGHT]))
+    x0, y0, bw, bh = x0 * step, y0 * step, bw * step, bh * step
+
+    pad = int(round(max(bw, bh) * MARGIN))
+    x1, y1 = min(w - 1, x0 + bw - 1 + pad), min(h - 1, y0 + bh - 1 + pad)
+    x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
+    if x1 <= x0 or y1 <= y0:
+        return None
+    return Rect(x0, y + y0, x1, y + y1)
 
 
 def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
@@ -243,8 +303,9 @@ def shots(arr: np.ndarray, offset: int = 0) -> list[Shot]:
         if r is None:
             continue
         sh = _stats(arr, r, offset + i)
-        # 글자가 박혀 있는가 — 밴드 종류와 `sidetext` 에게 **직접** 묻는다.
-        sh.has_text = b.kind == B.MIXED or sidetext.split(arr[b.y:b.y + b.height]) is not None
+        # 글자가 박혀 있는가 — **잘라 낸 알맹이에게** 묻는다. 밴드째 물으면 옆에
+        # 붙은 캡션까지 세어, 알맹이는 깨끗한데 글자가 있다고 막는다(죠우무 상자).
+        sh.has_text = sidetext.split(arr[r.y0:r.y1 + 1, r.x0:r.x1 + 1]) is not None
         out.append(sh)
     return out
 
