@@ -6,7 +6,7 @@ import html
 import re
 from pathlib import Path
 
-from .body import BODY, IMAGES, SIDE, Section
+from .body import BODY, IMAGES, Section
 
 CSS = """
 .bpage{max-width:860px;margin:0 auto;font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif;color:#2b2f3a;-webkit-font-smoothing:antialiased}
@@ -17,10 +17,14 @@ CSS = """
 .bpage h2{font-size:28px;font-weight:800;letter-spacing:-.02em;color:#1a2440;margin:8px 0 22px;line-height:1.25}
 .bpage figure{margin:0 0 18px;text-align:center}
 .bpage figure img{max-width:100%;height:auto;display:inline-block}
-/* 사진 옆 흰 바탕에 붙어 있던 글을 떼어 여기로 옮긴다. 원본에서 그 글은 사진에
-   딸린 설명이었으니 본문 문단으로 세우지 않고 사진 아래에 붙여 둔다. */
-.bpage figcaption{text-align:left;margin-top:10px}
-.bpage figcaption p{font-size:15px;line-height:1.75;color:#4a5063;margin:0 0 6px}
+/* 사진에 박혀 있던 글을 **덮은 그 자리에** 도로 얹는다. 자리와 크기는 모델이 준
+   백분율 그대로다. 사진을 자르지 않으므로 지시선·점은 제 사진 위에 그대로 남고,
+   글만 진짜 글이 된다. 글자 크기는 상자에 맞춰 미리 계산해 둔다 — `cqw` 는 상자가
+   줄어들면 같이 줄어들라고 얹는 것이고, 모르는 브라우저는 앞의 px 을 쓴다. */
+.bpage .lay{position:relative;display:inline-block;max-width:100%;container-type:inline-size}
+.bpage .lay img{width:100%}
+.bpage .lay .mk{position:absolute;margin:0;text-align:left;line-height:1.35;
+  color:#2b2f3a;white-space:pre-wrap;overflow-wrap:break-word}
 .bpage p{font-size:16px;line-height:1.9;margin:6px 0 14px}
 .bpage p+p{margin-top:0}
 .bpage strong{font-weight:800;color:#1a2440}
@@ -65,6 +69,65 @@ def _paras(text: str) -> str:
     return "".join(out)
 
 
+#: 글줄 사이. CSS 의 `line-height` 와 같은 값이라야 계산과 화면이 맞는다.
+LINE = 1.35
+#: 글자 하나가 차지하는 폭을 글자 크기의 몇 배로 볼까. 한글은 네모라 1, 로마자는 좁다.
+WIDE, NARROW = 1.0, 0.55
+#: 잉크가 실제로 닿는 높이는 글자 크기보다 작다. 우리가 받은 상자는 **잉크의 테두리**라
+#: 그만큼 되돌려야 원본과 같은 크기로 앉는다. 이 값을 안 쓰면 글자가 눈에 띄게 작아진다.
+CAP = 0.72
+
+
+def _run(line: str) -> float:
+    """글 한 줄이 글자 크기의 몇 배로 뻗는가."""
+    return sum(WIDE if ord(c) > 0x2000 else NARROW for c in line)
+
+
+def _fit(mark, img_w: int, img_h: int) -> float:
+    """상자에 맞는 글자 크기(px).
+
+    폭으로 한 번(가장 긴 줄이 상자를 넘지 않게), 높이로 한 번(줄 수가 상자를 넘지
+    않게) 재고 **작은 쪽**을 쓴다. 그래서 원본 글자 크기를 짐작하지 않아도 된다 —
+    상자가 곧 크기다.
+
+    높이 셈은 `줄 사이 × (줄 수 - 1) + 잉크 높이` 다. 마지막 줄 밑에는 줄 사이가
+    없고, 잉크는 글자 크기보다 낮다.
+    """
+    lines = mark.text.splitlines() or [""]
+    widest = max(_run(ln) for ln in lines) or 1.0
+    return max(1.0, min(mark.w / 100 * img_w / widest,
+                        mark.h / 100 * img_h / ((len(lines) - 1) * LINE + CAP)))
+
+
+def _size(path: Path):
+    """그림의 픽셀 크기. 못 열면 None — 그러면 글은 안 얹고 원본만 싣는다."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
+def _shot(piece, url: str, assets: Path) -> str:
+    """사진 하나. 박혀 있던 글이 있으면 **덮은 그 자리에** 도로 얹는다."""
+    plain = f'<img src="{url}" alt="">'
+    size = _size(assets / piece.file) if piece.marks else None
+    if not size:
+        return plain
+    w, h = size
+    # 폭을 **바깥에서** 준다. `container-type` 은 안쪽 내용에서 폭을 못 받아,
+    # 안 주면 상자가 0px 이 되고 `cqw` 로 잰 글자가 0px 이 된다(실제로 그랬다).
+    out = [f'<span class="lay" style="width:{w}px">{plain}']
+    for m in piece.marks:
+        f = _fit(m, w, h)
+        out.append(f'<p class="mk" style="left:{m.x}%;top:{m.y}%;width:{m.w}%;'
+                   f'font-size:{f:.0f}px;font-size:{f / w * 100:.2f}cqw">'
+                   f"{_emph(m.text)}</p>")
+    return "".join(out) + "</span>"
+
+
 def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
     """섹션들을 HTML 로. **놓기만 한다** — 무엇인지는 이미 정해져 왔다."""
     def src(name: str) -> str:
@@ -83,9 +146,7 @@ def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
                        else as_is(s.title))
         for it in s.items:
             if it.kind in IMAGES:
-                cap = (f"<figcaption>{_paras(it.text)}</figcaption>"
-                       if it.kind == SIDE and it.text.strip() else "")
-                out.append(f'<figure><img src="{src(it.file)}" alt="">{cap}</figure>')
+                out.append(f"<figure>{_shot(it, src(it.file), assets)}</figure>")
             elif it.kind == BODY:
                 out.append(_paras(it.text) if it.text.strip() else as_is(it))
         out.append("</section>")

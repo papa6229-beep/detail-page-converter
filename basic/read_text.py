@@ -44,27 +44,8 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
        → 그렇다면 shot 이다. 분홍 알약 라벨 하나만 얹혀 있어도 shot 이다.
     ③ 그 밖의 사진 → photo. 글자 없는 알약·구분선·푸터뿐이면 decor.
 
-**shot 이라고 한 밴드는 `where` 에도 반드시 적는다 — 그 글이 어디에 있는가?**
-
-빠뜨리지 마라. shot 이라고만 하고 넘어가면 그 글은 그림 속에 갇혀 우리 페이지에서
-**영영 안 읽힌다.** shot 이라고 부른 밴드는 **하나도 빠짐없이** 셋 중 하나로 답한다.
-
-    on      글이 **사진 픽셀 위에 얹혀** 있다 — 제품 위에 겹쳐 쓴 글, 치수선이
-            사진을 가로지르는 도해, 색 배경에 디자인으로 박아 넣은 글.
-            떼면 사진이 뚫린다. 우리는 손대지 않고 통째로 싣는다.
-            **글자가 흰 여백에 있으면 on 이 아니다.** 손에 든 제품 사진 옆
-            흰 바탕에 설명이 적혀 있으면, 사진이 커도 그건 beside 다.
-    beside  글이 사진 **바깥 흰 바탕**에 있다 — 사진 옆이나 아래 흰 여백에
-            설명·치수가 적힌 것. 사진과 글이 **겹치지 않는다.**
-            우리가 흰 바탕에서 글자만 떼어 그 사진의 캡션으로 옮긴다.
-            **그 글을 texts 에 적어라.**
-    below   **위는 사진, 아래는 글**로 가로로 뚜렷이 나뉜다 — 사진 아래에 제목이나
-            설명이 빈 줄 없이 바짝 붙어 한 밴드가 된 것. 우리가 다시 자른다.
-            글이 사진의 **왼쪽이나 오른쪽**에 있으면 below 가 아니라 **beside** 다.
-            below 는 사진 **밑에 가로로 깔린** 글만이다.
-
-**사진과 글이 안 겹치면 beside 다.** 애매하면 beside 로 둬라 — 떼다가 안 되면
-우리가 원본을 그대로 싣는다. 잃는 것이 없다.
+shot 밴드의 글은 여기서 읽지 않는다. **그 글은 따로 물어본다** — 우리가 글줄 자리를
+짚어 보여 주고 그 안의 글만 읽힌다. 여기서는 shot 이라고 말해 주기만 하면 된다.
 
 **종류 다섯 — 하나만 고른다**
 
@@ -85,8 +66,9 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
             **띠나 배지 안에 글이 있으면 장식이 아니라 제목이다.** 분홍 띠에
             `프리티 러브 브루스의 포인트!` 라고 쓰여 있으면 그건 title 이다.
             글이 한 글자라도 읽히면 decor 가 아니다.
+            **테두리 상자 안의 짧은 글은 제목/소제목이다.**
 
-**글 읽기 — title·body 와 `+side` 만**
+**글 읽기 — title·body 만**
 
   · 글자를 고치거나 보태거나 요약하지 마라. 오타도 그대로 둔다.
   · 한 문단 안의 줄바꿈은 붙여서 한 줄로. 문단이 나뉘는 자리에만 빈 줄 하나.
@@ -96,30 +78,50 @@ PROMPT = """상품 상세페이지의 **본문**을 밴드로 잘라 번호 순�
     원본에 강조가 없으면 감싸지 마라. 네가 고르지 마라.
   · 제목에 큰 번호(01, 02 …)나 영문 부제(`PRODUCT FEATURES`)가 같이 있으면
     **한글 제목만** 적는다. 번호는 우리가 따로 붙인다.
-  · **shot 은 글을 적지 마라** — `+side` 가 아닌 한. 그 글은 이미 그림 안에 있어서
-    우리가 또 쓰면 **같은 글이 두 번 나온다.** photo·decor 도 빈칸으로 둔다.
+  · **shot·photo·decor 는 `texts` 를 비운다.** shot 의 글은 따로 물어본다.
   · **title 이라고 했으면 글을 반드시 적어라.** 글 없는 title 은 우리가 못 쓴다 —
     번호만 붙은 빈 제목이 되어 구간 번호가 꼬인다. 못 읽겠으면 title 이라 하지 마라.
 
 **돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
 
 ```json
-{"kinds":["0:title","1:body","2:photo","3:shot","4:decor","5:shot"],
- "where":["3:below","5:beside"],
- "texts":{"0":"제품특징","1":"본문 설명 글","5":"사진 옆 흰 바탕에 있던 설명"}}
+{"kinds":["0:title","1:body","2:photo","3:shot","4:decor"],
+ "texts":{"0":"제품특징","1":"본문 설명 글"}}
 ```
 
 `kinds` 에는 **밴드를 하나도 빼지 말고 전부** 넣는다. 번호는 0 부터 차례대로다.
-`where` 에는 **shot 이라고 한 밴드를 전부** 넣는다. 그것 말고는 넣지 마라.
-셋 다 짧은 글의 배열이거나 번호→글 이다. **그 안에 또 중괄호를 만들지 마라.**
+`kinds` 는 짧은 글 배열이고 `texts` 는 번호→글 이다. **그 안에 또 중괄호를 만들지 마라.**
+"""
+
+MARK_PROMPT = """사진에 글이 박힌 밴드다. **글줄마다 빨간 네모와 번호**를 그려 두었다.
+네모 **안의 글만 그대로 읽어라.**
+
+우리는 이 그림을 자르지 않는다. 네모 안의 글자 픽셀을 배경색으로 덮고, 덮은 그
+자리에 네가 읽은 글을 다시 얹는다. 그래서 **네모 하나에 글 하나**여야 한다.
+
+  · 네모 밖은 읽지 마라. 옆 네모의 글을 끌어오지 마라.
+  · **네모 하나에 글줄이 둘 이상 들어 있으면 전부 읽고 줄바꿈을 살려라.**
+    한 줄만 읽고 넘어가면 나머지 줄이 우리 페이지에서 사라진다.
+  · 글자를 고치거나 보태거나 요약하지 마라. 오타도 그대로 둔다.
+  · **네모가 글을 온전히 감싸고 있을 때만 읽어라.** 글자의 일부만 걸쳐 있거나,
+    네모 안이 글이 아니면(제품 무늬·워터마크·지시선·색 배지) **그 번호를 빼고**
+    답한다. 지어내지 마라 — 빠진 자리는 우리가 원본 그대로 둔다.
+  · 강조: 원본에서 **글자색이 다르거나 굵은** 낱말만 `**이렇게**` 감싼다.
+  · 빨간 네모와 번호는 우리가 그린 것이다. 그건 읽지 마라.
+
+**돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
+
+```json
+{"lines":["0-1|전원 버튼을 길게 누르면 전원이 켜지고","0-2|버튼을 한번 더 길게 누르면",
+          "1-1|무게: 약 97g"]}
+```
+
+한 줄은 `밴드번호-네모번호|글` 이다. 밴드번호는 우리가 `[3]` 처럼 붙여 보낸 번호,
+네모번호는 그림에 그려 둔 번호다. **그 안에 또 중괄호를 만들지 마라.**
 """
 
 TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
 KINDS = (TITLE, BODY, PHOTO, SHOT, DECOR)
-#: 종류 뒤에 붙는 꼬리표. 종류가 아니라 **그 밴드를 어떻게 다룰지**를 말한다.
-TAGS = ("+split", "+side")
-#: 글이 사진의 어디에 있는가 → 어떻게 다룰까. `on` 은 손대지 않는다는 뜻이라 빈칸이다.
-WHERE = {"beside": "+side", "below": "+split", "on": ""}
 
 
 def _llm():
@@ -169,24 +171,8 @@ def parse(reply: str) -> tuple[dict[int, str], dict[int, str]]:
         head, _, tail = text.partition(":")
         digits = re.sub(r"[^0-9]", "", head)
         word = tail.strip().lower()
-        # 꼬리표는 둘이고 순서를 모른다 — `shot+split`·`photo+side`·둘 다.
-        # 떼어서 알아본 뒤 **원래 이름 순서대로** 다시 붙인다.
-        tags = [t for t in TAGS if t in word]
-        for t in tags:
-            word = word.replace(t, "")
         if digits and word in KINDS:
-            kinds[int(digits)] = word + "".join(tags)
-
-    # **글이 어디 있는가.** shot 밴드마다 하나씩 오는 답이다. 종류가 아니라 다룰 법이라
-    # 종류 뒤에 꼬리표로 붙인다 — 아래는 되자르기, 옆은 글자 떼기, 위는 손대지 않기.
-    for line in got.get("where") or []:
-        head, _, tail = str(line).strip().partition(":")
-        digits = re.sub(r"[^0-9]", "", head)
-        tag = WHERE.get(tail.strip().lower())
-        if digits and tag and int(digits) in kinds:
-            n = int(digits)
-            if tag not in kinds[n]:
-                kinds[n] += tag
+            kinds[int(digits)] = word
 
     texts: dict[int, str] = {}
     for k, v in (got.get("texts") or {}).items():
@@ -194,6 +180,54 @@ def parse(reply: str) -> tuple[dict[int, str], dict[int, str]]:
         if digits and str(v).strip():
             texts[int(digits)] = str(v)
     return kinds, texts
+
+
+def parse_marks(reply: str) -> dict[int, dict[int, str]]:
+    """모델 답 → {밴드: {네모번호: 글}}. 안 준 네모는 없는 채로 둔다."""
+    m = re.search(r"\{[\s\S]*\}", reply or "")
+    if not m:
+        return {}
+    try:
+        got = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return {}
+    out: dict[int, dict[int, str]] = {}
+    for line in got.get("lines") or []:
+        head, _, text = str(line).partition("|")
+        nums = re.findall(r"\d+", head)
+        if len(nums) == 2 and text.strip():
+            out.setdefault(int(nums[0]), {})[int(nums[1])] = text.strip()
+    return out
+
+
+def read_marks(key: str, shots: list[tuple[int, Path]], timeout: int = 240,
+               tries: int = 2) -> dict[int, dict[int, str]]:
+    """**네모를 그려 둔** 밴드를 보내고 네모마다 글을 받는다.
+
+    자리를 모델에게 물어보지 않는다 — 자리는 우리가 픽셀에서 이미 알고 있고, 그것을
+    그림에 그려서 보여 준다. 모델이 하는 일은 **그 네모 안을 읽는 것**뿐이다.
+    """
+    llm = _llm()
+    parts: list[tuple[str, str]] = [("text", MARK_PROMPT)]
+    parts.append(("text", f"글줄 네모를 그려 둔 밴드 {len(shots)}장을 보냅니다."))
+    for n, path in shots:
+        parts.append(("text", f"[{n}]"))
+        parts.append(("image", _shrunk_b64(path)))
+
+    url, headers, payload = llm.build(key, parts, max_tokens=8000)
+    from .web import _pin
+
+    payload = _pin(payload)
+    for n in range(tries):
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            got = json.loads(r.read())
+        text, _stop = llm.extract(key, got)
+        lines = parse_marks(text)
+        if lines:
+            return lines
+        print(f"[basic] 네모 글을 못 읽었다 — 다시 묻는다 ({n + 1}/{tries})", flush=True)
+    return {}
 
 
 def read(key: str, bands: list[Path], timeout: int = 240,

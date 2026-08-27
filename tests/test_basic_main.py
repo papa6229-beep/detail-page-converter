@@ -400,6 +400,85 @@ def test_section_numbers_have_no_holes():
     assert [s.number for s in secs] == [1, 2, 3]
 
 
+def test_mark_texts_are_read_by_box_number():
+    """자리는 우리가 짚어 주고, 모델은 **그 번호의 글**만 읽는다."""
+    from basic import read_text
+    got = read_text.parse_marks(json.dumps({
+        "lines": ["0-1|전원 버튼을 길게 누르면", "0-2|한번 더 누르면 꺼집니다",
+                  "5-1|무게: 약 97g", "깨진 줄", "9-2|"]}))
+    assert got == {0: {1: "전원 버튼을 길게 누르면", 2: "한번 더 누르면 꺼집니다"},
+                   5: {1: "무게: 약 97g"}}
+
+
+def test_marks_ride_on_images_not_on_text():
+    from basic import body
+    got = body.pieces_from({0: "shot", 1: "body"}, {1: "글"}, ["a.jpg", "b.jpg"],
+                           {0: [(1, 2, 30, 10, "박힌 글")], 1: [(0, 0, 9, 9, "엉뚱")]})
+    assert [m.text for m in got[0].marks] == ["박힌 글"]
+    assert got[1].marks == []
+
+
+def test_a_mark_is_laid_where_it_was(tmp_path):
+    """덮은 그 자리에 그 크기로 얹는다 — 사진 기준 백분율 그대로."""
+    from PIL import Image
+
+    from basic import body, render
+    Image.new("RGB", (800, 400), "white").save(tmp_path / "band_000.jpg")
+    sec = body.Section(1, items=[body.Piece(body.SHOT, 0, file="band_000.jpg",
+                                            marks=[body.Mark(4, 3, 38, 17, "왼쪽 설명")])])
+    html = render.render([sec], tmp_path, embed=False)
+    assert 'class="lay" style="width:800px"' in html      # 폭은 바깥에서 준다
+    assert "left:4%;top:3%;width:38%" in html and "왼쪽 설명" in html
+    assert "cqw" in html                                  # 좁은 화면에서 같이 줄어든다
+
+
+def test_a_taller_box_gets_bigger_letters():
+    """글자 크기는 상자가 정한다. 원본 글자 크기를 짐작하지 않는다."""
+    from basic import body, render
+    small = render._fit(body.Mark(0, 0, 20, 5, "가나다"), 800, 400)
+    big = render._fit(body.Mark(0, 0, 40, 20, "가나다"), 800, 400)
+    assert big > small
+
+
+def test_letters_shrink_when_the_text_has_more_lines():
+    from basic import body, render
+    one = render._fit(body.Mark(0, 0, 40, 20, "가나다"), 800, 400)
+    four = render._fit(body.Mark(0, 0, 40, 20, "가\n나\n다\n라"), 800, 400)
+    assert four < one
+
+
+def test_a_band_that_cannot_be_covered_is_left_whole(tmp_path):
+    """덮기가 손을 떼면 그 밴드는 통째로. 글도 안 얹는다 — 얹으면 두 번 나온다."""
+    import numpy as np
+    from PIL import Image
+
+    from basic import sidetext
+    im = np.full((60, 200, 3), (30, 90, 200), np.uint8)      # 색 깔린 배경
+    assert sidetext.cover(im, [(5, 5, 100, 40)]) is None
+
+
+def test_an_unread_box_is_never_covered(tmp_path):
+    """안 읽힌 네모는 덮지 않는다. 덮어 놓고 못 읽으면 그 글이 사라진다."""
+    from PIL import Image, ImageDraw
+
+    from basic import web
+    f = tmp_path / "band_000.jpg"
+    im = Image.new("RGB", (400, 120), "white")
+    d = ImageDraw.Draw(im)
+    d.text((20, 20), "AAAAAAAAAAAAAAAA", fill=(0, 0, 0))
+    d.text((20, 70), "BBBBBBBBBBBBBBBB", fill=(0, 0, 0))
+    im.save(f)
+    boxes = [(15, 15, 200, 40), (15, 65, 200, 90)]
+    got = web.lay_back(f, boxes, {1: "읽힌 글"}, tmp_path)     # 2번은 안 읽혔다
+    assert got is not None
+    made, marks = got
+    assert [m.text for m in marks] == ["읽힌 글"]
+    # 안 읽힌 자리의 잉크는 그대로 남아 있어야 한다
+    import numpy as np
+    arr = np.asarray(Image.open(made).convert("RGB"))
+    assert (arr[65:90, 15:200] < 128).any()
+
+
 def test_a_title_without_text_stays_as_a_picture():
     """글 없는 제목은 제목이 아니다. 그렇다고 버리지도 않는다."""
     from basic import body
@@ -407,43 +486,9 @@ def test_a_title_without_text_stays_as_a_picture():
     assert got[0].kind == body.DECOR and got[0].file == "a.jpg"
 
 
-def test_side_tag_is_kept_apart_from_the_kind():
-    from basic import body
-    assert body.bare("shot+side") == "shot" and body.wants_side("shot+side")
-    assert body.bare("shot+split+side") == "shot"
-    assert body.wants_split("shot+split+side") and body.wants_side("shot+split+side")
-    assert not body.wants_side("shot")
 
 
-def test_side_caption_rides_along_but_shot_text_does_not():
-    """㉡ 뗀 글만 캡션이 된다. 글자 박힌 사진의 글은 그림에 이미 있다."""
-    from basic import body
-    got = body.pieces_from({0: body.SIDE, 1: "shot"}, {0: "옆글", 1: "두 번 나올 글"},
-                           ["a.jpg", "b.jpg"])
-    assert got[0].text == "옆글" and got[1].text == ""
 
-
-def test_side_renders_as_a_photo_with_a_caption(tmp_path):
-    from basic import body, render
-    sec = body.Section(1, items=[bp(body.SIDE, "떼어 온 설명", 0)])
-    html = render.render([sec], tmp_path, embed=False)
-    assert "<figcaption>" in html and "떼어 온 설명" in html and "band_000.jpg" in html
-
-
-def test_text_runs_from_one_band_are_joined_back():
-    """글줄 사이에서 갈린 조각은 도로 붙인다. 다른 원본에서 온 것은 안 붙인다."""
-    from basic import web
-    recs = [web._Rec(Path("a"), "body", "첫 줄", origin=3),
-            web._Rec(Path("b"), "body", "둘째 줄", origin=3),
-            web._Rec(Path("c"), "body", "다른 밴드", origin=4)]
-    got = web._join_text_runs(recs, [])
-    assert [r.text for r in got] == ["첫 줄\n둘째 줄", "다른 밴드"]
-
-
-def test_photo_runs_are_never_joined():
-    from basic import web
-    recs = [web._Rec(Path("a"), "photo", origin=3), web._Rec(Path("b"), "photo", origin=3)]
-    assert len(web._join_text_runs(recs, [])) == 2
 
 
 def test_blank_rows_look_at_every_column():

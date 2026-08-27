@@ -60,21 +60,93 @@ def _by_component(im: np.ndarray) -> tuple[list[tuple[int, int, int, int]], bool
     return out, has_photo
 
 
-def _by_lines(im: np.ndarray) -> list[tuple[int, int, int, int]]:
+def _strokes(im: np.ndarray, fatten: bool = False) -> np.ndarray:
+    """**글자처럼 생긴 픽셀**만 참인 판.
+
+    어둡고, 둘레 40px 이 거의 배경인 픽셀이 글자다. 제품 덩어리는 둘레가 배경이
+    아니라서 안 걸리고, 분홍 지시선처럼 밝고 채도 있는 선도 안 걸린다 — 그래서
+    글자만 덮어도 **사진이 안 뚫리고 지시선이 남는다.**
+
+    `_by_lines` 가 쓰던 그 계산 그대로다. 이름만 붙여 꺼냈다.
+    """
     bg = _bg(im)
     bgm = (np.abs(im.astype(int) - bg).sum(axis=2) < 40).astype(np.float32)
     local = cv2.blur(bgm, (41, 41))
     gray = cv2.cvtColor(im, cv2.COLOR_RGB2GRAY)
     sat = cv2.cvtColor(im, cv2.COLOR_RGB2HSV)[:, :, 1]
     dark = (gray < 140) | ((np.abs(im.astype(int) - bg).sum(axis=2) > 120) & (sat < 90))
-    tp = ((dark & (local > 0.55)).astype(np.uint8) * 255)
+    ink = dark & (local > 0.55)
+    if not fatten:
+        return ink
+    return cv2.dilate(ink.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0
+
+
+def _line_boxes(im: np.ndarray) -> list[tuple[int, int, int, int]]:
+    """**글줄 하나하나**의 테두리. 가로로 이은 뒤 글줄답게 생긴 것만 남긴다.
+
+    거르개(넓이 250 넘고, 높이 6~70 이고, 폭 25 넘고)는 `_by_lines` 가 쓰던 그대로다.
+    제품 언저리에서 딸려 나온 얇고 긴 조각은 높이에서 걸린다.
+    """
+    tp = _strokes(im).astype(np.uint8) * 255
     tp = cv2.morphologyEx(tp, cv2.MORPH_CLOSE, np.ones((10, 45), np.uint8))
     n, _lab, st, _ = cv2.connectedComponentsWithStats(tp)
-    L = [st[i] for i in range(1, n) if st[i][4] > 250 and 6 < st[i][3] < 70 and st[i][2] > 25]
-    if not L:
-        return []
-    return [(int(min(l[0] for l in L)), int(min(l[1] for l in L)),
-             int(max(l[0] + l[2] for l in L)), int(max(l[1] + l[3] for l in L)))]
+    return [(int(s[0]), int(s[1]), int(s[0] + s[2]), int(s[1] + s[3]))
+            for s in (st[i] for i in range(1, n))
+            if s[4] > 250 and 6 < s[3] < 70 and s[2] > 25]
+
+
+def _union(boxes):
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def _by_lines(im: np.ndarray) -> list[tuple[int, int, int, int]]:
+    got = _line_boxes(im)
+    return [_union(got)] if got else []
+
+
+def cover(im: np.ndarray, boxes: list[tuple[int, int, int, int]]):
+    """모델이 짚어 준 자리의 **글자를 덮은 사진과, 실제로 덮은 자리들.**
+    흰 바탕이 아니면 None.
+
+    `split` 과 하는 일은 같다. 다른 것은 **자리를 누가 정하는가**뿐이다.
+    `split` 은 픽셀을 재서 글이 어디 있는지 스스로 찾았고, 그래서 글랜스의 금속캡과
+    다일레이터의 격자를 글자로 잘못 짚어 사진에 구멍을 냈다. 여기서는 모델이 준
+    자리 **안에서만** 본다. 코드가 정하는 것은 "이 안에서 어느 픽셀이 글자꼴인가"
+    뿐이고, 그것도 원래 있던 계산(`_strokes`)이다.
+
+    돌려주는 자리는 모델이 준 네모가 아니라 **정말로 지워진 잉크의 테두리**다.
+    모델의 네모는 성기다 — "왼쪽 위 4분의 1" 처럼 크게 잡아 준다. 그 네모에 글을
+    얹으면 글자가 네모만큼 커진다. 지워진 자리에 얹어야 원래 크기가 나온다.
+
+    흰 바탕 검사는 남겨 둔다. 색이 깔린 광고 배너는 글자가 배경 위에 디자인으로
+    얹혀 있어서, 덮으려 들면 그 글자를 **지워 버린다**(유니버셜의 보라·초록 배너가
+    반쯤 지워져 나왔다). 그런 밴드는 손대지 않고 통째로 싣는다 — 그래서 None 이다.
+    """
+    bgc = _bg(im)
+    if bgc.mean() < BG_MIN_LIGHT or (bgc.max() - bgc.min()) > BG_MAX_SAT:
+        return None
+    lines = _line_boxes(im)
+    ink = _strokes(im)
+    pen = np.ones((5, 5), np.uint8)
+    out = im.copy()
+    where: list[tuple[int, int, int, int] | None] = []
+    for x0, y0, x1, y1 in boxes:
+        mine = [L for L in lines
+                if x0 <= (L[0] + L[2]) // 2 < x1 and y0 <= (L[1] + L[3]) // 2 < y1]
+        pick = np.zeros(ink.shape, bool)
+        for a, b, c, d in mine:
+            pick[b:d, a:c] = True
+        kill = cv2.dilate((ink & pick).astype(np.uint8), pen) > 0
+        if not kill.any():
+            # 그 안에 **덮을 글자가 없었다.** 색 배지처럼 우리가 못 지우는 글이거나
+            # 글이 아니거나다. 얹지 않는다 — 얹으면 원본 위에 겹쳐 두 번 나온다.
+            where.append(None)
+            continue
+        ys, xs = np.where(kill.any(1))[0], np.where(kill.any(0))[0]
+        where.append((int(xs[0]), int(ys[0]), int(xs[-1]) + 1, int(ys[-1]) + 1))
+        out[kill] = bgc
+    return out, where
 
 
 def split(im: np.ndarray) -> Split | None:

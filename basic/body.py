@@ -8,7 +8,8 @@
 **지키는 것은 셋뿐이다.**
 
     ㉠ 원본 밴드는 하나도 버리지 않는다. 글자로 바뀐 것 말고는 전부 사진으로 싣는다.
-    ㉡ 사진 옆 흰 바탕에 붙은 글은 떼서 그 사진의 캡션으로 (모델이 그렇다고 한 것만).
+    ㉡ 사진에 박힌 글은 **자리째** 옮긴다 — 글자 픽셀을 배경색으로 덮고 그 자리에
+       읽은 글을 얹는다. 사진은 안 자른다. 자리는 모델이 백분율로 말해 준다.
     ㉢ 섹션은 원본대로. 제목이 새 섹션을 연다. 사진도 설명도 없는 섹션은 만들지 않는다.
 
 **예전에는 여기서 픽셀로 판정했다.** 밴드의 어두운 덩어리를 세어 제목인지 설명인지
@@ -25,13 +26,26 @@ from dataclasses import dataclass, field
 
 #: 모델이 말해 주는 종류. `read_text` 와 같은 이름을 쓴다.
 TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
-#: 코드가 만드는 종류 하나 — **글을 뗀 사진.** 사진으로 싣고 그 글을 캡션으로 단다.
-SIDE = "side"
 
 #: 사진처럼 실리는 것들. 이 중 `DECOR` 만 **구간을 열지 못한다.**
-IMAGES = (PHOTO, SHOT, SIDE, DECOR)
+IMAGES = (PHOTO, SHOT, DECOR)
 #: 구간의 내용이 되는 것들. 이것이 하나도 없으면 구간이 아니다.
-CONTENT = (BODY, PHOTO, SHOT, SIDE)
+CONTENT = (BODY, PHOTO, SHOT)
+
+
+@dataclass
+class Mark:
+    """사진에 박혀 있던 글 덩어리 하나. **자리는 그 사진 기준 백분율이다.**
+
+    글자 픽셀은 배경색으로 덮고, 덮은 그 자리에 이 글을 다시 얹는다. 그래서 사진은
+    안 잘리고 지시선·점은 그대로 남는다 — 자리를 알면 자를 이유가 없다.
+    """
+
+    x: int
+    y: int
+    w: int
+    h: int
+    text: str
 
 
 @dataclass
@@ -41,7 +55,8 @@ class Piece:
     kind: str
     band: int              #: 본문 안에서 몇 번째 밴드인가 (0 부터)
     file: str = ""         #: 밴드 그림 파일 이름
-    text: str = ""         #: 제목·설명이면 모델이 읽은 글, `side` 면 캡션
+    text: str = ""         #: 제목·설명이면 모델이 읽은 글
+    marks: list[Mark] = field(default_factory=list)   #: 사진 위에 도로 얹을 글 덩어리들
 
 
 @dataclass
@@ -64,45 +79,32 @@ class Section:
         return any(p.kind in CONTENT for p in self.items)
 
 
-SPLIT, SIDE_TAG = "+split", "+side"
-
-
-def wants_split(kind: str) -> bool:
-    """모델이 "위는 사진 아래는 글" 이라고 말한 밴드인가."""
-    return SPLIT in str(kind)
-
-
-def wants_side(kind: str) -> bool:
-    """모델이 "사진 옆 흰 바탕에 글이 있다" 고 말한 밴드인가."""
-    return SIDE_TAG in str(kind)
-
-
-def bare(kind: str) -> str:
-    """`shot+split+side` → `shot`."""
-    got = str(kind)
-    for tag in (SPLIT, SIDE_TAG):
-        got = got.replace(tag, "")
-    return got
-
-
-def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
+def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str],
+                marks: dict[int, list] | None = None) -> list[Piece]:
     """모델이 말한 것을 조각으로. **밴드는 하나도 안 버린다.**
 
     말 안 해 준 밴드는 사진으로 둔다. 빠뜨린 밴드를 버리면 원본에 있던 그림이
     조용히 사라진다. 사진으로 두면 최악이라도 원본이 실린다.
     """
+    got = marks or {}
     out = []
     for i, f in enumerate(files):
-        kind = bare(kinds.get(i, PHOTO))
+        kind = kinds.get(i, PHOTO)
         # 글은 **글이 되는 것에만** 딸린다. 글자 박힌 사진(shot)에 글을 달면
         # 그림 안에 있는 글이 우리 글로 또 나와 **두 번 읽힌다.**
-        text = texts.get(i, "") if kind in (TITLE, BODY, SIDE) else ""
+        text = texts.get(i, "") if kind in (TITLE, BODY) else ""
         # **글 없는 제목은 제목이 아니다.** 번호만 붙은 빈 제목이 되어 구간 번호가
         # 꼬인다. 다시 물어도 글이 없으면 **그림으로** 싣는다 — 버리지 않는다.
         if kind == TITLE and not text.strip():
             kind = DECOR
-        out.append(Piece(kind, i, file=f, text=text))
+        out.append(Piece(kind, i, file=f, text=text,
+                         marks=_marks(got.get(i)) if kind in IMAGES else []))
     return out
+
+
+def _marks(got) -> list[Mark]:
+    """읽은 그대로의 다섯 토막(`x,y,w,h,글`)을 `Mark` 로. 이미 `Mark` 면 그대로."""
+    return [m if isinstance(m, Mark) else Mark(*m) for m in (got or [])]
 
 
 def sections(pieces: list[Piece]) -> list[Section]:
@@ -142,7 +144,7 @@ def sections(pieces: list[Piece]) -> list[Section]:
             continue
         if cur is None:
             cur = new()
-        if not has_title and p.kind in (PHOTO, SHOT, SIDE) and cur.bodies:
+        if not has_title and p.kind in (PHOTO, SHOT) and cur.bodies:
             cur = new()
         cur.items.append(p)
 
