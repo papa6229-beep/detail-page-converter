@@ -6,7 +6,7 @@ import html
 import re
 from pathlib import Path
 
-from .body import BODY, PHOTO, SHOT, TITLE, Section
+from .body import BODY, IMAGES, SIDE, Section
 
 CSS = """
 .bpage{max-width:860px;margin:0 auto;font-family:Pretendard,-apple-system,'Malgun Gothic',sans-serif;color:#2b2f3a;-webkit-font-smoothing:antialiased}
@@ -17,6 +17,10 @@ CSS = """
 .bpage h2{font-size:28px;font-weight:800;letter-spacing:-.02em;color:#1a2440;margin:8px 0 22px;line-height:1.25}
 .bpage figure{margin:0 0 18px;text-align:center}
 .bpage figure img{max-width:100%;height:auto;display:inline-block}
+/* 사진 옆 흰 바탕에 붙어 있던 글을 떼어 여기로 옮긴다. 원본에서 그 글은 사진에
+   딸린 설명이었으니 본문 문단으로 세우지 않고 사진 아래에 붙여 둔다. */
+.bpage figcaption{text-align:left;margin-top:10px}
+.bpage figcaption p{font-size:15px;line-height:1.75;color:#4a5063;margin:0 0 6px}
 .bpage p{font-size:16px;line-height:1.9;margin:6px 0 14px}
 .bpage p+p{margin-top:0}
 .bpage strong{font-weight:800;color:#1a2440}
@@ -78,8 +82,10 @@ def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
             out.append(f"<h2>{_emph(s.title.text.strip())}</h2>" if s.title.text.strip()
                        else as_is(s.title))
         for it in s.items:
-            if it.kind in (PHOTO, SHOT):
-                out.append(f'<figure><img src="{src(it.file)}" alt=""></figure>')
+            if it.kind in IMAGES:
+                cap = (f"<figcaption>{_paras(it.text)}</figcaption>"
+                       if it.kind == SIDE and it.text.strip() else "")
+                out.append(f'<figure><img src="{src(it.file)}" alt="">{cap}</figure>')
             elif it.kind == BODY:
                 out.append(_paras(it.text) if it.text.strip() else as_is(it))
         out.append("</section>")

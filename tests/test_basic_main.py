@@ -362,10 +362,97 @@ def test_title_opens_a_section():
     assert secs[0].title.text == "가" and secs[1].title.text == "나"
 
 
-def test_decor_is_dropped():
+def test_nothing_is_ever_dropped():
+    """㉠ 원본 밴드는 하나도 안 버린다. 장식도 그림으로 실린다."""
     from basic import body
     secs = body.sections([bp(body.DECOR, n=0), bp(body.PHOTO, n=1)])
-    assert len(secs) == 1 and len(secs[0].items) == 1
+    assert len(secs) == 1 and [p.band for p in secs[0].items] == [0, 1]
+
+
+def test_decor_alone_never_opens_a_section():
+    """㉢ 장식만 있는 자리는 구간이 아니다 — 제목이 연달아 와도 머리는 하나다.
+
+    죠우무: `포인트`(제목) · POINT? 배지 · POINT-01 배지 · `젊은 유부녀의 엉덩이`(제목).
+    뒤 제목은 새 구간을 열지 않고 **원본 그림 그대로** 그 자리에 들어간다.
+    """
+    from basic import body
+    secs = body.sections([bp(body.TITLE, "포인트", 0), bp(body.DECOR, n=1),
+                          bp(body.DECOR, n=2), bp(body.TITLE, "젊은 유부녀의 엉덩이", 3),
+                          bp(body.PHOTO, n=4)])
+    assert len(secs) == 1
+    # 머리는 **내용에 가장 가까운** 제목이다. 앞엓것은 상품명 띄일 때가 많다
+    assert secs[0].title.text == "젊은 유부녀의 엉덩이"
+    assert [p.band for p in secs[0].items] == [1, 2, 0, 4]   # 밴드 0 이 그림으로 남았다
+
+
+def test_a_tail_title_joins_the_section_before_it():
+    """뒤에 아무것도 안 오는 제목은 구간을 못 만든다. 그래도 그림은 남는다."""
+    from basic import body
+    secs = body.sections([bp(body.TITLE, "가", 0), bp(body.PHOTO, n=1), bp(body.TITLE, "끝", 2)])
+    assert len(secs) == 1 and [p.band for p in secs[0].items] == [1, 2]
+
+
+def test_section_numbers_have_no_holes():
+    from basic import body
+    secs = body.sections([bp(body.TITLE, "가", 0), bp(body.PHOTO, n=1),
+                          bp(body.TITLE, "나", 2), bp(body.PHOTO, n=3),
+                          bp(body.TITLE, "다", 4), bp(body.PHOTO, n=5)])
+    assert [s.number for s in secs] == [1, 2, 3]
+
+
+def test_a_title_without_text_stays_as_a_picture():
+    """글 없는 제목은 제목이 아니다. 그렇다고 버리지도 않는다."""
+    from basic import body
+    got = body.pieces_from({0: "title"}, {}, ["a.jpg"])
+    assert got[0].kind == body.DECOR and got[0].file == "a.jpg"
+
+
+def test_side_tag_is_kept_apart_from_the_kind():
+    from basic import body
+    assert body.bare("shot+side") == "shot" and body.wants_side("shot+side")
+    assert body.bare("shot+split+side") == "shot"
+    assert body.wants_split("shot+split+side") and body.wants_side("shot+split+side")
+    assert not body.wants_side("shot")
+
+
+def test_side_caption_rides_along_but_shot_text_does_not():
+    """㉡ 뗀 글만 캡션이 된다. 글자 박힌 사진의 글은 그림에 이미 있다."""
+    from basic import body
+    got = body.pieces_from({0: body.SIDE, 1: "shot"}, {0: "옆글", 1: "두 번 나올 글"},
+                           ["a.jpg", "b.jpg"])
+    assert got[0].text == "옆글" and got[1].text == ""
+
+
+def test_side_renders_as_a_photo_with_a_caption(tmp_path):
+    from basic import body, render
+    sec = body.Section(1, items=[bp(body.SIDE, "떼어 온 설명", 0)])
+    html = render.render([sec], tmp_path, embed=False)
+    assert "<figcaption>" in html and "떼어 온 설명" in html and "band_000.jpg" in html
+
+
+def test_text_runs_from_one_band_are_joined_back():
+    """글줄 사이에서 갈린 조각은 도로 붙인다. 다른 원본에서 온 것은 안 붙인다."""
+    from basic import web
+    recs = [web._Rec(Path("a"), "body", "첫 줄", origin=3),
+            web._Rec(Path("b"), "body", "둘째 줄", origin=3),
+            web._Rec(Path("c"), "body", "다른 밴드", origin=4)]
+    got = web._join_text_runs(recs, [])
+    assert [r.text for r in got] == ["첫 줄\n둘째 줄", "다른 밴드"]
+
+
+def test_photo_runs_are_never_joined():
+    from basic import web
+    recs = [web._Rec(Path("a"), "photo", origin=3), web._Rec(Path("b"), "photo", origin=3)]
+    assert len(web._join_text_runs(recs, [])) == 2
+
+
+def test_blank_rows_look_at_every_column():
+    """띄엄띄엄 보면 점선·얇은 선이 빈 줄로 세어져 그림 한가운데가 잘린다."""
+    import numpy as np
+    from basic import bands
+    arr = np.full((3, 800, 3), 255, np.uint8)
+    arr[1, ::40] = 0                      # 40px 마다 한 점 — 점선 한 줄
+    assert not bool(bands.blank_rows(arr)[1])
 
 
 def test_photo_after_body_opens_only_when_no_title():

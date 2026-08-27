@@ -3,16 +3,21 @@
     섹션 = 번호 + 제목 + (설명·사진들)
 
 밴드가 무엇인지는 모델이 말해 준다(`read_text`). 여기서 하는 일은 그 말대로
-줄 세우는 것뿐이다 — 제목이 나오면 새 섹션을 열고, 설명은 문단으로, 사진은
-그대로, 글자 박힌 사진은 통째로, 장식은 버린다.
+줄 세우는 것뿐이다.
+
+**지키는 것은 셋뿐이다.**
+
+    ㉠ 원본 밴드는 하나도 버리지 않는다. 글자로 바뀐 것 말고는 전부 사진으로 싣는다.
+    ㉡ 사진 옆 흰 바탕에 붙은 글은 떼서 그 사진의 캡션으로 (모델이 그렇다고 한 것만).
+    ㉢ 섹션은 원본대로. 제목이 새 섹션을 연다. 사진도 설명도 없는 섹션은 만들지 않는다.
 
 **예전에는 여기서 픽셀로 판정했다.** 밴드의 어두운 덩어리를 세어 제목인지 설명인지
-가르고(`_role`), 알약 배지를 떼어내고(`_split_badge`), 사진 옆 글자를 잘라내고
-(`sidetext`), 페이지마다 제목의 급을 매겼다(머리띠 > 배지 > 굵은 한 줄). 상품이
-하나 늘 때마다 그 잣대가 어긋났고, 어긋나는 방식이 매번 달랐다. 전부 지웠다.
+가르고(`_role`), 알약 배지를 떼어내고(`_split_badge`), 페이지마다 제목의 급을 매겼다.
+상품이 하나 늘 때마다 그 잣대가 어긋났고, 어긋나는 방식이 매번 달랐다. 전부 지웠다.
 
-`sidetext` 모듈은 남아 있지만 본문은 안 쓴다 — 메인이 알맹이를 자를 때 라벨이
-있는지 물어보는 데 쓴다(`main._content_rect`).
+**버리는 길도 지웠다.** 장식은 이제 버리는 것이 아니라 "구간을 열지 않는 그림" 이다.
+버리는 길이 하나라도 있으면, 모델이 그 이름을 잘못 붙이는 순간 원본이 소리 없이
+사라진다 — 벨벳키스의 `SIZE & INFO` 배지가 그렇게 없어졌다.
 """
 from __future__ import annotations
 
@@ -20,6 +25,13 @@ from dataclasses import dataclass, field
 
 #: 모델이 말해 주는 종류. `read_text` 와 같은 이름을 쓴다.
 TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
+#: 코드가 만드는 종류 하나 — **글을 뗀 사진.** 사진으로 싣고 그 글을 캡션으로 단다.
+SIDE = "side"
+
+#: 사진처럼 실리는 것들. 이 중 `DECOR` 만 **구간을 열지 못한다.**
+IMAGES = (PHOTO, SHOT, SIDE, DECOR)
+#: 구간의 내용이 되는 것들. 이것이 하나도 없으면 구간이 아니다.
+CONTENT = (BODY, PHOTO, SHOT, SIDE)
 
 
 @dataclass
@@ -29,7 +41,7 @@ class Piece:
     kind: str
     band: int              #: 본문 안에서 몇 번째 밴드인가 (0 부터)
     file: str = ""         #: 밴드 그림 파일 이름
-    text: str = ""         #: 제목·설명이면 모델이 읽은 글
+    text: str = ""         #: 제목·설명이면 모델이 읽은 글, `side` 면 캡션
 
 
 @dataclass
@@ -40,39 +52,53 @@ class Section:
 
     @property
     def photos(self):
-        return [p for p in self.items if p.kind in (PHOTO, SHOT)]
+        return [p for p in self.items if p.kind in IMAGES]
 
     @property
     def bodies(self):
         return [p for p in self.items if p.kind == BODY]
 
+    @property
+    def has_content(self) -> bool:
+        """장식 말고 진짜 내용이 있는가."""
+        return any(p.kind in CONTENT for p in self.items)
 
-SPLIT = "+split"
+
+SPLIT, SIDE_TAG = "+split", "+side"
 
 
 def wants_split(kind: str) -> bool:
     """모델이 "위는 사진 아래는 글" 이라고 말한 밴드인가."""
-    return str(kind).endswith(SPLIT)
+    return SPLIT in str(kind)
+
+
+def wants_side(kind: str) -> bool:
+    """모델이 "사진 옆 흰 바탕에 글이 있다" 고 말한 밴드인가."""
+    return SIDE_TAG in str(kind)
 
 
 def bare(kind: str) -> str:
-    """`shot+split` → `shot`."""
-    return str(kind)[: -len(SPLIT)] if wants_split(kind) else str(kind)
+    """`shot+split+side` → `shot`."""
+    got = str(kind)
+    for tag in (SPLIT, SIDE_TAG):
+        got = got.replace(tag, "")
+    return got
 
 
 def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
-    """모델이 말한 것을 조각으로. 말 안 해 준 밴드는 **사진으로 둔다.**
+    """모델이 말한 것을 조각으로. **밴드는 하나도 안 버린다.**
 
-    빠뜨린 밴드를 버리면 원본에 있던 그림이 조용히 사라진다. 사진으로 두면
-    최악이라도 원본이 실린다 — 글이 그림으로 실릴 뿐 없어지지는 않는다.
+    말 안 해 준 밴드는 사진으로 둔다. 빠뜨린 밴드를 버리면 원본에 있던 그림이
+    조용히 사라진다. 사진으로 두면 최악이라도 원본이 실린다.
     """
     out = []
     for i, f in enumerate(files):
         kind = bare(kinds.get(i, PHOTO))
-        text = texts.get(i, "") if kind in (TITLE, BODY) else ""
+        # 글은 **글이 되는 것에만** 딸린다. 글자 박힌 사진(shot)에 글을 달면
+        # 그림 안에 있는 글이 우리 글로 또 나와 **두 번 읽힌다.**
+        text = texts.get(i, "") if kind in (TITLE, BODY, SIDE) else ""
         # **글 없는 제목은 제목이 아니다.** 번호만 붙은 빈 제목이 되어 구간 번호가
-        # 꼬인다(죠우무 `포인트`·`상세사진`, 벨벳키스 `SIZE & INFO` 가 그랬다).
-        # 다시 물어도 글이 없으면 장식으로 버린다.
+        # 꼬인다. 다시 물어도 글이 없으면 **그림으로** 싣는다 — 버리지 않는다.
         if kind == TITLE and not text.strip():
             kind = DECOR
         out.append(Piece(kind, i, file=f, text=text))
@@ -80,10 +106,18 @@ def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) 
 
 
 def sections(pieces: list[Piece]) -> list[Section]:
-    """조각들을 섹션으로 묶는다.
+    """조각들을 섹션으로 묶는다. **원본 순서 그대로.**
 
-    제목이 새 섹션을 연다. **제목이 하나도 없는 페이지**면 "설명 뒤에 다시 나오는
-    사진" 이 연다 — 그 자리가 사람 눈에도 구간이 바뀌는 자리다.
+    제목이 새 섹션을 연다. 단 **내용 없는 섹션은 만들지 않는다** — 제목이 연달아
+    나오면(죠우무의 `포인트` 머리 두 겹) 머리는 하나뿐이고, 나머지는 그 자리에
+    원본 그림으로 들어간다. 버리지 않는다.
+
+    머리가 되는 것은 **내용에 가장 가까운 제목**, 곧 마지막 것이다. 앞엣것은 대개
+    상품명을 되풀이하는 띠다 — 죠우무는 `젊은 유부녀의 엉덩이` 띠 다음에 `사이즈`
+    가 온다. 앞엣것을 머리로 삼으면 구간 이름이 죄다 상품명이 되어 버린다.
+
+    **제목이 하나도 없는 페이지**면 "설명 뒤에 다시 나오는 사진" 이 연다 —
+    그 자리가 사람 눈에도 구간이 바뀌는 자리다.
     """
     has_title = any(p.kind == TITLE for p in pieces)
     secs: list[Section] = []
@@ -94,20 +128,34 @@ def sections(pieces: list[Piece]) -> list[Section]:
         secs.append(s)
         return s
 
+    def as_image(p: Piece) -> Piece:
+        """제목 자리를 못 얻은 조각 — 원본 그림으로 싣는다. 글은 그림 안에 있다."""
+        return Piece(DECOR, p.band, file=p.file)
+
     for p in pieces:
-        if p.kind == DECOR:
-            continue
         if p.kind == TITLE:
-            if cur is None or cur.title is not None or cur.items:
+            if cur is None or cur.has_content:
                 cur = new()
+            elif cur.title is not None:
+                cur.items.append(as_image(cur.title))   # 앞 제목은 그림으로 남는다
             cur.title = p
             continue
         if cur is None:
             cur = new()
-        if not has_title and p.kind in (PHOTO, SHOT) and cur.bodies:
+        if not has_title and p.kind in (PHOTO, SHOT, SIDE) and cur.bodies:
             cur = new()
         cur.items.append(p)
-    return [s for s in secs if s.title or s.items]
+
+    out: list[Section] = []
+    for s in secs:
+        if s.items:
+            out.append(s)
+        elif s.title is not None and out:
+            # 뒤에 아무것도 안 오는 꼬리 제목. 구간을 못 되니 앞 구간에 그림으로 붙인다.
+            out[-1].items.append(as_image(s.title))
+    for n, s in enumerate(out, 1):
+        s.number = n
+    return out
 
 
 #: 글자 박힌 사진이 본문의 이만큼을 넘으면 **자르지 않는다.**
@@ -118,7 +166,6 @@ MOSTLY_SHOT = 2 / 3
 
 def mostly_shots(pieces: list[Piece]) -> bool:
     """본문이 통째로 실려야 하는 원본인가."""
-    usable = [p for p in pieces if p.kind != DECOR]
-    if not usable:
+    if not pieces:
         return False
-    return sum(1 for p in usable if p.kind == SHOT) / len(usable) >= MOSTLY_SHOT
+    return sum(1 for p in pieces if p.kind == SHOT) / len(pieces) >= MOSTLY_SHOT
