@@ -216,6 +216,16 @@ BG_NEAR = 60
 BG_SHARE = 0.12
 
 
+#: 테두리 색이 이보다 밝고 무채색이면 "흰 바탕" 으로 본다.
+WHITE_RING = 232
+
+
+def _white_ring(ring: np.ndarray) -> bool:
+    """테두리가 통째로 흰 바탕인가 — 그러면 잘라 낼 것이 없다."""
+    q = ring.astype(np.int32)
+    return bool(q.min(axis=1).mean() >= WHITE_RING)
+
+
 def _off_background(crop: np.ndarray, ring: np.ndarray) -> np.ndarray:
     """화소마다 **가장 가까운 배경색과의 거리**. 배경 위면 작다.
 
@@ -250,16 +260,28 @@ def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
     """
     import cv2
 
+    from . import sidetext
+
     crop = arr[y : y + height]
     h, w = crop.shape[:2]
     if h < 4 or w < 4:
         return None
+    whole = Rect(0, y, w - 1, y + h - 1)
     t = max(2, min(6, h // 8, w // 8))
     ring = np.concatenate([crop[:t].reshape(-1, 3), crop[-t:].reshape(-1, 3),
                            crop[:, :t].reshape(-1, 3), crop[:, -t:].reshape(-1, 3)])
+
+    # **흰 바탕이고 라벨도 없으면 자르지 않는다.** 자를 것이 없기 때문이다.
+    # 자르면 오히려 잃는다 — 흰 제품은 흰 배경과 잘 안 갈려서 "제일 큰 덩어리" 가
+    # 제품의 한 조각만 잡는다(유컵스의 흰 링 셋 중 하나만 남았다).
+    # 자르는 것은 **색 배경이 깔렸거나 라벨이 붙었을 때**뿐이다 — 그때는 떼어낼
+    # 것이 실제로 있다(죠우무 패키지의 파란 사선 띠와 캡션).
+    if _white_ring(ring) and sidetext.split(crop) is None:
+        return whole
+
     fg = (_off_background(crop, ring) > BG_NEAR).astype(np.uint8)
     if not fg.any():
-        return None
+        return whole
 
     # 큰 덩어리 하나만 남긴다. 잔글씨·얇은 띠가 붙어 오지 않게 살짝 이어 붙여 센다.
     step = max(1, max(h, w) // 400)
@@ -267,7 +289,7 @@ def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
     small = cv2.morphologyEx(small, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
     n, _lab, st, _c = cv2.connectedComponentsWithStats(small)
     if n <= 1:
-        return None
+        return whole
     i = 1 + int(np.argmax(st[1:, cv2.CC_STAT_AREA]))
     x0, y0, bw, bh = (int(st[i, cv2.CC_STAT_LEFT]), int(st[i, cv2.CC_STAT_TOP]),
                       int(st[i, cv2.CC_STAT_WIDTH]), int(st[i, cv2.CC_STAT_HEIGHT]))
@@ -277,7 +299,7 @@ def _content_rect(arr: np.ndarray, y: int, height: int) -> Rect | None:
     x1, y1 = min(w - 1, x0 + bw - 1 + pad), min(h - 1, y0 + bh - 1 + pad)
     x0, y0 = max(0, x0 - pad), max(0, y0 - pad)
     if x1 <= x0 or y1 <= y0:
-        return None
+        return whole
     return Rect(x0, y + y0, x1, y + y1)
 
 
@@ -664,10 +686,27 @@ PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. �
 3. **그림 고르기** — 자리마다 **좋은 순서대로 셋**을 준다. 하나만 주지 마라.
    앞엣것이 막히면 뒤엣것을 쓴다. 그러니 **1번이 가장 좋은 것**이어야 한다.
 
+   네가 준 뒤에 **코드가 한 번 더 거른다.** 아래 셋에 걸리면 그 후보는 버려진다 —
+   버려질 것을 앞에 두면 자리 셋을 헛되이 쓰는 것이다.
+
+       · 배경에 색이 깔린 밴드      (원본 맨 위의 대표컷은 대개 여기 걸린다)
+       · 글자가 박힌 밴드
+       · 제품이 여러 개로 흩어진 밴드
+
+   그러니 **원본의 첫 대표컷을 그대로 1번에 놓지 마라.** 그건 색 배경 위에 있어
+   거의 언제나 버려진다. 페이지 아래쪽의 흰 바탕 제품컷을 찾아라.
+
     main      대표컷 후보 셋. **흰 바탕에 제품만 놓인 컷**을 찾아라.
               사람(모델)이 나온 컷 · 색 배너 · 글자 띠는 **절대 넣지 마라.**
               그런 컷밖에 없어도 넣지 말고, 흰 바탕 제품컷을 다시 찾아라.
-              같은 제품이 여러 개 나란히 놓인 컷은 괜찮다 — 배경만 희면 된다.
+              **손·신체·소품이 없어야 한다** — 손이 잡은 컷, 몸에 댄 컷,
+              거치대·파우치·케이블이 같이 찍힌 컷은 대표컷이 아니다(키피쳐로 미뤄라).
+              **옵션이 여러 개인 상품이면 먼저 옵션이 몇 개인지 세라.**
+              요약정보의 무게·치수가 `130g/140g/190g/220g/235g/245g` 처럼 여러 개면
+              그 수가 옵션 수다. 그 수가 **다 보이는** 컷이 1번이다. 그런 컷이
+              없으면 옵션 **하나만** 찍힌 단독컷이 1번이다.
+              **여섯 중 셋처럼 일부만 모인 컷은 어떤 경우에도 main 에 넣지 마라** —
+              손님이 구성을 잘못 읽는다. 그런 컷은 feature 로 미뤄라.
               흰 바탕 컷이 여럿이면 제품이 크게 찍힌 순서로.
     feature   대표컷과 **다른** 제품컷 후보 셋. 손이 잡고 있어도, 거치대에
               얹혀 있어도, 배경에 옅은 색이 깔려 있어도 된다.

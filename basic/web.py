@@ -116,6 +116,28 @@ def model_hero_pick(reply: str):
         return None
 
 
+#: 같은 입력이면 같은 답이 나오게 못박는 값. `seed` 는 OpenAI 가 받는다.
+PIN = {"temperature": 0, "top_p": 1, "seed": 7}
+
+
+def _pin(payload: bytes) -> bytes:
+    """모델 답을 **되풀이 가능하게** 만든다.
+
+    기본값으로 부르면 같은 밴드를 넣어도 대표컷이 돌릴 때마다 바뀐다(유컵스에서
+    실제로 그랬다). 그러면 기준선이 잴 수 있는 것이 없다 — 우리가 코드를 고쳐서
+    바뀐 건지 모델이 흔들린 건지 못 가른다.
+
+    `app/llm.py` 는 안 건드린다. 어댑터가 만들어 준 몸통에 값만 얹는다 —
+    회사가 바뀌어도 어댑터 한 파일로 끝나는 구조를 깨지 않으려고.
+    """
+    try:
+        body = json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+    body.update(PIN)
+    return json.dumps(body).encode()
+
+
 def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
     """모델에 물어본다. **JSON 이 깨져 오면 한 번 더 부른다.**
 
@@ -124,6 +146,7 @@ def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
     (괄호를 우리가 채워 넣으면) 무엇을 고쳤는지 모르게 되니, 그냥 다시 묻는다.
     """
     url, headers, payload = _llm.build(key, parts, max_tokens=4000)
+    payload = _pin(payload)
     text = ""
     for n in range(tries):
         req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
