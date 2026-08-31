@@ -72,6 +72,26 @@ def _paras(text: str) -> str:
 #: 한글 글자는 제 크기의 이만큼만 잉크로 채운다. 잰 잉크 높이를 이것으로 나눠야
 #: 원본과 같은 크기로 앉는다. 잉크 높이를 그대로 쓰면 눈에 띄게 작아진다.
 INK_FILL = 0.72
+#: 글자 하나가 차지하는 폭을 글자 크기의 몇 배로 볼까. 한글은 네모라 1, 로마자는 좁다.
+WIDE, NARROW = 1.0, 0.55
+
+
+def _em(text: str) -> float:
+    """가장 긴 줄이 글자 크기의 몇 배로 뻗는가."""
+    lines = text.splitlines() or [""]
+    return max(sum(WIDE if ord(c) > 0x2000 else NARROW for c in ln) for ln in lines) or 1.0
+
+
+def fit(mark) -> float:
+    """덮은 자리에 다시 쓸 **글자 크기(px)**.
+
+    **폭이 답이다** — 상자 폭을 글자 수로 나눈 것이 원본 글자 크기다. 잉크 높이는
+    위쪽 상한으로만 쓴다. 높이만 보면 밑줄이 글자에 붙은 줄에서 두 배가 나온다
+    (실측: 폭으로 16px, 높이로 36px, 원본은 16px).
+    """
+    lines = len(mark.text.splitlines()) or 1
+    tall = (mark.ink or mark.h) / INK_FILL
+    return max(1.0, min(mark.w / _em(mark.text) * lines, tall))
 
 
 def _size(path: Path):
@@ -96,7 +116,7 @@ def _shot(piece, url: str, assets: Path) -> str:
     # 안 주면 상자가 0px 이 되고 `cqw` 로 잰 글자가 0px 이 된다.
     out = [f'<span class="lay" style="width:{w}px">{plain}']
     for m in piece.marks:
-        f = max(1.0, (m.ink or m.h) / INK_FILL)
+        f = fit(m)
         out.append(f'<p class="mk" style="left:{m.x / w * 100:.2f}%;'
                    f'top:{m.y / h * 100:.2f}%;width:{m.w / w * 100:.2f}%;'
                    f'font-size:{f:.1f}px;font-size:{f / w * 100:.2f}cqw">'

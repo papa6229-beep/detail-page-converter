@@ -158,31 +158,41 @@ def fits(blob: Blob, text: str, ink: int) -> bool:
     return need <= blob.w * rows * OVERFLOW
 
 
-def sits_on(lab: np.ndarray, blob: Blob, others: list[Blob]) -> bool:
-    """② 이 덩어리 자리에 **다른 덩어리의 픽셀이 실제로 있는가.**
+def union(boxes) -> tuple[int, int, int, int]:
+    """상자 여럿을 감싸는 상자 하나."""
+    return (min(b[0] for b in boxes), min(b[1] for b in boxes),
+            max(b[2] for b in boxes), max(b[3] for b in boxes))
+
+
+def sits_on(lab: np.ndarray, box: tuple[int, int, int, int],
+            others: list[Blob]) -> bool:
+    """② 이 자리에 **다른 덩어리의 픽셀이 실제로 있는가.**
 
     상자가 겹치는지로 보지 않는다. 제품이 기울어 놓이면 그 상자가 넓어져 옆에 나란히
     있는 글까지 상자 안에 들어온다 — 상자로 보면 그 글을 "사진 위" 로 잘못 짚는다.
     상자 안에 **저쪽 픽셀이 한 점이라도 찍혀 있는지**를 본다.
+
+    칠할 자리 그대로를 넣어 물어야 한다. 우리는 이제 상자 안을 통째로 칠하므로,
+    그 상자에 남의 픽셀이 있으면 그것까지 지워진다.
     """
-    x0, y0, x1, y1 = blob.box
+    x0, y0, x1, y1 = box
     win = lab[y0:y1, x0:x1]
     return any(bool((win == o.n).any()) for o in others)
 
 
-def cover(im: np.ndarray, lab: np.ndarray, take: list[Blob],
-          bg: np.ndarray) -> np.ndarray:
-    """④ 덩어리들을 배경색으로 덮은 사진.
+def cover(im: np.ndarray, boxes, bg: np.ndarray) -> np.ndarray:
+    """④ **상자 안을 통째로** 배경색으로 칠한 사진.
 
-    **덩어리 모양대로** 덮는다. 상자를 통째로 칠하지 않는다 — 상자를 칠하면 그 안을
-    지나가는 지시선까지 지워진다. 덩어리에 안 속한 픽셀(깎여 사라진 얇은 선)은
-    그대로 남는다.
+    덩어리 모양대로만 칠하면 글자에 딸린 얇은 밑줄·테두리가 남는다 — 밑줄은 1~2px
+    이라 깎기에서 사라져 어느 덩어리에도 안 속하기 때문이다(핑거위글에서 덮은 글
+    자리마다 밑줄만 줄줄이 남았다). 상자를 칠하면 그 자리가 깨끗해진다.
+
+    **지시선은 상자 밖을 지나가므로 그대로 남는다.** 상자 안에 남의 픽셀이 있는
+    자리는 애초에 부르는 쪽이 걸러 낸다(`sits_on`).
     """
     out = im.copy()
-    mask = np.isin(lab, [b.n for b in take])
-    # 깎았다 되돌리는 사이에 1px 이 모자랄 수 있다. 획 둘레까지 한 겹 넓혀 덮는다.
-    mask = cv2.dilate(mask.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
-    out[mask] = bg
+    for x0, y0, x1, y1 in boxes:
+        out[y0:y1, x0:x1] = bg
     return out
 
 
@@ -191,7 +201,15 @@ def ink_height(lab: np.ndarray, blob: Blob) -> int:
 
     상자 높이를 그대로 쓰면 안 된다 — 상자에 꽉 채워 쓰면 원본보다 커져서 아래 줄과
     겹친다. 잉크가 닿은 높이가 곧 글자 크기다.
+
+    **잉크 줄이 이어지는 가장 긴 구간**을 잰다. 위아래 끝만 보면 안 된다 — 글 밑에
+    밑줄이 그어져 있으면 글자와 밑줄 **사이의 빈 줄까지** 높이에 들어간다. 실측으로
+    글자 13px 짜리가 26px 로 재어져 글자가 두 배로 나왔다.
     """
     x0, y0, x1, y1 = blob.box
-    rows = np.where((lab[y0:y1, x0:x1] == blob.n).any(axis=1))[0]
-    return int(rows[-1] - rows[0] + 1) if len(rows) else blob.h
+    on = (lab[y0:y1, x0:x1] == blob.n).any(axis=1)
+    best = run = 0
+    for v in on:
+        run = run + 1 if v else 0
+        best = max(best, run)
+    return best or blob.h

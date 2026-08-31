@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import traceback
 import urllib.request
 from pathlib import Path
@@ -236,7 +237,7 @@ def blob_sheet(band: Path, found: list, dest_dir: Path) -> Path:
         d.rectangle([tx, ty, tx + MARK_TAG + 4, ty + MARK_TAG + 4],
                     fill=(255, 255, 255), outline=MARK_RED, width=2)
         d.text((tx + 4, ty + 1), str(b.n), fill=MARK_RED, font=font)
-    f = dest_dir / f"{band.stem}_ask.jpg"
+    f = dest_dir / f"{band.stem}.jpg"
     im.save(f, quality=92)
     return f
 
@@ -273,6 +274,10 @@ def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
             notes.append(f"글이 박힌 밴드 {len(shots)}장은 안 물어봤다 — 키가 없다")
         return files, {}
 
+    # 번호를 그린 그림은 **물어보는 데만** 쓴다. 결과에 섞이면 빨간 네모가 페이지에
+    # 그대로 실린다. 딴 방에 그렸다가 묻고 나서 방째로 버린다.
+    ask_dir = assets / "_ask"
+    ask_dir.mkdir(parents=True, exist_ok=True)
     seen: dict[int, tuple] = {}
     sheets = []
     for n in shots:
@@ -281,11 +286,13 @@ def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
         lab, found = blobs.split(arr, bg)
         if found:
             seen[n] = (arr, bg, lab, found)
-            sheets.append((n, blob_sheet(files[n], found, assets)))
+            sheets.append((n, blob_sheet(files[n], found, ask_dir)))
     if not sheets:
+        shutil.rmtree(ask_dir, ignore_errors=True)
         return files, {}
 
     said = read_text.read_blobs(key, sheets)
+    shutil.rmtree(ask_dir, ignore_errors=True)
     marks: dict[int, list] = {}
     done = skipped = 0
     for n, (arr, bg, lab, found) in seen.items():
@@ -293,7 +300,9 @@ def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
         letters = [b for b in found if b.n in words]
         rest = [b for b in found if b.n not in words]
         photos = [b for b in found if blobs.is_photo(arr, lab, b)]
-        take, put = [], []
+        # **덮은 자리만 목록에 들어간다.** 덮기와 다시 쓰기를 따로 판정하면, 못 덮은
+        # 자리에도 새 글자가 그려져 원본 글자와 겹친다. 목록은 하나뿐이다.
+        covered = []
         for b in letters:
             ink = blobs.ink_height(lab, b)
             if b in photos:
@@ -303,20 +312,20 @@ def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
                 skipped += 1          # 그 자리에 안 들어가는 글이다 — 번호를 잘못 짚었다
                 continue
             wrap = wrap_of(b, found)
+            box = blobs.union([b.box, *(w.box for w in wrap)])
             others = [o for o in rest if o not in wrap] + [p for p in photos if p is not b]
-            if blobs.sits_on(lab, b, others):
-                skipped += 1          # 사진 위에 얹힌 글이다. 덮으면 사진이 뚫린다
+            if blobs.sits_on(lab, box, others):
+                skipped += 1          # 남의 픽셀이 그 안에 있다. 칠하면 그것까지 지워진다
                 continue
-            take += [b, *wrap]
-            box = b.box
-            put.append(body.Mark(box[0], box[1], box[2] - box[0], box[3] - box[1],
-                                 words[b.n], ink))
-        if not take:
+            covered.append((box, words[b.n], ink))
+        if not covered:
             continue
-        flat = blobs.cover(arr, lab, take, bg)
+        flat = blobs.cover(arr, [c[0] for c in covered], bg)
         f = assets / f"{files[n].stem}_flat.jpg"
         Image.fromarray(flat).save(f, quality=92)
-        files[n], marks[n] = f, put
+        files[n] = f
+        marks[n] = [body.Mark(x0, y0, x1 - x0, y1 - y0, text, ink)
+                    for (x0, y0, x1, y1), text, ink in covered]
         done += 1
     if done:
         notes.append(f"사진에 박혀 있던 글 {sum(len(v) for v in marks.values())}덩어리를 "

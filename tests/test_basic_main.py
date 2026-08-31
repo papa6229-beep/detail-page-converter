@@ -440,9 +440,9 @@ def test_a_covered_blob_leaves_the_thin_line_alone():
     im[20:40, 150:190] = 0
     im[29:30, 50:150] = 0
     lab, found = blobs.split(im)
-    got = blobs.cover(im, lab, found, blobs.modal_color(im))
-    assert (got[20:40, 150:190] > 200).all()      # 덩어리는 덮였다
-    assert (got[29, 60:140] < 100).any()          # 선은 남았다
+    got = blobs.cover(im, [b.box for b in found], blobs.modal_color(im))
+    assert (got[20:40, 150:190] > 200).all()      # 덩어리 상자는 통째로 칠해졌다
+    assert (got[29, 60:140] < 100).any()          # 선은 상자 밖이라 남았다
 
 
 def test_on_the_photo_is_decided_by_pixels_not_by_boxes():
@@ -459,7 +459,7 @@ def test_on_the_photo_is_decided_by_pixels_not_by_boxes():
     tilted = max(found, key=lambda b: b.area)
     beside = min(found, key=lambda b: b.area)
     assert beside.box[0] < tilted.box[2]          # 상자는 겹친다
-    assert not blobs.sits_on(lab, beside, [tilted])   # 픽셀은 안 겹친다
+    assert not blobs.sits_on(lab, beside.box, [tilted])   # 픽셀은 안 겹친다
 
 
 def test_the_ink_height_is_measured_not_the_box():
@@ -484,7 +484,8 @@ def test_a_mark_is_written_at_the_ink_height(tmp_path):
     html = render.render([sec], tmp_path, embed=False)
     assert 'class="lay" style="width:800px"' in html
     assert "left:10.00%;top:10.00%;width:37.50%" in html
-    assert f"font-size:{18 / render.INK_FILL:.1f}px" in html      # 상자(90)가 아니라 잉크(18)
+    # 폭이 정한다 — 상자 300px ÷ 두 글자 = 150px 인데, 잉크 18px 이 상한이라 25px
+    assert f"font-size:{18 / render.INK_FILL:.1f}px" in html
 
 
 def test_refine_only_asks_about_titles_without_text(tmp_path):
