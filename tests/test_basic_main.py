@@ -297,12 +297,6 @@ def test_render_page_is_isolated_from_simple():
     assert bare and all(ln.startswith(".gpage") for ln in bare), bare[:3]
 
 
-def test_main_width_matches_body():
-    """메인과 본문이 한 파일에 위아래로 붙는다. 폭이 다르면 층이 어긋나 보인다."""
-    from basic import render as bodyrender
-    assert "width:860px" in main.CSS
-    assert "max-width:860px" in bodyrender.CSS
-
 
 def test_option_count_ignores_bundles():
     """묶음 옵션은 빼고 센다 — 유컵스 `퍼플+그린+블루` 는 제품 종류가 아니다."""

@@ -1,7 +1,7 @@
 """기본형 **메인 섹션** — 잘 만들어진 원본을 뜯어 우리 디자인으로 다시 세운다.
 
 `origin/legacy/basic-before-rewind` 의 `app/basic.py` 에서 메인 부분만 옮겼다.
-옮기지 않은 것: Point 01·02 재구성 · SIZE · 본문. **본문은 basic/body.py 가 맡는다.**
+옮기지 않은 것: Point 01·02 재구성 · SIZE. **우리가 만드는 것은 메인 섹션뿐이다.**
 
 단순형과 전제가 반대다.
 
@@ -314,8 +314,7 @@ def choose(facts: dict[int, Facts], kinds: list[str], hashes: list[int],
 ACCENT = "#E11D48"
 
 #: 이 CSS 도 **남의 페이지 안에서 산다**. 선택자는 전부 `.gpage` 로 시작한다.
-#: legacy 는 폭 800(메인이미지 700)이었다. 본문(`.bpage`)이 860 이라 **여기도 860**
-#: 으로 맞춘다 — 한 파일에 위아래로 붙는데 폭이 다르면 층이 어긋나 보인다.
+#: legacy 는 폭 800(메인이미지 700)이었다. 여기서는 **860** 으로 맞춘다.
 #: 안쪽 치수는 legacy 비율 그대로 옮겼다(좌우 여백 50 → 알맹이 760).
 CSS = """
 .gpage{--accent:#E11D48;--ink:#111827;--mute:#6b7280;--soft:#9ca3af;--body:#4b5563;
@@ -388,7 +387,7 @@ class Page:
     비어 있는 칸은 **그리지 않는다.** 없는 것을 지어내지 않는 것이 이 프로젝트의
     규칙이고, 여기서는 화면에서도 그렇게 한다.
 
-    Point 01·02 와 SIZE 는 여기 없다 — 그 자리는 본문(basic/body.py)이 맡는다.
+    Point 01·02 와 SIZE 는 여기 없다.
     """
 
     name_kr: str = ""
@@ -400,7 +399,7 @@ class Page:
     main: Path | None = None
     package: Path | None = None
     feature: Path | None = None
-    #: 원본 메인섹션이 끝나고 본문이 시작되는 첫 밴드 번호
+    #: 원본 메인섹션이 끝나는 자리 — 그 뒤 밴드는 쓰지 않는다
     body_start: int = 0
     #: 세운 밴드 번호들. 보고용 — 어느 컷을 세웠는지 사람이 봐야 한다.
     main_band: int = -1
@@ -431,10 +430,9 @@ def render_page(page: Page) -> str:
     고도몰 쪽 보고서의 금지선 5번과 같은 이유다 — *"기본형과 단순형의 렌더러를
     합치지 말 것. 격리가 회귀 0을 만든 장치다."* 우리도 단순형 49개를 지켜야 한다.
 
-    legacy 의 ① HERO 와 ② KEY FEATURE 만 옮겼다. ④ Point · ⑤ SIZE 는 본문이
-    맡으므로 안 그린다. legacy 의 ⑥ GODO MALL 푸터도 안 그린다 — 본문이 아래에
-    이어 붙으므로 페이지 한가운데에 남의 상호가 박히면 안 된다.
-    ③ 영문명 띠는 남겼다. 메인과 본문 사이의 이음매 노릇을 한다.
+    legacy 의 ① HERO 와 ② KEY FEATURE 만 옮겼다. ④ Point · ⑤ SIZE 는 안 그린다.
+    legacy 의 ⑥ GODO MALL 푸터도 안 그린다 — 페이지에 남의 상호가 박히면 안 된다.
+    ③ 영문명 띠는 남겼다. 아래를 맺는 마무리 노릇을 한다.
     """
 
     def dot(px: int) -> str:
@@ -497,7 +495,7 @@ def render_page(page: Page) -> str:
         out.append(f'<div class="keys__fig">{img(page.feature, page.name_kr)}</div>')
     out.append("</div></section>")
 
-    # ③ 영문명 띠 — 메인과 본문 사이의 이음매
+    # ③ 영문명 띠 — 아래를 맺는 마무리
     if page.name_en:
         out.append(f'<div class="band">{esc("  ·  ".join([page.name_en] * 6))}</div>')
 
@@ -508,8 +506,8 @@ def render_page(page: Page) -> str:
 #: 모델에게 주는 지시. **자르기는 수학, 이해는 AI** — 조각은 우리가 냈고,
 #: 어느 조각이 어느 자리에 어울리는지는 모델이 정한다.
 #:
-#: legacy 에서 Point 01·02 를 뺐다(본문이 맡는다). 대신 **메인이 어디서 끝나는가**
-#: 를 묻는다 — 그 한 숫자가 메인과 본문을 가른다.
+#: legacy 에서 Point 01·02 를 뺐다. 대신 **메인이 어디서 끝나는가** 를 묻는다 —
+#: 그 한 숫자가 우리가 쓸 밴드의 끝이다.
 PROMPT = """쇼핑몰 상세페이지를 새 디자인으로 다시 짓는다. 원본에서 **재료만** 가져온다.
 
 원본은 이미 완성된 디자인이라 그대로 옮기면 남의 쇼핑몰이 따라온다.

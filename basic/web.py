@@ -6,15 +6,13 @@
     /basic/out/<상품번호>     미리보기
     /basic/out/<상품번호>/file  내려받기
 
-흐름 — **상품당 AI 1콜.** 본문은 안 물어본다.
+흐름 — **상품당 AI 1콜. 만드는 것은 메인 섹션뿐이다.**
 
     엑셀 행 → 상세 이미지(gif·공통장식 제외)
       → bands.read 로 전부 밴드로 자른다 (번호는 이미지를 넘어서 이어진다)
       → 【1콜】 main.parts_for + PROMPT → main.take
-                spec · keys · main · feature · package · body_start
-      → 메인  = main.render_page
-      → 본문  = body_start 이후 밴드를 **순서대로 그대로** (판단 없음)
-      → 한 파일: 메인 HTML + 본문 HTML (둘 다 폭 860)
+                spec · keys · 대표컷 · 키피쳐 · 패키지 · 메인이 끝나는 자리
+      → 메인 = main.render_page  (폭 860)
 
 단순형에서 빌려 쓰는 것은 **읽기 전용 다섯**뿐이다 — 엑셀 파서(app.excel),
 상세설명 파서(app.source), 받아 두기(app.convert.fetch), 상품명 가르기
@@ -44,7 +42,7 @@ from app import render as _apprender
 from app import source as _source
 
 from . import bands as B
-from . import boundary, main, render
+from . import boundary, main
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -58,7 +56,7 @@ router = APIRouter()
 #: 올린 엑셀. 단순형의 SHEETS 와 섞지 않는다 — 화면이 둘이면 통도 둘이다.
 SHEETS: dict[str, "_excel.Sheet"] = {}
 
-#: 움직이는 그림은 본문 조각으로 못 쓴다. 밴드로 자르면 첫 장만 남아 뜻이 깨진다.
+#: 움직이는 그림은 재료로 못 쓴다. 밴드로 자르면 첫 장만 남아 뜻이 깨진다.
 SKIP_EXT = (".gif",)
 
 
@@ -383,18 +381,10 @@ def api_basic_convert(req: ConvertReq):
         if cut_main is not None:
             page.main = main.reframe(cut_main, assets / "hero.jpg")
 
-        # ⑥ 본문 — body_start 이후 밴드. **자르기는 이미 끝났다.**
-        body_files = [cuts[n] for n in range(page.body_start, len(cuts))]
-
-        # ⑦ 본문은 **판단하지 않는다.** 밴드를 받은 차례대로 그대로 싣는다.
-        body_html = render.render(body_files)
-        notes.append(f"본문 밴드 {len(body_files)}장을 순서대로 그대로 실었다 — "
-                     "종류를 가르지도, 구간을 열지도, 글자를 덮지도 않는다")
-
         html = ('<!doctype html><meta charset="utf-8">'
                 '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/'
                 'pretendard@v1.3.9/dist/web/static/pretendard.min.css">'
-                + main.render_page(page) + body_html)
+                + main.render_page(page))
         (out / "index.html").write_text(html, encoding="utf-8", newline="\n")
     except HTTPException:
         raise
@@ -402,10 +392,9 @@ def api_basic_convert(req: ConvertReq):
         traceback.print_exc()
         raise HTTPException(500, f"변환 실패: {e}") from e
 
-    log = [f"밴드 {len(cuts)}개 · body_start {page.body_start}({source_of_start})"
-           f" → 본문 밴드 {len(body_files)}개"]
+    log = [f"밴드 {len(cuts)}개 · 메인이 끝나는 자리 {page.body_start}({source_of_start})"]
     log += [f"  [{i:3}] img{e.image} y={e.band.y:6d} h={e.band.height:5d} {k:8}"
-            f"{'  ← 본문 시작' if i == page.body_start else ''}"
+            f"{'  ← 메인 끝' if i == page.body_start else ''}"
             for i, (e, k) in enumerate(zip(entries, kinds))]
     (out / "log.txt").write_text("\n".join(log), encoding="utf-8")
 
@@ -413,7 +402,6 @@ def api_basic_convert(req: ConvertReq):
             "used": urls, "skipped": skipped,
             "bands": len(cuts), "body_start": page.body_start,
             "body_start_from": source_of_start, "fallback_body_start": fallback,
-            "body_bands": len(body_files),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
             "hero": bool(page.main), "hero_band": page.main_band,
             "feature": bool(page.feature), "feature_band": page.feature_band,
@@ -473,7 +461,7 @@ pre{font-size:12px;color:#6b7280;white-space:pre-wrap;margin-top:6px;line-height
 </style>
 <div class="wrap">
   <h1>기본형 변환기</h1>
-  <div class="sub">원본을 재료로만 쓴다 — 메인은 새로 세우고, 본문은 밴드로 다시 짠다. 단순형과 따로 돈다.</div>
+  <div class="sub">원본을 재료로만 쓴다 — 메인 섹션을 새로 세운다. 단순형과 따로 돈다.</div>
 
   <div class="card">
     <label class="file">엑셀 올리기 <input type="file" id="f" accept=".xlsx,.xls"></label>
@@ -540,7 +528,7 @@ $('#f').onchange = async e => {
           const det = document.createElement('details');
           const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');
           const keys = (d2.keys || []).map(k => `  · ${k[0]} — ${k[1]}`).join('\\n');
-          det.innerHTML = `<summary>밴드 ${d2.bands}개 · 본문 밴드 ${d2.body_bands}개 · ${Math.round(d2.bytes/1024)}KB</summary>
+          det.innerHTML = `<summary>밴드 ${d2.bands}개 · ${Math.round(d2.bytes/1024)}KB</summary>
             <pre>AI notes:\\n  ${(d2.notes||[]).join('\\n  ')}\\n\\n요약정보:\\n${spec || '  (없음)'}\\n\\n핵심특징:\\n${keys || '  (없음)'}\\n\\n쓴 것:\\n  ${d2.used.join('\\n  ')}${d2.skipped.length ? '\\n\\n뺀 것:\\n  ' + d2.skipped.join('\\n  ') : ''}</pre>`;
           links.appendChild(det);
         } catch (err) {
