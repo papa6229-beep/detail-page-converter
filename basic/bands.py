@@ -25,7 +25,7 @@ import numpy as np
 #: 여백 분할 — `splitImageByWhitespace` 의 기본값 그대로.
 WHITE_THR = 232      #: 이 밝기 이상이면 '흰 배경' 화소
 WHITE_FRAC = 0.98    #: 행이 '빈 행'이 되려면 흰 화소가 이만큼
-MIN_GAP = 24         #: 분할로 인정할 최소 여백 높이 (legacy 40 → 24: 원본 폭 500~800px 은 섹션 간격이 25~35px 다. 글줄 간격은 8~12px 라 안 갈린다)
+MIN_GAP = 24         #: 분할로 인정할 최소 여백 높이 (legacy 40 → 24: 원본 폭 500~800px 은 구간 간격이 25~35px 다. 글줄 간격은 8~12px 라 안 갈린다)
 MIN_SEG = 12         #: 유지할 최소 조각 높이 (구분선·잡음 제거)
 SAMPLE_COLS = 64     #: 행마다 몇 열을 찍어 볼지
 
