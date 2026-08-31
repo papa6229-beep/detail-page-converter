@@ -94,6 +94,27 @@ shot 밴드의 글은 읽지 않는다. **그런 밴드는 자르지도 덮지�
 `kinds` 는 짧은 글 배열이고 `texts` 는 번호→글 이다. **그 안에 또 중괄호를 만들지 마라.**
 """
 
+BLOB_PROMPT = """그림에서 **덩어리**를 찾아 빨간 네모와 번호를 그려 두었다.
+번호마다 하나만 답하라 — **이것이 글자인가, 아닌가.**
+
+  · 글자면 그 글을 **그대로 읽어서** 적는다. 고치거나 보태거나 요약하지 마라.
+  · 글자가 아니면(제품 사진, 제품에 인쇄된 상표, 워터마크, 지시선, 무늬)
+    **그 번호를 빼고** 답한다. 안 적힌 번호는 글자가 아닌 것으로 본다.
+  · 지울지 말지는 묻지 않았다. **글자냐 아니냐만** 답하라.
+  · 한 네모에 글이 여러 줄이면 줄바꿈을 살려 다 적는다.
+  · 빨간 네모와 번호는 우리가 그린 것이다. 그건 읽지 마라.
+
+**돌려줄 것 — JSON 하나. 다른 말은 붙이지 마라.**
+
+```json
+{"lines":["0-1|전원 버튼을 길게 누르면 전원이 켜지고","0-3|물결 버튼을 누를때 마다",
+          "2-1|무게: 약 97g"]}
+```
+
+한 줄은 `밴드번호-네모번호|글` 이다. 밴드번호는 우리가 `[3]` 처럼 붙여 보낸 번호,
+네모번호는 그림에 그려 둔 번호다. **그 안에 또 중괄호를 만들지 마라.**
+"""
+
 TITLE, BODY, PHOTO, SHOT, DECOR = "title", "body", "photo", "shot", "decor"
 KINDS = (TITLE, BODY, PHOTO, SHOT, DECOR)
 
@@ -155,6 +176,50 @@ def parse(reply: str) -> tuple[dict[int, str], dict[int, str]]:
             texts[int(digits)] = str(v)
     return kinds, texts
 
+
+
+def parse_blobs(reply: str) -> dict[int, dict[int, str]]:
+    """모델 답 → {밴드: {덩어리번호: 글}}. **안 적힌 번호는 글자가 아니다.**"""
+    m = re.search(r"\{[\s\S]*\}", reply or "")
+    if not m:
+        return {}
+    try:
+        got = json.loads(m.group(0))
+    except json.JSONDecodeError:
+        return {}
+    out: dict[int, dict[int, str]] = {}
+    for line in got.get("lines") or []:
+        head, _, text = str(line).partition("|")
+        nums = re.findall(r"\d+", head)
+        if len(nums) == 2 and text.strip():
+            out.setdefault(int(nums[0]), {})[int(nums[1])] = text.strip()
+    return out
+
+
+def read_blobs(key: str, sheets: list[tuple[int, Path]], timeout: int = 240,
+               tries: int = 2) -> dict[int, dict[int, str]]:
+    """번호를 그려 둔 그림을 보내고 **번호마다 글자인지**를 받는다."""
+    llm = _llm()
+    parts: list[tuple[str, str]] = [("text", BLOB_PROMPT)]
+    parts.append(("text", f"덩어리에 번호를 그려 둔 밴드 {len(sheets)}장을 보냅니다."))
+    for n, path in sheets:
+        parts.append(("text", f"[{n}]"))
+        parts.append(("image", _shrunk_b64(path)))
+
+    url, headers, payload = llm.build(key, parts, max_tokens=8000)
+    from .web import _pin
+
+    payload = _pin(payload)
+    for n in range(tries):
+        req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            got = json.loads(r.read())
+        text, _stop = llm.extract(key, got)
+        lines = parse_blobs(text)
+        if lines:
+            return lines
+        print(f"[basic] 덩어리 답을 못 읽었다 — 다시 묻는다 ({n + 1}/{tries})", flush=True)
+    return {}
 
 
 def read(key: str, bands: list[Path], timeout: int = 240,

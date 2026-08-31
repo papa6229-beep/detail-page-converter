@@ -48,7 +48,7 @@ from collections import Counter
 from dataclasses import dataclass
 
 from . import bands as B
-from . import body, boundary, main, read_text, render
+from . import blobs, body, boundary, main, read_text, render
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -201,6 +201,129 @@ def choose_never_blank(facts, kinds, hashes, options):
     if feat < 0:
         notes.append("키피쳐 — 조건을 다 풀어도 쓸 밴드가 없다")
     return hero, feat, pkg, notes
+
+
+#: 덩어리에 그리는 빨간 네모와 번호표. 번호는 크게 그린다 — 작게 그렸더니 모델이
+#: 옆 번호로 잘못 읽어 글이 한 칸씩 밀렸다.
+MARK_RED, MARK_PEN, MARK_TAG = (220, 0, 0), 2, 24
+#: 글자 크기를 되짚는 값. 한글 글자는 제 크기의 이만큼만 잉크로 채운다.
+#: 잰 잉크 높이를 이것으로 나눠야 원본과 같은 크기가 된다.
+INK_FILL = 0.72
+
+
+def _tag_font():
+    from PIL import ImageFont
+
+    for name in ("malgunbd.ttf", "arialbd.ttf", "arial.ttf"):
+        try:
+            return ImageFont.truetype(name, MARK_TAG)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def blob_sheet(band: Path, found: list, dest_dir: Path) -> Path:
+    """덩어리마다 **빨간 네모와 번호**를 그린 그림. 모델에게 이것을 보여 준다."""
+    from PIL import ImageDraw
+
+    im = Image.open(band).convert("RGB")
+    d = ImageDraw.Draw(im)
+    font = _tag_font()
+    for b in found:
+        x0, y0, x1, y1 = b.box
+        d.rectangle([x0 - 1, y0 - 1, x1, y1], outline=MARK_RED, width=MARK_PEN)
+        tx, ty = max(0, x0 - MARK_TAG - 6), max(0, y0 - 2)
+        d.rectangle([tx, ty, tx + MARK_TAG + 4, ty + MARK_TAG + 4],
+                    fill=(255, 255, 255), outline=MARK_RED, width=2)
+        d.text((tx + 4, ty + 1), str(b.n), fill=MARK_RED, font=font)
+    f = dest_dir / f"{band.stem}_ask.jpg"
+    im.save(f, quality=92)
+    return f
+
+
+def wrap_of(b, found: list) -> list:
+    """그 덩어리를 **감싼 상자·테두리·배지**. 글자와 함께 덮는다.
+
+    글자를 두른 네모나 알약 배지는 글자와 붙어 있지 않아 따로 덩어리가 된다.
+    글자만 덮고 테두리를 남기면 빈 네모가 떠 있게 된다.
+    """
+    return [o for o in found if o.n != b.n and (b.inside(o) or o.inside(b))]
+
+
+def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
+            notes: list[str]):
+    """사진에 박힌 글을 **덮고 그 자리에 다시 쓴다.** `(밴드 파일, {밴드: [Mark…]})`.
+
+    묻는 것은 하나뿐이다 — **이 덩어리가 글자냐 아니냐.** 지울지 말지는 안 묻는다.
+    그건 아래 순서가 정한다.
+
+        ① 덩어리로 나눈다 (`blobs.split` — 1px 깎아 지시선을 끊고 되돌린다)
+        ② 모델에게 번호마다 글자냐고 묻는다
+        ③ 글자라고 한 덩어리 중 **제자리에 다른 덩어리 픽셀이 있는 것**은 건너뛴다
+           — 제품 사진 위에 얹힌 글이다. 덮으면 사진이 뚫린다
+        ④ 남은 것을 감싼 상자·테두리·배지까지 배경색으로 덮고, 그 자리와 잉크 높이를
+           적어 둔다. 덮은 자리에 우리 폰트로 그 글을 다시 쓴다
+
+    지시선은 어느 덩어리에도 안 속하므로 덮이지 않는다. 규칙을 따로 안 써도 남는다.
+    """
+    files = list(body_files)
+    shots = [n for n, k in kinds_of.items() if k == body.SHOT and 0 <= n < len(files)]
+    if not shots or not key:
+        if shots:
+            notes.append(f"글이 박힌 밴드 {len(shots)}장은 안 물어봤다 — 키가 없다")
+        return files, {}
+
+    seen: dict[int, tuple] = {}
+    sheets = []
+    for n in shots:
+        arr = np.asarray(Image.open(files[n]).convert("RGB"))
+        bg = blobs.modal_color(arr)
+        lab, found = blobs.split(arr, bg)
+        if found:
+            seen[n] = (arr, bg, lab, found)
+            sheets.append((n, blob_sheet(files[n], found, assets)))
+    if not sheets:
+        return files, {}
+
+    said = read_text.read_blobs(key, sheets)
+    marks: dict[int, list] = {}
+    done = skipped = 0
+    for n, (arr, bg, lab, found) in seen.items():
+        words = said.get(n, {})
+        letters = [b for b in found if b.n in words]
+        rest = [b for b in found if b.n not in words]
+        photos = [b for b in found if blobs.is_photo(arr, lab, b)]
+        take, put = [], []
+        for b in letters:
+            ink = blobs.ink_height(lab, b)
+            if b in photos:
+                skipped += 1          # 제품 사진이다. 모델이 뭐라 했든 안 건드린다
+                continue
+            if not blobs.fits(b, words[b.n], ink):
+                skipped += 1          # 그 자리에 안 들어가는 글이다 — 번호를 잘못 짚었다
+                continue
+            wrap = wrap_of(b, found)
+            others = [o for o in rest if o not in wrap] + [p for p in photos if p is not b]
+            if blobs.sits_on(lab, b, others):
+                skipped += 1          # 사진 위에 얹힌 글이다. 덮으면 사진이 뚫린다
+                continue
+            take += [b, *wrap]
+            box = b.box
+            put.append(body.Mark(box[0], box[1], box[2] - box[0], box[3] - box[1],
+                                 words[b.n], ink))
+        if not take:
+            continue
+        flat = blobs.cover(arr, lab, take, bg)
+        f = assets / f"{files[n].stem}_flat.jpg"
+        Image.fromarray(flat).save(f, quality=92)
+        files[n], marks[n] = f, put
+        done += 1
+    if done:
+        notes.append(f"사진에 박혀 있던 글 {sum(len(v) for v in marks.values())}덩어리를 "
+                     f"밴드 {done}장에서 덮고 제자리에 다시 썼다")
+    if skipped:
+        notes.append(f"글 {skipped}덩어리는 제품 사진 위에 놓여 있다 — 손대지 않았다")
+    return files, marks
 
 
 def refine(key: str, body_files: list[Path], kinds_of: dict, texts_of: dict,
@@ -448,7 +571,9 @@ def api_basic_convert(req: ConvertReq):
 
         body_files, kinds_of, texts_of = refine(
             key, body_files, kinds_of, texts_of, assets, notes)
-        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files])
+        body_files, marks_of = relabel(key, body_files, kinds_of, assets, notes)
+        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files],
+                                  marks_of)
         seen = Counter(p.kind for p in pieces)
         notes.append("본문 종류 — " + " · ".join(
             f"{k} {seen[k]}" for k in ("title", "body", "photo", "shot", "decor") if seen[k]))

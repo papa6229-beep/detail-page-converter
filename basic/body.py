@@ -8,8 +8,8 @@
 **지키는 것은 셋뿐이다.**
 
     ㉠ 원본 밴드는 하나도 버리지 않는다. 글자로 바뀐 것 말고는 전부 사진으로 싣는다.
-    ㉡ 사진에 글이 박혀 있으면 **자르지도 덮지도 않고 통째로** 싣는다. 그 글은
-       그림 안에서 제자리를 지킨다. 손대면 잃는 것이 얻는 것보다 컸다.
+    ㉡ 사진에 박힌 글은 **덮고 그 자리에 다시 쓴다.** 자르지 않는다. 무엇이 글자인지는
+       모델이 덩어리마다 말해 주고(`web.relabel`), 코드는 덮고 놓기만 한다.
     ㉢ 섹션은 원본대로. 제목이 새 섹션을 연다. 사진도 설명도 없는 섹션은 만들지 않는다.
 
 **예전에는 여기서 픽셀로 판정했다.** 밴드의 어두운 덩어리를 세어 제목인지 설명인지
@@ -35,6 +35,22 @@ CONTENT = (BODY, PHOTO, SHOT)
 
 
 @dataclass
+class Mark:
+    """사진에서 **덮은 자리**와 거기 있던 글. 자리는 그 밴드 안의 픽셀 좌표다.
+
+    `ink` 는 원본 글자의 실제 높이다. 상자 높이가 아니다 — 상자에 꽉 채워 쓰면
+    원본보다 커져서 아래 줄과 겹친다.
+    """
+
+    x: int
+    y: int
+    w: int
+    h: int
+    text: str
+    ink: int = 0
+
+
+@dataclass
 class Piece:
     """본문 밴드 하나."""
 
@@ -42,6 +58,7 @@ class Piece:
     band: int              #: 본문 안에서 몇 번째 밴드인가 (0 부터)
     file: str = ""         #: 밴드 그림 파일 이름
     text: str = ""         #: 제목·설명이면 모델이 읽은 글
+    marks: list[Mark] = field(default_factory=list)   #: 덮은 자리에 다시 쓸 글
 
 
 @dataclass
@@ -64,12 +81,14 @@ class Section:
         return any(p.kind in CONTENT for p in self.items)
 
 
-def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) -> list[Piece]:
+def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str],
+                marks: dict[int, list] | None = None) -> list[Piece]:
     """모델이 말한 것을 조각으로. **밴드는 하나도 안 버린다.**
 
     말 안 해 준 밴드는 사진으로 둔다. 빠뜨린 밴드를 버리면 원본에 있던 그림이
     조용히 사라진다. 사진으로 두면 최악이라도 원본이 실린다.
     """
+    got = marks or {}
     out = []
     for i, f in enumerate(files):
         kind = kinds.get(i, PHOTO)
@@ -80,7 +99,8 @@ def pieces_from(kinds: dict[int, str], texts: dict[int, str], files: list[str]) 
         # 꼬인다. 다시 물어도 글이 없으면 **그림으로** 싣는다 — 버리지 않는다.
         if kind == TITLE and not text.strip():
             kind = DECOR
-        out.append(Piece(kind, i, file=f, text=text))
+        out.append(Piece(kind, i, file=f, text=text,
+                         marks=list(got.get(i, [])) if kind in IMAGES else []))
     return out
 
 

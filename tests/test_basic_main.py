@@ -407,16 +407,84 @@ def test_section_numbers_have_no_holes():
 
 
 
-def test_a_shot_is_carried_whole(tmp_path):
-    """사진에 글이 박힌 밴드는 **자르지도 덮지도 않는다.** 그림 하나로 실린다."""
+def test_the_modal_colour_wins_not_the_border():
+    """③ 배경색은 **전체 최빈색**. 옅은 테두리 프레임이 있어도 진짜 배경이 이긴다."""
+    import numpy as np
+
+    from basic import blobs
+    im = np.full((100, 100, 3), 255, np.uint8)
+    im[0, :] = im[-1, :] = im[:, 0] = im[:, -1] = (200, 200, 200)   # 회색 테두리
+    assert blobs.modal_color(im).mean() > 250
+
+
+def test_a_thin_line_does_not_join_two_blobs():
+    """① 1px 깎아 얇은 선을 끊는다. 선은 어느 덩어리에도 안 속해 그대로 남는다."""
+    import numpy as np
+
+    from basic import blobs
+    im = np.full((60, 200, 3), 255, np.uint8)
+    im[20:40, 10:50] = 0                 # 왼쪽 덩어리
+    im[20:40, 150:190] = 0               # 오른쪽 덩어리
+    im[29:30, 50:150] = 0                # 둘을 잇는 1px 선
+    lab, found = blobs.split(im)
+    assert len(found) == 2               # 선으로 이어져도 둘이다
+    assert lab[29, 100] == 0             # 선은 어느 덩어리도 아니다 → 안 덮인다
+
+
+def test_a_covered_blob_leaves_the_thin_line_alone():
+    """제품에서 뻗어나온 선은 덮이지 않는다."""
+    import numpy as np
+
+    from basic import blobs
+    im = np.full((60, 200, 3), 255, np.uint8)
+    im[20:40, 150:190] = 0
+    im[29:30, 50:150] = 0
+    lab, found = blobs.split(im)
+    got = blobs.cover(im, lab, found, blobs.modal_color(im))
+    assert (got[20:40, 150:190] > 200).all()      # 덩어리는 덮였다
+    assert (got[29, 60:140] < 100).any()          # 선은 남았다
+
+
+def test_on_the_photo_is_decided_by_pixels_not_by_boxes():
+    """② 상자가 겹쳐도 그 자리에 픽셀이 없으면 사진 위가 아니다."""
+    import numpy as np
+
+    from basic import blobs
+    im = np.full((100, 200, 3), 255, np.uint8)
+    for x in range(10, 180):                      # 비스듬히 놓인 제품 — 상자가 넓다
+        y = 10 + (x - 10) * 80 // 170
+        im[y:y + 6, x] = 0
+    im[12:26, 140:176] = 0                        # 그 위쪽에 나란히 있는 글
+    lab, found = blobs.split(im)
+    tilted = max(found, key=lambda b: b.area)
+    beside = min(found, key=lambda b: b.area)
+    assert beside.box[0] < tilted.box[2]          # 상자는 겹친다
+    assert not blobs.sits_on(lab, beside, [tilted])   # 픽셀은 안 겹친다
+
+
+def test_the_ink_height_is_measured_not_the_box():
+    """④ 상자 높이가 아니라 잉크가 닿은 높이."""
+    import numpy as np
+
+    from basic import blobs
+    im = np.full((60, 200, 3), 255, np.uint8)
+    im[20:30, 20:180] = 0                          # 높이 10 짜리 글줄 하나
+    lab, found = blobs.split(im)
+    assert blobs.ink_height(lab, found[0]) <= found[0].h
+
+
+def test_a_mark_is_written_at_the_ink_height(tmp_path):
+    """덮은 자리에 **잰 크기로** 쓴다. 상자에 꽉 채우지 않는다."""
     from PIL import Image
 
     from basic import body, render
     Image.new("RGB", (800, 400), "white").save(tmp_path / "band_000.jpg")
-    sec = body.Section(1, items=[body.Piece(body.SHOT, 0, file="band_000.jpg")])
+    sec = body.Section(1, items=[body.Piece(body.SHOT, 0, file="band_000.jpg",
+                                            marks=[body.Mark(80, 40, 300, 90, "설명", ink=18)])])
     html = render.render([sec], tmp_path, embed=False)
-    assert html.count("<img") == 1 and "band_000.jpg" in html
-    assert 'class="lay"' not in html and "position:absolute" not in render.CSS
+    assert 'class="lay" style="width:800px"' in html
+    assert "left:10.00%;top:10.00%;width:37.50%" in html
+    assert f"font-size:{18 / render.INK_FILL:.1f}px" in html      # 상자(90)가 아니라 잉크(18)
 
 
 def test_refine_only_asks_about_titles_without_text(tmp_path):

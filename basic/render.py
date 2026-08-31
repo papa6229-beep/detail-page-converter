@@ -17,6 +17,13 @@ CSS = """
 .bpage h2{font-size:28px;font-weight:800;letter-spacing:-.02em;color:#1a2440;margin:8px 0 22px;line-height:1.25}
 .bpage figure{margin:0 0 18px;text-align:center}
 .bpage figure img{max-width:100%;height:auto;display:inline-block}
+/* 사진에서 덮은 자리에 그 글을 우리 폰트로 다시 쓴다. 자리는 덮을 때 적어 둔
+   상자 그대로고, 글자 크기는 **원본 글자의 실제 높이**다 — 상자에 꽉 채우면
+   원본보다 커져서 아래 줄과 겹친다. `cqw` 는 좁은 화면에서 같이 줄어들라고 얹는다. */
+.bpage .lay{position:relative;display:inline-block;max-width:100%;container-type:inline-size}
+.bpage .lay img{width:100%}
+.bpage .lay .mk{position:absolute;margin:0;text-align:left;line-height:1.35;
+  color:#2b2f3a;white-space:pre-wrap;overflow-wrap:break-word}
 .bpage p{font-size:16px;line-height:1.9;margin:6px 0 14px}
 .bpage p+p{margin-top:0}
 .bpage strong{font-weight:800;color:#1a2440}
@@ -62,6 +69,41 @@ def _paras(text: str) -> str:
 
 
 
+#: 한글 글자는 제 크기의 이만큼만 잉크로 채운다. 잰 잉크 높이를 이것으로 나눠야
+#: 원본과 같은 크기로 앉는다. 잉크 높이를 그대로 쓰면 눈에 띄게 작아진다.
+INK_FILL = 0.72
+
+
+def _size(path: Path):
+    """그림의 픽셀 크기. 못 열면 None — 그러면 글은 안 쓰고 원본만 싣는다."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
+def _shot(piece, url: str, assets: Path) -> str:
+    """사진 하나. 덮은 자리가 있으면 **그 자리에 그 글을 다시 쓴다.**"""
+    plain = f'<img src="{url}" alt="">'
+    size = _size(assets / piece.file) if piece.marks else None
+    if not size:
+        return plain
+    w, h = size
+    # 폭을 **바깥에서** 준다. `container-type` 은 안쪽 내용에서 폭을 못 받아,
+    # 안 주면 상자가 0px 이 되고 `cqw` 로 잰 글자가 0px 이 된다.
+    out = [f'<span class="lay" style="width:{w}px">{plain}']
+    for m in piece.marks:
+        f = max(1.0, (m.ink or m.h) / INK_FILL)
+        out.append(f'<p class="mk" style="left:{m.x / w * 100:.2f}%;'
+                   f'top:{m.y / h * 100:.2f}%;width:{m.w / w * 100:.2f}%;'
+                   f'font-size:{f:.1f}px;font-size:{f / w * 100:.2f}cqw">'
+                   f"{_emph(m.text)}</p>")
+    return "".join(out) + "</span>"
+
+
 def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
     """섹션들을 HTML 로. **놓기만 한다** — 무엇인지는 이미 정해져 왔다."""
     def src(name: str) -> str:
@@ -80,7 +122,7 @@ def render(secs: list[Section], assets: Path, embed: bool = True) -> str:
                        else as_is(s.title))
         for it in s.items:
             if it.kind in IMAGES:
-                out.append(f'<figure><img src="{src(it.file)}" alt=""></figure>')
+                out.append(f"<figure>{_shot(it, src(it.file), assets)}</figure>")
             elif it.kind == BODY:
                 out.append(_paras(it.text) if it.text.strip() else as_is(it))
         out.append("</section>")
