@@ -6,15 +6,14 @@
     /basic/out/<상품번호>     미리보기
     /basic/out/<상품번호>/file  내려받기
 
-흐름 — **상품당 AI 2콜.**
+흐름 — **상품당 AI 1콜.** 본문은 안 물어본다.
 
     엑셀 행 → 상세 이미지(gif·공통장식 제외)
       → bands.read 로 전부 밴드로 자른다 (번호는 이미지를 넘어서 이어진다)
       → 【1콜】 main.parts_for + PROMPT → main.take
                 spec · keys · main · feature · package · body_start
       → 메인  = main.render_page
-      → 본문  = body_start 이후 밴드만 body.sections
-      → 【2콜】 read_text — **본문 글자 조각만.** 메인 것은 1콜에서 이미 나왔다
+      → 본문  = body_start 이후 밴드를 **순서대로 그대로** (판단 없음)
       → 한 파일: 메인 HTML + 본문 HTML (둘 다 폭 860)
 
 단순형에서 빌려 쓰는 것은 **읽기 전용 다섯**뿐이다 — 엑셀 파서(app.excel),
@@ -28,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
 import traceback
 import urllib.request
 from pathlib import Path
@@ -45,11 +43,8 @@ from app import llm as _llm
 from app import render as _apprender
 from app import source as _source
 
-from collections import Counter
-from dataclasses import dataclass
-
 from . import bands as B
-from . import blobs, body, boundary, main, read_text, render
+from . import boundary, main, render
 
 Image.MAX_IMAGE_PIXELS = None
 
@@ -202,180 +197,6 @@ def choose_never_blank(facts, kinds, hashes, options):
     if feat < 0:
         notes.append("키피쳐 — 조건을 다 풀어도 쓸 밴드가 없다")
     return hero, feat, pkg, notes
-
-
-#: 덩어리에 그리는 빨간 네모와 번호표. 번호는 크게 그린다 — 작게 그렸더니 모델이
-#: 옆 번호로 잘못 읽어 글이 한 칸씩 밀렸다.
-MARK_RED, MARK_PEN, MARK_TAG = (220, 0, 0), 2, 24
-#: 글자 크기를 되짚는 값. 한글 글자는 제 크기의 이만큼만 잉크로 채운다.
-#: 잰 잉크 높이를 이것으로 나눠야 원본과 같은 크기가 된다.
-INK_FILL = 0.72
-
-
-def _tag_font():
-    from PIL import ImageFont
-
-    for name in ("malgunbd.ttf", "arialbd.ttf", "arial.ttf"):
-        try:
-            return ImageFont.truetype(name, MARK_TAG)
-        except OSError:
-            continue
-    return ImageFont.load_default()
-
-
-def blob_sheet(band: Path, found: list, dest_dir: Path) -> Path:
-    """덩어리마다 **빨간 네모와 번호**를 그린 그림. 모델에게 이것을 보여 준다."""
-    from PIL import ImageDraw
-
-    im = Image.open(band).convert("RGB")
-    d = ImageDraw.Draw(im)
-    font = _tag_font()
-    for b in found:
-        x0, y0, x1, y1 = b.box
-        d.rectangle([x0 - 1, y0 - 1, x1, y1], outline=MARK_RED, width=MARK_PEN)
-        tx, ty = max(0, x0 - MARK_TAG - 6), max(0, y0 - 2)
-        d.rectangle([tx, ty, tx + MARK_TAG + 4, ty + MARK_TAG + 4],
-                    fill=(255, 255, 255), outline=MARK_RED, width=2)
-        d.text((tx + 4, ty + 1), str(b.n), fill=MARK_RED, font=font)
-    f = dest_dir / f"{band.stem}.jpg"
-    im.save(f, quality=92)
-    return f
-
-
-def wrap_of(b, found: list) -> list:
-    """그 덩어리를 **감싼 상자·테두리·배지**. 글자와 함께 덮는다.
-
-    글자를 두른 네모나 알약 배지는 글자와 붙어 있지 않아 따로 덩어리가 된다.
-    글자만 덮고 테두리를 남기면 빈 네모가 떠 있게 된다.
-    """
-    return [o for o in found if o.n != b.n and (b.inside(o) or o.inside(b))]
-
-
-def relabel(key: str, body_files: list[Path], kinds_of: dict, assets: Path,
-            notes: list[str]):
-    """사진에 박힌 글을 **덮고 그 자리에 다시 쓴다.** `(밴드 파일, {밴드: [Mark…]})`.
-
-    묻는 것은 하나뿐이다 — **이 덩어리가 글자냐 아니냐.** 지울지 말지는 안 묻는다.
-    그건 아래 순서가 정한다.
-
-        ① 덩어리로 나눈다 (`blobs.split` — 1px 깎아 지시선을 끊고 되돌린다)
-        ② 모델에게 번호마다 글자냐고 묻는다
-        ③ 글자라고 한 덩어리 중 **제자리에 다른 덩어리 픽셀이 있는 것**은 건너뛴다
-           — 제품 사진 위에 얹힌 글이다. 덮으면 사진이 뚫린다
-        ④ 남은 것을 감싼 상자·테두리·배지까지 배경색으로 덮고, 그 자리와 잉크 높이를
-           적어 둔다. 덮은 자리에 우리 폰트로 그 글을 다시 쓴다
-
-    지시선은 어느 덩어리에도 안 속하므로 덮이지 않는다. 규칙을 따로 안 써도 남는다.
-    """
-    files = list(body_files)
-    shots = [n for n, k in kinds_of.items() if k == body.SHOT and 0 <= n < len(files)]
-    if not shots or not key:
-        if shots:
-            notes.append(f"글이 박힌 밴드 {len(shots)}장은 안 물어봤다 — 키가 없다")
-        return files, {}
-
-    # 번호를 그린 그림은 **물어보는 데만** 쓴다. 결과에 섞이면 빨간 네모가 페이지에
-    # 그대로 실린다. 딴 방에 그렸다가 묻고 나서 방째로 버린다.
-    ask_dir = assets / "_ask"
-    ask_dir.mkdir(parents=True, exist_ok=True)
-    seen: dict[int, tuple] = {}
-    sheets = []
-    for n in shots:
-        arr = np.asarray(Image.open(files[n]).convert("RGB"))
-        bg = blobs.modal_color(arr)
-        lab, found = blobs.split(arr, bg)
-        if found:
-            seen[n] = (arr, bg, lab, found)
-            sheets.append((n, blob_sheet(files[n], found, ask_dir)))
-    if not sheets:
-        shutil.rmtree(ask_dir, ignore_errors=True)
-        return files, {}
-
-    said = read_text.read_blobs(key, sheets)
-    shutil.rmtree(ask_dir, ignore_errors=True)
-    marks: dict[int, list] = {}
-    done = skipped = 0
-    for n, (arr, bg, lab, found) in seen.items():
-        words = said.get(n, {})
-        letters = [b for b in found if b.n in words]
-        rest = [b for b in found if b.n not in words]
-        photos = [b for b in found if blobs.is_photo(arr, lab, b)]
-        # **덮은 자리만 목록에 들어간다.** 덮기와 다시 쓰기를 따로 판정하면, 못 덮은
-        # 자리에도 새 글자가 그려져 원본 글자와 겹친다. 목록은 하나뿐이다.
-        covered = []
-        for b in letters:
-            ink = blobs.ink_height(lab, b)
-            if b in photos:
-                skipped += 1          # 제품 사진이다. 모델이 뭐라 했든 안 건드린다
-                continue
-            if not blobs.fits(b, words[b.n], ink):
-                skipped += 1          # 그 자리에 안 들어가는 글이다 — 번호를 잘못 짚었다
-                continue
-            wrap = wrap_of(b, found)
-            box = blobs.union([b.box, *(w.box for w in wrap)])
-            others = [o for o in rest if o not in wrap] + [p for p in photos if p is not b]
-            if blobs.sits_on(lab, box, others):
-                skipped += 1          # 남의 픽셀이 그 안에 있다. 칠하면 그것까지 지워진다
-                continue
-            covered.append((box, words[b.n], ink))
-        if not covered:
-            continue
-        flat = blobs.cover(arr, [c[0] for c in covered], bg)
-        f = assets / f"{files[n].stem}_flat.jpg"
-        Image.fromarray(flat).save(f, quality=92)
-        files[n] = f
-        marks[n] = [body.Mark(x0, y0, x1 - x0, y1 - y0, text, ink)
-                    for (x0, y0, x1, y1), text, ink in covered]
-        done += 1
-    if done:
-        notes.append(f"사진에 박혀 있던 글 {sum(len(v) for v in marks.values())}덩어리를 "
-                     f"밴드 {done}장에서 덮고 제자리에 다시 썼다")
-    if skipped:
-        notes.append(f"글 {skipped}덩어리는 제품 사진 위에 놓여 있다 — 손대지 않았다")
-    return files, marks
-
-
-def refine(key: str, body_files: list[Path], kinds_of: dict, texts_of: dict,
-           assets: Path, notes: list[str]):
-    """모델 답을 한 번 더 다듬는다. 하는 일은 **하나**뿐이다 —
-    `title` 이라고 해 놓고 글을 안 준 밴드를 다시 묻는다. 그래도 없으면
-    `pieces_from` 이 그림으로 싣는다.
-
-    **사진에 글이 박힌 밴드는 손대지 않는다.** 자르지도 덮지도 않고 통째로 싣는다.
-    여기서 세 가지를 해 봤고 셋 다 원본보다 나빴다.
-
-        가로 되자르기   글이 사진 밑에 붙은 밴드를 촘촘한 여백으로 갈랐다.
-                      갈리지 않는 밴드가 더 많았고, 갈린 곳은 지시선이 끊겼다.
-        세로 되자르기   글이 사진 옆에 있는 밴드를 세로로 갈랐다.
-                      핑거위글 버튼 도해가 반으로 갈려 분홍 지시선과 라벨이 갈라졌다.
-        덮고 다시 얹기  글자 픽셀을 배경색으로 덮고 그 자리에 읽은 글을 얹었다.
-                      문단은 글줄이 세로로 이어져 한 덩어리가 되는데, 글줄을 고르는
-                      거르개가 높이 70을 넘는 덩어리를 버려서 **문단이 통째로 안
-                      잡혔다.** 남은 것은 제품 위 부스러기 둘뿐이었고, 거기를 덮고
-                      거기에 5px 짜리 글을 얹었다 — 본문은 그대로인데 사진만
-                      지저분해졌다.
-
-    셋 다 공통점이 있다. **원본은 사진과 글을 한 덩어리로 짜 놓은 디자인**인데,
-    우리가 그 덩어리를 반쯤 뜯으면 뜯긴 자국만 남는다. 통째로 실으면 손님은 원본
-    그대로를 본다. 그 글이 우리 글이 아니라는 것 말고는 잃는 것이 없다.
-    """
-    ask = [n for n, k in kinds_of.items()
-           if k == body.TITLE and not texts_of.get(n, "").strip()]
-    if not ask:
-        return list(body_files), dict(kinds_of), dict(texts_of)
-
-    kinds, texts = dict(kinds_of), dict(texts_of)
-    if key:
-        notes.append(f"글 없는 제목 {len(ask)}장을 다시 물었다")
-        k2, t2 = read_text.read(key, [body_files[n] for n in ask])
-        for j, n in enumerate(ask):
-            if j in k2:
-                kinds[n] = k2[j]
-            if j in t2:
-                texts[n] = t2[j]
-    else:
-        notes.append(f"글 없는 제목 {len(ask)}장은 다시 못 물었다 — 키가 없다")
-    return list(body_files), kinds, texts
 
 
 def ask_model(key: str, parts, timeout: int = 240, tries: int = 2) -> str:
@@ -565,37 +386,11 @@ def api_basic_convert(req: ConvertReq):
         # ⑥ 본문 — body_start 이후 밴드. **자르기는 이미 끝났다.**
         body_files = [cuts[n] for n in range(page.body_start, len(cuts))]
 
-        # ⑦ 【2콜】 본문 밴드마다 **무엇인지와 글**을 받는다
-        if key and body_files:
-            kinds_of, texts_of = read_text.read(key, body_files)
-            if kinds_of:
-                notes.append(f"{_llm.label(key)} 2콜 — 본문 밴드 {len(body_files)}장의 "
-                             "종류와 글을 받았다")
-            else:
-                notes.append("본문 답을 못 읽었다 — 밴드를 사진으로 두고 그대로 싣는다")
-        else:
-            kinds_of, texts_of = {}, {}
-            if body_files:
-                notes.append(f"본문 밴드 {len(body_files)}장은 안 물어봤다 — 그대로 싣는다")
+        # ⑦ 본문은 **판단하지 않는다.** 밴드를 받은 차례대로 그대로 싣는다.
+        body_html = render.render(body_files)
+        notes.append(f"본문 밴드 {len(body_files)}장을 순서대로 그대로 실었다 — "
+                     "종류를 가르지도, 구간을 열지도, 글자를 덮지도 않는다")
 
-        body_files, kinds_of, texts_of = refine(
-            key, body_files, kinds_of, texts_of, assets, notes)
-        body_files, marks_of = relabel(key, body_files, kinds_of, assets, notes)
-        pieces = body.pieces_from(kinds_of, texts_of, [f.name for f in body_files],
-                                  marks_of)
-        seen = Counter(p.kind for p in pieces)
-        notes.append("본문 종류 — " + " · ".join(
-            f"{k} {seen[k]}" for k in ("title", "body", "photo", "shot", "decor") if seen[k]))
-
-        # ⑧ 한 파일 — 메인 + 본문. 둘 다 폭 860.
-        if body.mostly_shots(pieces):
-            notes.append("본문의 3분의 2 넘게 **글자가 박힌 사진**이다 — "
-                         "자르지 않고 원본을 통째로 싣는다")
-            body_html = render.render_whole(files)
-            secs = []
-        else:
-            secs = body.sections(pieces)
-            body_html = render.render(secs, assets)
         html = ('<!doctype html><meta charset="utf-8">'
                 '<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/'
                 'pretendard@v1.3.9/dist/web/static/pretendard.min.css">'
@@ -608,7 +403,7 @@ def api_basic_convert(req: ConvertReq):
         raise HTTPException(500, f"변환 실패: {e}") from e
 
     log = [f"밴드 {len(cuts)}개 · body_start {page.body_start}({source_of_start})"
-           f" → 본문 밴드 {len(pieces)}개 · 섹션 {len(secs)}개"]
+           f" → 본문 밴드 {len(body_files)}개"]
     log += [f"  [{i:3}] img{e.image} y={e.band.y:6d} h={e.band.height:5d} {k:8}"
             f"{'  ← 본문 시작' if i == page.body_start else ''}"
             for i, (e, k) in enumerate(zip(entries, kinds))]
@@ -618,7 +413,7 @@ def api_basic_convert(req: ConvertReq):
             "used": urls, "skipped": skipped,
             "bands": len(cuts), "body_start": page.body_start,
             "body_start_from": source_of_start, "fallback_body_start": fallback,
-            "sections": len(secs), "crops": sum(1 for x in pieces if x.text.strip()),
+            "body_bands": len(body_files),
             "spec": page.spec, "keys": [list(k) for k in page.keys],
             "hero": bool(page.main), "hero_band": page.main_band,
             "feature": bool(page.feature), "feature_band": page.feature_band,
@@ -745,7 +540,7 @@ $('#f').onchange = async e => {
           const det = document.createElement('details');
           const spec = Object.entries(d2.spec || {}).map(([k, v]) => `  ${k}: ${v}`).join('\\n');
           const keys = (d2.keys || []).map(k => `  · ${k[0]} — ${k[1]}`).join('\\n');
-          det.innerHTML = `<summary>밴드 ${d2.bands}개 · 본문 섹션 ${d2.sections}개 · ${Math.round(d2.bytes/1024)}KB</summary>
+          det.innerHTML = `<summary>밴드 ${d2.bands}개 · 본문 밴드 ${d2.body_bands}개 · ${Math.round(d2.bytes/1024)}KB</summary>
             <pre>AI notes:\\n  ${(d2.notes||[]).join('\\n  ')}\\n\\n요약정보:\\n${spec || '  (없음)'}\\n\\n핵심특징:\\n${keys || '  (없음)'}\\n\\n쓴 것:\\n  ${d2.used.join('\\n  ')}${d2.skipped.length ? '\\n\\n뺀 것:\\n  ' + d2.skipped.join('\\n  ') : ''}</pre>`;
           links.appendChild(det);
         } catch (err) {
